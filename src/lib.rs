@@ -46,10 +46,13 @@ pub use segm_info::{
 pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
 pub use tracking::TrackingConfig;
 pub use utilities::{
-    add_lineage_tree, apply_tracking_from_table, combine_metrics, concat_acdc_outputs,
+    add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
+    combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs,
     connect_3d_segm, count_objects, fill_holes, filter_segm_from_table, generate_mother_bud_total,
-    stack_2d_segm_to_3d, ApplyTrackingConfig, CombineMetricsConfig, CombineMetricsResult,
-    ConcatConfig, ConcatResult, Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig,
-    CountObjectsResult, FillHolesConfig, GenerateMotherBudTotalConfig, LineageTreeConfig,
-    ObjectsCountSummary, Stack2DSegmTo3DConfig, TrackingColumnMap, UtilityOutputPaths,
+    stack_2d_segm_to_3d, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
+    CombineChannelsConfig, CombineChannelsResult, CombineMetricsConfig, CombineMetricsResult,
+    ComputeMultiChannelConfig, ComputeMultiChannelResult, ConcatConfig, ConcatResult,
+    Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, CountObjectsResult,
+    FillHolesConfig, GenerateMotherBudTotalConfig, LineageTreeConfig, ObjectsCountSummary,
+    Stack2DSegmTo3DConfig, TrackingColumnMap, UtilityOutputPaths,
 };

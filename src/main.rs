@@ -4,12 +4,14 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use cellacdc_rs::{
-    add_lineage_tree, apply_tracking_from_table, build_lineage_state_file, combine_metrics,
+    add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
+    build_lineage_state_file, combine_channels, combine_metrics, compute_multi_channel,
     concat_acdc_outputs, connect_3d_segm, count_objects, export_lineage_info_file, fill_holes,
     filter_segm_from_table, generate_mother_bud_total, measure_experiment, measure_position,
     prepare_zstack_segm_info, propagate_lineage_file, resolve_position, run_experiment,
     run_position, stack_2d_segm_to_3d, update_lineage_frame_file, ApplyTrackingConfig,
-    CombineMetricsConfig, ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
+    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig,
     CountObjectsConfig, ExperimentRunConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
     LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig, LineageTreeConfig,
     LineageUpdateConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
@@ -34,6 +36,10 @@ enum Command {
     MeasureExperiment(MeasureExperimentArgs),
     ConcatAcdcOutput(ConcatAcdcOutputArgs),
     CombineMetrics(CombineMetricsArgs),
+    #[command(name = "compute-multi-channel")]
+    ComputeMultiChannel(ComputeMultiChannelArgs),
+    #[command(name = "combine-channels")]
+    CombineChannels(CombineChannelsArgs),
     CountObjects(CountObjectsArgs),
     FillHoles(FillHolesArgs),
     #[command(name = "prepare-zstack-segm-info")]
@@ -44,6 +50,8 @@ enum Command {
     Stack2DSegmTo3D(Stack2DSegmTo3DArgs),
     FilterSegmFromTable(FilterSegmFromTableArgs),
     ApplyTrackingFromTable(ApplyTrackingFromTableArgs),
+    #[command(name = "apply-tracking-from-trackmate-xml")]
+    ApplyTrackingFromTrackMateXml(ApplyTrackingFromTrackMateXmlArgs),
     AddLineageTree(AddLineageTreeArgs),
     #[command(name = "build-lineage-state")]
     BuildLineageState(BuildLineageStateArgs),
@@ -175,6 +183,32 @@ struct CombineMetricsArgs {
 }
 
 #[derive(Debug, Args)]
+struct ComputeMultiChannelArgs {
+    #[arg(long, conflicts_with = "experiment")]
+    position: Option<PathBuf>,
+    #[arg(long, conflicts_with = "position")]
+    experiment: Option<PathBuf>,
+    #[arg(long = "source-endname", required = true)]
+    source_endnames: Vec<String>,
+    #[arg(long = "formula", required = true)]
+    formulas: Vec<String>,
+    #[arg(long, default_value = "combined_metrics")]
+    append_name: String,
+}
+
+#[derive(Debug, Args)]
+struct CombineChannelsArgs {
+    #[arg(long, conflicts_with = "experiment")]
+    position: Option<PathBuf>,
+    #[arg(long, conflicts_with = "position")]
+    experiment: Option<PathBuf>,
+    #[arg(long)]
+    recipe: PathBuf,
+    #[arg(long, default_value = "combined")]
+    append_name: String,
+}
+
+#[derive(Debug, Args)]
 struct CountObjectsArgs {
     #[arg(long)]
     segmentation: PathBuf,
@@ -283,6 +317,24 @@ struct ApplyTrackingFromTableArgs {
 }
 
 #[derive(Debug, Args)]
+struct ApplyTrackingFromTrackMateXmlArgs {
+    #[arg(long)]
+    position: PathBuf,
+    #[arg(long)]
+    segm_endname: String,
+    #[arg(long)]
+    xml: PathBuf,
+    #[arg(long)]
+    output_segm: Option<PathBuf>,
+    #[arg(long)]
+    source_acdc_output: Option<PathBuf>,
+    #[arg(long)]
+    output_acdc_output: Option<PathBuf>,
+    #[arg(long)]
+    delete_untracked_ids: bool,
+}
+
+#[derive(Debug, Args)]
 struct AddLineageTreeArgs {
     #[arg(long)]
     input: PathBuf,
@@ -359,6 +411,8 @@ fn main() -> Result<()> {
         Command::MeasureExperiment(args) => measure_experiment_command(args),
         Command::ConcatAcdcOutput(args) => concat_acdc_output_command(args),
         Command::CombineMetrics(args) => combine_metrics_command(args),
+        Command::ComputeMultiChannel(args) => compute_multi_channel_command(args),
+        Command::CombineChannels(args) => combine_channels_command(args),
         Command::CountObjects(args) => count_objects_command(args),
         Command::FillHoles(args) => fill_holes_command(args),
         Command::PrepareZstackSegmInfo(args) => prepare_zstack_segm_info_command(args),
@@ -366,6 +420,9 @@ fn main() -> Result<()> {
         Command::Stack2DSegmTo3D(args) => stack_2d_segm_to_3d_command(args),
         Command::FilterSegmFromTable(args) => filter_segm_from_table_command(args),
         Command::ApplyTrackingFromTable(args) => apply_tracking_from_table_command(args),
+        Command::ApplyTrackingFromTrackMateXml(args) => {
+            apply_tracking_from_trackmate_xml_command(args)
+        }
         Command::AddLineageTree(args) => add_lineage_tree_command(args),
         Command::BuildLineageState(args) => build_lineage_state_command(args),
         Command::UpdateLineageFrame(args) => update_lineage_frame_command(args),
@@ -499,6 +556,37 @@ fn combine_metrics_command(args: CombineMetricsArgs) -> Result<()> {
     Ok(())
 }
 
+fn compute_multi_channel_command(args: ComputeMultiChannelArgs) -> Result<()> {
+    let result = compute_multi_channel(ComputeMultiChannelConfig {
+        position_dir: args.position,
+        experiment_dir: args.experiment,
+        source_endnames: args.source_endnames,
+        formulas: parse_assignments(args.formulas, "formula")?,
+        append_name: args.append_name,
+    })?;
+    for output in result.outputs {
+        println!(
+            "Wrote combined multi-channel metrics to {} and equations to {}",
+            output.output_path.display(),
+            output.equations_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn combine_channels_command(args: CombineChannelsArgs) -> Result<()> {
+    let result = combine_channels(CombineChannelsConfig {
+        position_dir: args.position,
+        experiment_dir: args.experiment,
+        recipe_path: args.recipe,
+        append_name: args.append_name,
+    })?;
+    for path in result.output_paths {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
 fn count_objects_command(args: CountObjectsArgs) -> Result<()> {
     let result = count_objects(CountObjectsConfig {
         segmentation_path: args.segmentation,
@@ -606,6 +694,28 @@ fn apply_tracking_from_table_command(args: ApplyTrackingFromTableArgs) -> Result
     })?;
     println!(
         "Wrote tracked segmentation to {}",
+        result.primary_path.display()
+    );
+    for path in result.secondary_paths {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
+fn apply_tracking_from_trackmate_xml_command(
+    args: ApplyTrackingFromTrackMateXmlArgs,
+) -> Result<()> {
+    let result = apply_tracking_from_trackmate_xml(ApplyTrackingFromTrackMateXmlConfig {
+        position_dir: args.position,
+        segm_endname: args.segm_endname,
+        xml_path: args.xml,
+        output_segmentation_path: args.output_segm,
+        source_acdc_output_path: args.source_acdc_output,
+        output_acdc_output_path: args.output_acdc_output,
+        delete_untracked_ids: args.delete_untracked_ids,
+    })?;
+    println!(
+        "Wrote TrackMate-tracked segmentation to {}",
         result.primary_path.display()
     );
     for path in result.secondary_paths {

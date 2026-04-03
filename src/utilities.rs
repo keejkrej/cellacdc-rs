@@ -1,4 +1,5 @@
 use crate::build_lineage_state;
+use crate::layout::{discover_measurement_experiment, resolve_measurement_position};
 use crate::mask_io::{
     load_mask_data, save_mask_data, MaskData, MaskPathResolution, SegmentationLayout,
 };
@@ -6,10 +7,13 @@ use crate::tabular::{read_table, write_table, Table, TableFormat, TableValue};
 use crate::zstack::{connect_3d_lab_z_boundaries, stack_2d_lab_to_3d};
 use anyhow::{anyhow, bail, Context, Result};
 use evalexpr::{ContextWithMutableVariables, HashMapContext, Value as EvalValue};
+use ndarray::{ArrayD, IxDyn};
+use roxmltree::Document;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use tiff::encoder::{colortype, TiffEncoder};
 
 const DEFAULT_INDEX_COLS: &[&str] = &[
     "experiment_folderpath",
@@ -64,6 +68,33 @@ pub struct CombineMetricsConfig {
 pub struct CombineMetricsResult {
     pub output_path: PathBuf,
     pub equations_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComputeMultiChannelConfig {
+    pub position_dir: Option<PathBuf>,
+    pub experiment_dir: Option<PathBuf>,
+    pub source_endnames: Vec<String>,
+    pub formulas: BTreeMap<String, String>,
+    pub append_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComputeMultiChannelResult {
+    pub outputs: Vec<CombineMetricsResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombineChannelsConfig {
+    pub position_dir: Option<PathBuf>,
+    pub experiment_dir: Option<PathBuf>,
+    pub recipe_path: PathBuf,
+    pub append_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombineChannelsResult {
+    pub output_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +172,17 @@ pub struct ApplyTrackingConfig {
     pub resolution: Option<MaskPathResolution>,
     pub source_acdc_output_path: Option<PathBuf>,
     pub output_acdc_output_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyTrackingFromTrackMateXmlConfig {
+    pub position_dir: PathBuf,
+    pub segm_endname: String,
+    pub xml_path: PathBuf,
+    pub output_segmentation_path: Option<PathBuf>,
+    pub source_acdc_output_path: Option<PathBuf>,
+    pub output_acdc_output_path: Option<PathBuf>,
+    pub delete_untracked_ids: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,12 +420,13 @@ pub fn combine_metrics(config: CombineMetricsConfig) -> Result<CombineMetricsRes
                 if key_columns.iter().any(|col| col == header) {
                     continue;
                 }
-                let alias = metric_alias(table_idx + 1, header);
                 let value = row
                     .and_then(|row| row.get(header))
                     .and_then(TableValue::as_f64)
                     .unwrap_or(f64::NAN);
-                context.set_value(alias, EvalValue::Float(value))?;
+                for alias in metric_aliases(table_idx + 1, header) {
+                    context.set_value(alias, EvalValue::Float(value))?;
+                }
             }
         }
 
@@ -411,6 +454,54 @@ pub fn combine_metrics(config: CombineMetricsConfig) -> Result<CombineMetricsRes
         output_path: config.output_path,
         equations_path,
     })
+}
+
+pub fn compute_multi_channel(
+    config: ComputeMultiChannelConfig,
+) -> Result<ComputeMultiChannelResult> {
+    if config.source_endnames.len() < 2 {
+        bail!("compute_multi_channel requires at least two --source-endname values");
+    }
+    if config.formulas.is_empty() {
+        bail!("compute_multi_channel requires at least one --formula value");
+    }
+    let images_dirs = collect_images_dirs_from_scope(
+        config.position_dir.as_deref(),
+        config.experiment_dir.as_deref(),
+    )?;
+
+    let mut outputs = Vec::new();
+    for images_dir in images_dirs {
+        let mut source_paths = Vec::with_capacity(config.source_endnames.len());
+        for endname in &config.source_endnames {
+            let path = find_table_by_endname(&images_dir, endname)?.ok_or_else(|| {
+                anyhow!(
+                    "No table ending with {:?} found in {}",
+                    endname,
+                    images_dir.display()
+                )
+            })?;
+            source_paths.push(path);
+        }
+
+        let basename = infer_table_basename(&source_paths[0], &config.source_endnames[0])?;
+        let output_path = images_dir.join(format!(
+            "{basename}acdc_output_{}.csv",
+            config.append_name
+        ));
+        let equations_path = images_dir.join(format!(
+            "{basename}equations_{}.ini",
+            config.append_name
+        ));
+        outputs.push(combine_metrics(CombineMetricsConfig {
+            source_paths,
+            formulas: config.formulas.clone(),
+            output_path,
+            equations_path: Some(equations_path),
+        })?);
+    }
+
+    Ok(ComputeMultiChannelResult { outputs })
 }
 
 pub fn count_objects(config: CountObjectsConfig) -> Result<CountObjectsResult> {
@@ -572,57 +663,87 @@ pub fn apply_tracking_from_table(config: ApplyTrackingConfig) -> Result<UtilityO
         );
     }
     let tracking_table = read_table(&config.tracking_table_path)?;
-    let mut tracked = masks.clone();
-    let (tracked_ids_mapper, deleted_ids_mapper) =
-        apply_tracking_to_mask_data(&mut tracked, &tracking_table, &config.columns)?;
-    save_mask_data(&config.output_path, &tracked)?;
+    apply_tracking_with_loaded_table(
+        masks,
+        tracking_table,
+        config.output_path,
+        &config.columns,
+        config.source_acdc_output_path.as_deref(),
+        config.output_acdc_output_path.as_deref(),
+    )
+}
 
-    let mapper_base = config.output_path.with_extension("");
-    let deleted_path = mapper_base.with_file_name(format!(
-        "{}_deletedIDs_mapper.json",
-        mapper_base
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("segm")
-    ));
-    let replaced_path = mapper_base.with_file_name(format!(
-        "{}_replacedIDs_mapper.json",
-        mapper_base
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("segm")
-    ));
-    fs::write(
-        &deleted_path,
-        serde_json::to_vec_pretty(&deleted_ids_mapper)?,
+pub fn combine_channels(config: CombineChannelsConfig) -> Result<CombineChannelsResult> {
+    let recipe = load_combine_channels_recipe(&config.recipe_path)?;
+    let positions = collect_measurement_positions_from_scope(
+        config.position_dir.as_deref(),
+        config.experiment_dir.as_deref(),
     )?;
-    fs::write(
-        &replaced_path,
-        serde_json::to_vec_pretty(&tracked_ids_mapper)?,
-    )?;
+    let mut output_paths = Vec::with_capacity(positions.len());
 
-    let mut secondary_paths = vec![deleted_path, replaced_path];
-    if let Some(source_path) = config.source_acdc_output_path.as_ref() {
-        if source_path.exists() {
-            let table = read_table(source_path)?;
-            let remapped = apply_tracked_ids_mapper_to_table(
-                &table,
-                &tracked_ids_mapper,
-                &deleted_ids_mapper,
-            )?;
-            let acdc_output_path = config
-                .output_acdc_output_path
-                .clone()
-                .unwrap_or_else(|| derive_acdc_output_path(source_path, &config.output_path));
-            write_table(&acdc_output_path, &remapped)?;
-            secondary_paths.push(acdc_output_path);
-        }
+    for position in positions {
+        let output = combine_channels_for_position(&position, &recipe, &config.append_name)?;
+        output_paths.push(output);
     }
 
-    Ok(UtilityOutputPaths {
-        primary_path: config.output_path,
-        secondary_paths,
-    })
+    Ok(CombineChannelsResult { output_paths })
+}
+
+pub fn apply_tracking_from_trackmate_xml(
+    config: ApplyTrackingFromTrackMateXmlConfig,
+) -> Result<UtilityOutputPaths> {
+    let images_dir = normalize_images_dir(&config.position_dir)?;
+    let segmentation_path = find_file_by_endname(&images_dir, &config.segm_endname, &["npz", "tif", "tiff", "h5"])?
+        .ok_or_else(|| {
+            anyhow!(
+                "No segmentation ending with {:?} found in {}",
+                config.segm_endname,
+                images_dir.display()
+            )
+        })?;
+    let masks = load_mask_data(&segmentation_path, None).or_else(|err| {
+        if err
+            .to_string()
+            .contains("Ambiguous 3D segmentation layout")
+        {
+            load_mask_data(
+                &segmentation_path,
+                Some(&MaskPathResolution {
+                    size_t: None,
+                    size_z: Some(1),
+                    layout: Some(SegmentationLayout::TYX),
+                }),
+            )
+        } else {
+            Err(err)
+        }
+    })?;
+    let tracking_table = trackmate_xml_to_table(&config.xml_path)?;
+    let output_path = config
+        .output_segmentation_path
+        .clone()
+        .unwrap_or_else(|| append_to_file_stem(&segmentation_path, "_tracked"));
+    let source_acdc_output_path = config.source_acdc_output_path.clone().or_else(|| {
+        infer_tracking_source_acdc_output(&images_dir, &config.segm_endname)
+    });
+
+    apply_tracking_with_loaded_table(
+        masks,
+        tracking_table,
+        output_path,
+        &TrackingColumnMap {
+            frame_index_col: "frame_i".into(),
+            is_first_frame_one: false,
+            track_ids_col: "ID".into(),
+            mask_ids_col: None,
+            x_centroid_col: Some("x".into()),
+            y_centroid_col: Some("y".into()),
+            z_centroid_col: Some("z".into()),
+            delete_untracked_ids: config.delete_untracked_ids,
+        },
+        source_acdc_output_path.as_deref(),
+        config.output_acdc_output_path.as_deref(),
+    )
 }
 
 pub fn add_lineage_tree(config: LineageTreeConfig) -> Result<UtilityOutputPaths> {
@@ -664,6 +785,690 @@ pub fn generate_mother_bud_total(
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArrayLayout {
+    YX,
+    TYX,
+    ZYX,
+    TZYX,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageScalarType {
+    U8,
+    U16,
+    U32,
+    F32,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedChannelArray {
+    values: ArrayD<f32>,
+    layout: ArrayLayout,
+    scalar_type: ImageScalarType,
+}
+
+#[derive(Debug, Clone)]
+struct CombineChannelStep {
+    key: String,
+    name: String,
+    channel: String,
+    binarize: String,
+    min_val: f32,
+    max_val: f32,
+}
+
+#[derive(Debug, Clone)]
+struct CombineChannelsRecipe {
+    steps: Vec<CombineChannelStep>,
+    formula: String,
+    keep_input_data_type: bool,
+    save_as_segm: bool,
+}
+
+fn apply_tracking_with_loaded_table(
+    masks: MaskData,
+    tracking_table: Table,
+    output_path: PathBuf,
+    columns: &TrackingColumnMap,
+    source_acdc_output_path: Option<&Path>,
+    output_acdc_output_path: Option<&Path>,
+) -> Result<UtilityOutputPaths> {
+    let mut tracked = masks.clone();
+    let (tracked_ids_mapper, deleted_ids_mapper) =
+        apply_tracking_to_mask_data(&mut tracked, &tracking_table, columns)?;
+    save_mask_data(&output_path, &tracked)?;
+
+    let mapper_base = output_path.with_extension("");
+    let deleted_path = mapper_base.with_file_name(format!(
+        "{}_deletedIDs_mapper.json",
+        mapper_base
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("segm")
+    ));
+    let replaced_path = mapper_base.with_file_name(format!(
+        "{}_replacedIDs_mapper.json",
+        mapper_base
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("segm")
+    ));
+    fs::write(
+        &deleted_path,
+        serde_json::to_vec_pretty(&deleted_ids_mapper)?,
+    )?;
+    fs::write(
+        &replaced_path,
+        serde_json::to_vec_pretty(&tracked_ids_mapper)?,
+    )?;
+
+    let mut secondary_paths = vec![deleted_path, replaced_path];
+    if let Some(source_path) = source_acdc_output_path {
+        if source_path.exists() {
+            let table = read_table(source_path)?;
+            let remapped = apply_tracked_ids_mapper_to_table(
+                &table,
+                &tracked_ids_mapper,
+                &deleted_ids_mapper,
+            )?;
+            let acdc_output_path = output_acdc_output_path
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| derive_acdc_output_path(source_path, &output_path));
+            write_table(&acdc_output_path, &remapped)?;
+            secondary_paths.push(acdc_output_path);
+        }
+    }
+
+    Ok(UtilityOutputPaths {
+        primary_path: output_path,
+        secondary_paths,
+    })
+}
+
+fn combine_channels_for_position(
+    position: &crate::layout::MeasurementPositionSpec,
+    recipe: &CombineChannelsRecipe,
+    append_name: &str,
+) -> Result<PathBuf> {
+    let mut loaded_steps = Vec::with_capacity(recipe.steps.len());
+    let mut output_layout = None;
+    let mut output_shape = None;
+    let mut original_scalar_type = None;
+
+    for step in &recipe.steps {
+        if step.channel == "current segm." {
+            bail!("combine_channels does not support the GUI-only channel \"current segm.\"");
+        }
+        let loaded = load_recipe_channel(position, &step.channel)?;
+        if original_scalar_type.is_none() {
+            original_scalar_type = Some(loaded.scalar_type);
+        }
+        output_layout = Some(match output_layout {
+            Some(layout) => merge_layout(layout, loaded.layout)?,
+            None => loaded.layout,
+        });
+        output_shape = Some(match output_shape {
+            Some(shape) => merge_layout_shape(shape, loaded.values.shape())?,
+            None => loaded.values.shape().to_vec(),
+        });
+        loaded_steps.push((step.clone(), loaded));
+    }
+
+    let output_layout = output_layout.ok_or_else(|| anyhow!("combine_channels recipe is empty"))?;
+    let output_shape = output_shape.expect("shape set with non-empty recipe");
+    let mut variables = BTreeMap::new();
+    let mut first_output = None;
+
+    for (step, loaded) in loaded_steps {
+        let mut values = align_channel_to_target_layout(loaded.values, loaded.layout, output_layout, &output_shape)?;
+        apply_binarize(&mut values, &step.binarize)?;
+        if !(step.min_val == 0.0 && step.max_val == 1.0) {
+            values = rescale_array(&values, step.min_val, step.max_val);
+        }
+        if first_output.is_none() {
+            first_output = Some(values.clone());
+        }
+        variables.insert(step.name.clone(), values);
+    }
+
+    let mut output = if recipe.formula.trim().is_empty() {
+        first_output.ok_or_else(|| anyhow!("combine_channels recipe does not contain any steps"))?
+    } else {
+        let expression = parse_array_expression(&recipe.formula)?;
+        expression.evaluate(&variables)?
+    };
+
+    if !recipe.save_as_segm {
+        output = rescale_array(&output, 0.0, 1.0);
+    }
+
+    let output_path = if recipe.save_as_segm {
+        position
+            .images_dir
+            .join(format!("{}segm_{}.npz", position.basename, append_name))
+    } else {
+        position
+            .images_dir
+            .join(format!("{}{}.tif", position.basename, append_name))
+    };
+
+    if recipe.save_as_segm {
+        let values = output
+            .mapv(|value| if value < 0.0 { 0 } else { value as u32 })
+            .into_dyn();
+        let layout = segmentation_layout_from_array_layout(output_layout);
+        save_mask_data(
+            &output_path,
+            &MaskData {
+                values,
+                layout,
+                source_path: output_path.clone(),
+            },
+        )?;
+    } else {
+        let scalar_type = if recipe.keep_input_data_type {
+            original_scalar_type.unwrap_or(ImageScalarType::F32)
+        } else {
+            ImageScalarType::F32
+        };
+        save_image_tiff(&output_path, &output, scalar_type)?;
+    }
+
+    Ok(output_path)
+}
+
+fn load_combine_channels_recipe(path: &Path) -> Result<CombineChannelsRecipe> {
+    let raw: serde_json::Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("Failed to parse JSON recipe {}", path.display()))?;
+    let object = raw
+        .as_object()
+        .ok_or_else(|| anyhow!("combine_channels recipe must be a JSON object"))?;
+
+    let mut step_keys = object
+        .keys()
+        .filter(|key| key.chars().all(|ch| ch.is_ascii_digit()))
+        .cloned()
+        .collect::<Vec<_>>();
+    step_keys.sort_by_key(|key| key.parse::<usize>().unwrap_or(usize::MAX));
+    if step_keys.is_empty() {
+        bail!("combine_channels recipe does not contain any numeric step entries");
+    }
+
+    let mut steps = Vec::with_capacity(step_keys.len());
+    for key in step_keys {
+        let step = object
+            .get(&key)
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| anyhow!("Recipe step {key:?} must be a JSON object"))?;
+        steps.push(CombineChannelStep {
+            key,
+            name: json_required_string(step, "name")?.to_string(),
+            channel: json_required_string(step, "channel")?.to_string(),
+            binarize: json_required_string(step, "binarize")?.to_string(),
+            min_val: json_required_f32(step, "min_val")?,
+            max_val: json_required_f32(step, "max_val")?,
+        });
+    }
+
+    Ok(CombineChannelsRecipe {
+        steps,
+        formula: object
+            .get("formula")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        keep_input_data_type: object
+            .get("keep_input_data_type")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        save_as_segm: object
+            .get("save_as_segm")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+    })
+}
+
+fn json_required_string<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<&'a str> {
+    object
+        .get(key)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("Recipe field {key:?} must be a string"))
+}
+
+fn json_required_f32(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<f32> {
+    object
+        .get(key)
+        .and_then(|value| value.as_f64())
+        .map(|value| value as f32)
+        .ok_or_else(|| anyhow!("Recipe field {key:?} must be numeric"))
+}
+
+fn load_recipe_channel(
+    position: &crate::layout::MeasurementPositionSpec,
+    channel_name: &str,
+) -> Result<LoadedChannelArray> {
+    if let Some(channel) = position.channels.iter().find(|channel| channel.name == channel_name) {
+        let (pixels, shape) =
+            crate::image_io::load_image_volume_as_f32(&channel.image_path, Some(position.size_t), Some(position.size_z))
+                .with_context(|| {
+                    format!(
+                        "Failed to load channel {:?} from {}",
+                        channel_name,
+                        channel.image_path.display()
+                    )
+                })?;
+        let scalar_type = detect_image_scalar_type(&channel.image_path)?;
+        let values = normalize_image_array(shape_volume_pixels(pixels, shape)? , scalar_type)?;
+        let layout = volume_shape_layout(shape);
+        return Ok(LoadedChannelArray {
+            values,
+            layout,
+            scalar_type,
+        });
+    }
+
+    let path = find_file_by_endname(&position.images_dir, channel_name, &["npz", "tif", "tiff", "h5"])?
+        .ok_or_else(|| {
+            anyhow!(
+                "No raw or segmentation channel ending with {:?} found in {}",
+                channel_name,
+                position.images_dir.display()
+            )
+        })?;
+    let masks = load_mask_data(&path, None)
+        .with_context(|| format!("Failed to load segmentation {}", path.display()))?;
+    Ok(LoadedChannelArray {
+        values: masks.values.mapv(|value| value as f32),
+        layout: array_layout_from_segm_layout(masks.layout),
+        scalar_type: ImageScalarType::U32,
+    })
+}
+
+fn normalize_image_array(mut values: ArrayD<f32>, scalar_type: ImageScalarType) -> Result<ArrayD<f32>> {
+    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    match scalar_type {
+        ImageScalarType::U8 => values.mapv_inplace(|value| value / u8::MAX as f32),
+        ImageScalarType::U16 => values.mapv_inplace(|value| value / u16::MAX as f32),
+        ImageScalarType::U32 => values.mapv_inplace(|value| value / u32::MAX as f32),
+        ImageScalarType::F32 => {
+            if max.is_finite() && max > 1.0 {
+                let divisor = if max <= u8::MAX as f32 {
+                    u8::MAX as f32
+                } else if max <= u16::MAX as f32 {
+                    u16::MAX as f32
+                } else if max <= u32::MAX as f32 {
+                    u32::MAX as f32
+                } else {
+                    bail!("Float image contains values above the supported 32-bit range");
+                };
+                values.mapv_inplace(|value| value / divisor);
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn shape_volume_pixels(
+    pixels: Vec<f32>,
+    shape: crate::image_io::VolumeShape,
+) -> Result<ArrayD<f32>> {
+    let dims = if shape.size_t > 1 && shape.size_z > 1 {
+        vec![shape.size_t, shape.size_z, shape.height, shape.width]
+    } else if shape.size_t > 1 {
+        vec![shape.size_t, shape.height, shape.width]
+    } else if shape.size_z > 1 {
+        vec![shape.size_z, shape.height, shape.width]
+    } else {
+        vec![shape.height, shape.width]
+    };
+    ArrayD::from_shape_vec(IxDyn(&dims), pixels)
+        .with_context(|| format!("Failed to shape image array with dims {:?}", dims))
+}
+
+fn volume_shape_layout(shape: crate::image_io::VolumeShape) -> ArrayLayout {
+    match (shape.size_t > 1, shape.size_z > 1) {
+        (false, false) => ArrayLayout::YX,
+        (true, false) => ArrayLayout::TYX,
+        (false, true) => ArrayLayout::ZYX,
+        (true, true) => ArrayLayout::TZYX,
+    }
+}
+
+fn array_layout_from_segm_layout(layout: SegmentationLayout) -> ArrayLayout {
+    match layout {
+        SegmentationLayout::YX => ArrayLayout::YX,
+        SegmentationLayout::TYX => ArrayLayout::TYX,
+        SegmentationLayout::ZYX => ArrayLayout::ZYX,
+        SegmentationLayout::TZYX => ArrayLayout::TZYX,
+    }
+}
+
+fn segmentation_layout_from_array_layout(layout: ArrayLayout) -> SegmentationLayout {
+    match layout {
+        ArrayLayout::YX => SegmentationLayout::YX,
+        ArrayLayout::TYX => SegmentationLayout::TYX,
+        ArrayLayout::ZYX => SegmentationLayout::ZYX,
+        ArrayLayout::TZYX => SegmentationLayout::TZYX,
+    }
+}
+
+fn merge_layout(left: ArrayLayout, right: ArrayLayout) -> Result<ArrayLayout> {
+    let has_t = layout_has_time(left) || layout_has_time(right);
+    let has_z = layout_has_depth(left) || layout_has_depth(right);
+    Ok(match (has_t, has_z) {
+        (false, false) => ArrayLayout::YX,
+        (true, false) => ArrayLayout::TYX,
+        (false, true) => ArrayLayout::ZYX,
+        (true, true) => ArrayLayout::TZYX,
+    })
+}
+
+fn merge_layout_shape(left: Vec<usize>, right: &[usize]) -> Result<Vec<usize>> {
+    if left.len() != right.len() {
+        return Ok(if left.len() > right.len() {
+            left
+        } else {
+            right.to_vec()
+        });
+    }
+    Ok(left
+        .into_iter()
+        .zip(right.iter().copied())
+        .map(|(l, r)| l.max(r))
+        .collect())
+}
+
+fn layout_has_time(layout: ArrayLayout) -> bool {
+    matches!(layout, ArrayLayout::TYX | ArrayLayout::TZYX)
+}
+
+fn layout_has_depth(layout: ArrayLayout) -> bool {
+    matches!(layout, ArrayLayout::ZYX | ArrayLayout::TZYX)
+}
+
+fn align_channel_to_target_layout(
+    values: ArrayD<f32>,
+    source_layout: ArrayLayout,
+    target_layout: ArrayLayout,
+    target_shape: &[usize],
+) -> Result<ArrayD<f32>> {
+    if source_layout == target_layout {
+        if values.shape() != target_shape {
+            bail!(
+                "Shape mismatch for combine_channels: got {:?}, expected {:?}",
+                values.shape(),
+                target_shape
+            );
+        }
+        return Ok(values);
+    }
+    match (source_layout, target_layout) {
+        (ArrayLayout::YX, ArrayLayout::ZYX) => {
+            let depth = *target_shape
+                .first()
+                .ok_or_else(|| anyhow!("Missing target depth for ZYX broadcast"))?;
+            let plane = values.into_dimensionality::<ndarray::Ix2>()?;
+            let mut out = Vec::with_capacity(depth * plane.len());
+            let base = plane.iter().copied().collect::<Vec<_>>();
+            for _ in 0..depth {
+                out.extend(base.iter().copied());
+            }
+            ArrayD::from_shape_vec(IxDyn(target_shape), out)
+                .context("Failed to broadcast 2D segmentation across Z")
+        }
+        (ArrayLayout::TYX, ArrayLayout::TZYX) => {
+            let depth = target_shape
+                .get(1)
+                .copied()
+                .ok_or_else(|| anyhow!("Missing target Z axis for TZYX broadcast"))?;
+            let array = values.into_dimensionality::<ndarray::Ix3>()?;
+            let shape = array.shape().to_vec();
+            let mut out = Vec::with_capacity(shape[0] * depth * shape[1] * shape[2]);
+            for frame in array.outer_iter() {
+                let base = frame.iter().copied().collect::<Vec<_>>();
+                for _ in 0..depth {
+                    out.extend(base.iter().copied());
+                }
+            }
+            ArrayD::from_shape_vec(IxDyn(target_shape), out)
+                .context("Failed to broadcast 2Dt segmentation across Z")
+        }
+        _ => bail!(
+            "Unsupported combine_channels layout conversion from {:?} to {:?}",
+            source_layout,
+            target_layout
+        ),
+    }
+}
+
+fn apply_binarize(values: &mut ArrayD<f32>, binarize: &str) -> Result<()> {
+    match binarize {
+        "No" => {}
+        "binarize" => values.mapv_inplace(|value| if value > 0.0 { 1.0 } else { 0.0 }),
+        "inverse binarize" => values.mapv_inplace(|value| if value > 0.0 { 0.0 } else { 1.0 }),
+        other => bail!("Unsupported combine_channels binarize mode {:?}", other),
+    }
+    Ok(())
+}
+
+fn rescale_array(values: &ArrayD<f32>, out_min: f32, out_max: f32) -> ArrayD<f32> {
+    let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !min.is_finite() || !max.is_finite() || (max - min).abs() <= f32::EPSILON {
+        return values.mapv(|_| out_min);
+    }
+    let scale = (out_max - out_min) / (max - min);
+    values.mapv(|value| (value - min) * scale + out_min)
+}
+
+fn detect_image_scalar_type(path: &Path) -> Result<ImageScalarType> {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("tif") | Some("tiff") => {
+            let file = File::open(path)
+                .with_context(|| format!("Failed to open TIFF {}", path.display()))?;
+            let mut decoder = tiff::decoder::Decoder::new(file)
+                .with_context(|| format!("Failed to decode TIFF {}", path.display()))?;
+            let result = decoder
+                .read_image()
+                .with_context(|| format!("Failed to inspect TIFF {}", path.display()))?;
+            Ok(match result {
+                tiff::decoder::DecodingResult::U8(_) => ImageScalarType::U8,
+                tiff::decoder::DecodingResult::U16(_) => ImageScalarType::U16,
+                tiff::decoder::DecodingResult::U32(_) => ImageScalarType::U32,
+                _ => ImageScalarType::F32,
+            })
+        }
+        _ => Ok(ImageScalarType::F32),
+    }
+}
+
+fn save_image_tiff(path: &Path, values: &ArrayD<f32>, scalar_type: ImageScalarType) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Output path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)?;
+    let file =
+        File::create(path).with_context(|| format!("Failed to create {}", path.display()))?;
+    let mut encoder = TiffEncoder::new(file)?;
+    for plane in flatten_array_planes(values)? {
+        match scalar_type {
+            ImageScalarType::U8 => {
+                let pixels = convert_plane_to_u8(&plane.pixels);
+                encoder.write_image::<colortype::Gray8>(plane.width as u32, plane.height as u32, &pixels)?;
+            }
+            ImageScalarType::U16 => {
+                let pixels = convert_plane_to_u16(&plane.pixels);
+                encoder.write_image::<colortype::Gray16>(plane.width as u32, plane.height as u32, &pixels)?;
+            }
+            ImageScalarType::U32 => {
+                let pixels = convert_plane_to_u32(&plane.pixels);
+                encoder.write_image::<colortype::Gray32>(plane.width as u32, plane.height as u32, &pixels)?;
+            }
+            ImageScalarType::F32 => {
+                encoder.write_image::<colortype::Gray32Float>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &plane.pixels,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct PlaneF32 {
+    height: usize,
+    width: usize,
+    pixels: Vec<f32>,
+}
+
+fn flatten_array_planes(values: &ArrayD<f32>) -> Result<Vec<PlaneF32>> {
+    match values.ndim() {
+        2 => {
+            let array = values.view().into_dimensionality::<ndarray::Ix2>()?;
+            Ok(vec![PlaneF32 {
+                height: array.shape()[0],
+                width: array.shape()[1],
+                pixels: array.iter().copied().collect(),
+            }])
+        }
+        3 => {
+            let array = values.view().into_dimensionality::<ndarray::Ix3>()?;
+            Ok(array
+                .outer_iter()
+                .map(|plane| PlaneF32 {
+                    height: plane.shape()[0],
+                    width: plane.shape()[1],
+                    pixels: plane.iter().copied().collect(),
+                })
+                .collect())
+        }
+        4 => {
+            let array = values.view().into_dimensionality::<ndarray::Ix4>()?;
+            let mut planes = Vec::new();
+            for stack in array.outer_iter() {
+                for plane in stack.outer_iter() {
+                    planes.push(PlaneF32 {
+                        height: plane.shape()[0],
+                        width: plane.shape()[1],
+                        pixels: plane.iter().copied().collect(),
+                    });
+                }
+            }
+            Ok(planes)
+        }
+        ndim => bail!("Unsupported image ndim {} for TIFF output", ndim),
+    }
+}
+
+fn convert_plane_to_u8(values: &[f32]) -> Vec<u8> {
+    convert_plane_to_integer(values, u8::MAX as f32)
+        .into_iter()
+        .map(|value| value as u8)
+        .collect()
+}
+
+fn convert_plane_to_u16(values: &[f32]) -> Vec<u16> {
+    convert_plane_to_integer(values, u16::MAX as f32)
+        .into_iter()
+        .map(|value| value as u16)
+        .collect()
+}
+
+fn convert_plane_to_u32(values: &[f32]) -> Vec<u32> {
+    convert_plane_to_integer(values, u32::MAX as f32)
+}
+
+fn convert_plane_to_integer(values: &[f32], dtype_max: f32) -> Vec<u32> {
+    let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let needs_scaling = min < 0.0 || max > dtype_max || (max <= 1.0 && dtype_max > 1.0);
+    if !needs_scaling {
+        return values
+            .iter()
+            .map(|value| value.round().clamp(0.0, dtype_max) as u32)
+            .collect();
+    }
+    let scaled = if max <= 1.0 && min >= 0.0 {
+        values
+            .iter()
+            .map(|value| (*value * dtype_max).round().clamp(0.0, dtype_max) as u32)
+            .collect::<Vec<_>>()
+    } else if (max - min).abs() <= f32::EPSILON {
+        vec![0; values.len()]
+    } else {
+        values
+            .iter()
+            .map(|value| (((*value - min) / (max - min)) * dtype_max).round().clamp(0.0, dtype_max) as u32)
+            .collect::<Vec<_>>()
+    };
+    scaled
+}
+
+fn trackmate_xml_to_table(path: &Path) -> Result<Table> {
+    let xml = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read TrackMate XML {}", path.display()))?;
+    let doc = Document::parse(&xml)
+        .with_context(|| format!("Failed to parse TrackMate XML {}", path.display()))?;
+    let root = doc.root_element();
+    let mut rows = Vec::new();
+    for (particle_idx, particle) in root
+        .children()
+        .filter(|node| node.is_element())
+        .enumerate()
+    {
+        let id = (particle_idx + 1) as f64;
+        for detection in particle.children().filter(|node| node.is_element()) {
+            let frame_i = detection
+                .attribute("t")
+                .ok_or_else(|| anyhow!("TrackMate detection is missing attribute \"t\""))?
+                .parse::<f64>()
+                .with_context(|| format!("Invalid TrackMate frame value in {}", path.display()))?;
+            let x = detection
+                .attribute("x")
+                .ok_or_else(|| anyhow!("TrackMate detection is missing attribute \"x\""))?
+                .parse::<f64>()
+                .with_context(|| format!("Invalid TrackMate x value in {}", path.display()))?;
+            let y = detection
+                .attribute("y")
+                .ok_or_else(|| anyhow!("TrackMate detection is missing attribute \"y\""))?
+                .parse::<f64>()
+                .with_context(|| format!("Invalid TrackMate y value in {}", path.display()))?;
+            let z = detection
+                .attribute("z")
+                .ok_or_else(|| anyhow!("TrackMate detection is missing attribute \"z\""))?
+                .parse::<f64>()
+                .with_context(|| format!("Invalid TrackMate z value in {}", path.display()))?;
+            rows.push(row_from_pairs(vec![
+                ("frame_i", TableValue::Number(frame_i)),
+                ("ID", TableValue::Number(id)),
+                ("x", TableValue::Number(x)),
+                ("y", TableValue::Number(y)),
+                ("z", TableValue::Number(z)),
+            ]));
+        }
+    }
+    Ok(rows_to_table(
+        &["frame_i".into(), "ID".into(), "x".into(), "y".into(), "z".into()],
+        &rows,
+    ))
 }
 
 fn write_equations_ini(
@@ -1390,6 +2195,48 @@ fn ensure_required_columns(table: &Table, columns: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn collect_images_dirs_from_scope(
+    position_dir: Option<&Path>,
+    experiment_dir: Option<&Path>,
+) -> Result<Vec<PathBuf>> {
+    match (position_dir, experiment_dir) {
+        (Some(position_dir), None) => Ok(vec![normalize_images_dir(position_dir)?]),
+        (None, Some(experiment_dir)) => list_position_dirs(experiment_dir)?
+            .into_iter()
+            .map(|position| normalize_images_dir(&position))
+            .collect(),
+        _ => bail!("Provide exactly one of position_dir or experiment_dir"),
+    }
+}
+
+fn collect_measurement_positions_from_scope(
+    position_dir: Option<&Path>,
+    experiment_dir: Option<&Path>,
+) -> Result<Vec<crate::layout::MeasurementPositionSpec>> {
+    match (position_dir, experiment_dir) {
+        (Some(position_dir), None) => Ok(vec![resolve_measurement_position(position_dir)?]),
+        (None, Some(experiment_dir)) => Ok(discover_measurement_experiment(experiment_dir)?.positions),
+        _ => bail!("Provide exactly one of position_dir or experiment_dir"),
+    }
+}
+
+fn normalize_images_dir(path: &Path) -> Result<PathBuf> {
+    if path.file_name().and_then(|name| name.to_str()) == Some("Images") {
+        if path.is_dir() {
+            return Ok(path.to_path_buf());
+        }
+        bail!("Images path is not a directory: {}", path.display());
+    }
+    let images_dir = path.join("Images");
+    if images_dir.is_dir() {
+        return Ok(images_dir);
+    }
+    bail!(
+        "Expected a Cell-ACDC position directory or Images directory, got {}",
+        path.display()
+    )
+}
+
 fn find_table_by_endname(images_dir: &Path, endname: &str) -> Result<Option<PathBuf>> {
     let mut matches = fs::read_dir(images_dir)
         .with_context(|| format!("Failed to read {}", images_dir.display()))?
@@ -1402,6 +2249,43 @@ fn find_table_by_endname(images_dir: &Path, endname: &str) -> Result<Option<Path
                         || name.ends_with(&format!("{endname}.xlsx"))
                 })
                 .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    Ok(matches.into_iter().next())
+}
+
+fn find_file_by_endname(
+    images_dir: &Path,
+    endname: &str,
+    extensions: &[&str],
+) -> Result<Option<PathBuf>> {
+    let mut matches = fs::read_dir(images_dir)
+        .with_context(|| format!("Failed to read {}", images_dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            let ext_matches = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| {
+                    let value = value.to_ascii_lowercase();
+                    extensions.iter().any(|ext| value == *ext)
+                })
+                .unwrap_or(false);
+            if !ext_matches {
+                return false;
+            }
+            let filename = path.file_name().and_then(|value| value.to_str());
+            let stem = path.file_stem().and_then(|value| value.to_str());
+            filename
+                .map(|name| name.ends_with(endname))
+                .unwrap_or(false)
+                || stem.map(|name| name.ends_with(endname)).unwrap_or(false)
+                || filename
+                    .map(|name| {
+                        extensions.iter().any(|ext| name.ends_with(&format!("{endname}.{ext}")))
+                    })
+                    .unwrap_or(false)
         })
         .collect::<Vec<_>>();
     matches.sort();
@@ -1442,6 +2326,51 @@ fn derive_acdc_output_path(source: &Path, segmentation_output: &Path) -> PathBuf
         .unwrap_or("segm")
         .replace("segm", "acdc_output");
     segmentation_output.with_file_name(format!("{stem}.{source_ext}"))
+}
+
+fn infer_tracking_source_acdc_output(images_dir: &Path, segm_endname: &str) -> Option<PathBuf> {
+    let acdc_endname = if segm_endname.starts_with("segm") {
+        segm_endname.replacen("segm", "acdc_output", 1)
+    } else {
+        format!("acdc_output_{segm_endname}")
+    };
+    find_table_by_endname(images_dir, &acdc_endname)
+        .ok()
+        .flatten()
+}
+
+fn append_to_file_stem(path: &Path, suffix: &str) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("output");
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if ext.is_empty() {
+        path.with_file_name(format!("{stem}{suffix}"))
+    } else {
+        path.with_file_name(format!("{stem}{suffix}.{ext}"))
+    }
+}
+
+fn infer_table_basename(table_path: &Path, endname: &str) -> Result<String> {
+    let filename = table_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("Invalid table path {}", table_path.display()))?;
+    for ext in ["csv", "xlsx", "xlsm", "xls"] {
+        let suffix = format!("{endname}.{ext}");
+        if let Some(prefix) = filename.strip_suffix(&suffix) {
+            return Ok(prefix.to_string());
+        }
+    }
+    bail!(
+        "Failed to infer Cell-ACDC basename from {} and endname {:?}",
+        table_path.display(),
+        endname
+    )
 }
 
 fn replace_file_stem_suffix(path: &Path, replacement: &str) -> String {
@@ -1501,6 +2430,17 @@ fn sanitize_identifier(value: &str) -> String {
 
 fn metric_alias(table_number: usize, header: &str) -> String {
     format!("table{}_{}", table_number, sanitize_identifier(header))
+}
+
+fn metric_alias_python_style(table_number: usize, header: &str) -> String {
+    format!("{}_table{}", sanitize_identifier(header), table_number)
+}
+
+fn metric_aliases(table_number: usize, header: &str) -> [String; 2] {
+    [
+        metric_alias(table_number, header),
+        metric_alias_python_style(table_number, header),
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1800,11 +2740,249 @@ impl ParsedTrackingRow {
     }
 }
 
+fn row_from_pairs(entries: Vec<(&str, TableValue)>) -> Row {
+    let mut row = Row::new();
+    for (key, value) in entries {
+        row.insert(key.to_string(), value);
+    }
+    row
+}
+
+#[derive(Debug, Clone)]
+enum ArrayExpr {
+    Number(f32),
+    Variable(String),
+    Neg(Box<ArrayExpr>),
+    Add(Box<ArrayExpr>, Box<ArrayExpr>),
+    Sub(Box<ArrayExpr>, Box<ArrayExpr>),
+    Mul(Box<ArrayExpr>, Box<ArrayExpr>),
+    Div(Box<ArrayExpr>, Box<ArrayExpr>),
+}
+
+#[derive(Debug, Clone)]
+enum ArrayValue {
+    Scalar(f32),
+    Array(ArrayD<f32>),
+}
+
+impl ArrayExpr {
+    fn evaluate(&self, variables: &BTreeMap<String, ArrayD<f32>>) -> Result<ArrayD<f32>> {
+        let value = self.eval_value(variables)?;
+        match value {
+            ArrayValue::Array(array) => Ok(array),
+            ArrayValue::Scalar(_) => bail!("Array formula must reference at least one channel"),
+        }
+    }
+
+    fn eval_value(&self, variables: &BTreeMap<String, ArrayD<f32>>) -> Result<ArrayValue> {
+        match self {
+            Self::Number(value) => Ok(ArrayValue::Scalar(*value)),
+            Self::Variable(name) => variables
+                .get(name)
+                .cloned()
+                .map(ArrayValue::Array)
+                .ok_or_else(|| anyhow!("Unknown combine_channels variable {:?}", name)),
+            Self::Neg(value) => match value.eval_value(variables)? {
+                ArrayValue::Scalar(value) => Ok(ArrayValue::Scalar(-value)),
+                ArrayValue::Array(array) => Ok(ArrayValue::Array(array.mapv(|value| -value))),
+            },
+            Self::Add(left, right) => apply_array_binary(left, right, variables, |l, r| l + r),
+            Self::Sub(left, right) => apply_array_binary(left, right, variables, |l, r| l - r),
+            Self::Mul(left, right) => apply_array_binary(left, right, variables, |l, r| l * r),
+            Self::Div(left, right) => apply_array_binary(left, right, variables, |l, r| l / r),
+        }
+    }
+}
+
+fn apply_array_binary(
+    left: &ArrayExpr,
+    right: &ArrayExpr,
+    variables: &BTreeMap<String, ArrayD<f32>>,
+    op: impl Fn(f32, f32) -> f32 + Copy,
+) -> Result<ArrayValue> {
+    let left = left.eval_value(variables)?;
+    let right = right.eval_value(variables)?;
+    Ok(match (left, right) {
+        (ArrayValue::Scalar(left), ArrayValue::Scalar(right)) => ArrayValue::Scalar(op(left, right)),
+        (ArrayValue::Array(left), ArrayValue::Scalar(right)) => {
+            ArrayValue::Array(left.mapv(|value| op(value, right)))
+        }
+        (ArrayValue::Scalar(left), ArrayValue::Array(right)) => {
+            ArrayValue::Array(right.mapv(|value| op(left, value)))
+        }
+        (ArrayValue::Array(left), ArrayValue::Array(right)) => {
+            if left.shape() != right.shape() {
+                bail!(
+                    "combine_channels formula shape mismatch: {:?} vs {:?}",
+                    left.shape(),
+                    right.shape()
+                );
+            }
+            let values = left
+                .iter()
+                .copied()
+                .zip(right.iter().copied())
+                .map(|(l, r)| op(l, r))
+                .collect::<Vec<_>>();
+            ArrayValue::Array(ArrayD::from_shape_vec(IxDyn(left.shape()), values)?)
+        }
+    })
+}
+
+fn parse_array_expression(source: &str) -> Result<ArrayExpr> {
+    let mut parser = ArrayExprParser::new(source);
+    let expr = parser.parse_expression()?;
+    parser.skip_whitespace();
+    if !parser.is_eof() {
+        bail!(
+            "Unexpected trailing tokens in combine_channels formula near {:?}",
+            parser.remaining()
+        );
+    }
+    Ok(expr)
+}
+
+struct ArrayExprParser<'a> {
+    source: &'a str,
+    index: usize,
+}
+
+impl<'a> ArrayExprParser<'a> {
+    fn new(source: &'a str) -> Self {
+        Self { source, index: 0 }
+    }
+
+    fn parse_expression(&mut self) -> Result<ArrayExpr> {
+        let mut expr = self.parse_term()?;
+        loop {
+            self.skip_whitespace();
+            if self.consume('+') {
+                expr = ArrayExpr::Add(Box::new(expr), Box::new(self.parse_term()?));
+            } else if self.consume('-') {
+                expr = ArrayExpr::Sub(Box::new(expr), Box::new(self.parse_term()?));
+            } else {
+                break;
+            }
+        }
+        Ok(expr)
+    }
+
+    fn parse_term(&mut self) -> Result<ArrayExpr> {
+        let mut expr = self.parse_factor()?;
+        loop {
+            self.skip_whitespace();
+            if self.consume('*') {
+                expr = ArrayExpr::Mul(Box::new(expr), Box::new(self.parse_factor()?));
+            } else if self.consume('/') {
+                expr = ArrayExpr::Div(Box::new(expr), Box::new(self.parse_factor()?));
+            } else {
+                break;
+            }
+        }
+        Ok(expr)
+    }
+
+    fn parse_factor(&mut self) -> Result<ArrayExpr> {
+        self.skip_whitespace();
+        if self.consume('(') {
+            let expr = self.parse_expression()?;
+            self.skip_whitespace();
+            if !self.consume(')') {
+                bail!("Missing closing ')' in combine_channels formula");
+            }
+            return Ok(expr);
+        }
+        if self.consume('-') {
+            return Ok(ArrayExpr::Neg(Box::new(self.parse_factor()?)));
+        }
+        if let Some(number) = self.parse_number()? {
+            return Ok(ArrayExpr::Number(number));
+        }
+        let identifier = self.parse_identifier()?;
+        Ok(ArrayExpr::Variable(identifier))
+    }
+
+    fn parse_number(&mut self) -> Result<Option<f32>> {
+        self.skip_whitespace();
+        let start = self.index;
+        let mut saw_digit = false;
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_digit() || ch == '.' {
+                saw_digit = true;
+                self.index += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if !saw_digit {
+            self.index = start;
+            return Ok(None);
+        }
+        Ok(Some(
+            self.source[start..self.index]
+                .parse::<f32>()
+                .with_context(|| format!("Invalid number {:?}", &self.source[start..self.index]))?,
+        ))
+    }
+
+    fn parse_identifier(&mut self) -> Result<String> {
+        self.skip_whitespace();
+        let start = self.index;
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                self.index += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if self.index == start {
+            bail!(
+                "Expected identifier in combine_channels formula near {:?}",
+                self.remaining()
+            );
+        }
+        Ok(self.source[start..self.index].to_string())
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(ch) = self.peek() {
+            if ch.is_whitespace() {
+                self.index += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn consume(&mut self, expected: char) -> bool {
+        if self.peek() == Some(expected) {
+            self.index += expected.len_utf8();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.source[self.index..].chars().next()
+    }
+
+    fn is_eof(&self) -> bool {
+        self.index >= self.source.len()
+    }
+
+    fn remaining(&self) -> &str {
+        &self.source[self.index..]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ndarray::{Array3, Array4};
+    use std::fs::File;
     use tempfile::tempdir;
+    use tiff::encoder::{colortype, TiffEncoder};
 
     #[test]
     fn counts_objects_and_writes_csv() -> Result<()> {
@@ -2005,6 +3183,253 @@ mod tests {
         let table = read_table(&output)?;
         let sum_idx = table.header_index("sum_signal")?;
         assert_eq!(table.rows[0][sum_idx].as_i64(), Some(5));
+        Ok(())
+    }
+
+    #[test]
+    fn computes_multi_channel_tables_with_python_style_aliases() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        let source1 = images.join("demo_acdc_output_first.csv");
+        let source2 = images.join("demo_acdc_output_second.csv");
+        write_table(
+            &source1,
+            &Table {
+                headers: vec!["frame_i".into(), "Cell_ID".into(), "signal".into()],
+                rows: vec![vec![
+                    TableValue::Number(0.0),
+                    TableValue::Number(1.0),
+                    TableValue::Number(2.0),
+                ]],
+            },
+        )?;
+        write_table(
+            &source2,
+            &Table {
+                headers: vec!["frame_i".into(), "Cell_ID".into(), "signal".into()],
+                rows: vec![vec![
+                    TableValue::Number(0.0),
+                    TableValue::Number(1.0),
+                    TableValue::Number(3.0),
+                ]],
+            },
+        )?;
+
+        let result = compute_multi_channel(ComputeMultiChannelConfig {
+            position_dir: Some(temp.path().join("Position_1")),
+            experiment_dir: None,
+            source_endnames: vec!["acdc_output_first".into(), "acdc_output_second".into()],
+            formulas: BTreeMap::from([(
+                "sum_signal".into(),
+                "signal_table1 + signal_table2".into(),
+            )]),
+            append_name: "combined_metrics".into(),
+        })?;
+
+        assert_eq!(result.outputs.len(), 1);
+        let table = read_table(&result.outputs[0].output_path)?;
+        let sum_idx = table.header_index("sum_signal")?;
+        assert_eq!(table.rows[0][sum_idx].as_i64(), Some(5));
+        assert!(result.outputs[0]
+            .equations_path
+            .ends_with("demo_equations_combined_metrics.ini"));
+        Ok(())
+    }
+
+    #[test]
+    fn combines_channels_and_broadcasts_2d_segmentation_over_z() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack_u16(&images.join("demo_ch1.tif"), &[10, 20])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,2\n",
+        )?;
+        save_mask_data(
+            &images.join("demo_segm_cells.npz"),
+            &MaskData {
+                values: ndarray::Array2::from_shape_vec((2, 2), vec![0, 1, 1, 0])?.into_dyn(),
+                layout: SegmentationLayout::YX,
+                source_path: images.join("demo_segm_cells.npz"),
+            },
+        )?;
+        let recipe_path = temp.path().join("recipe.json");
+        fs::write(
+            &recipe_path,
+            serde_json::to_vec_pretty(&json!({
+                "1": {
+                    "name": "img",
+                    "channel": "ch1",
+                    "binarize": "No",
+                    "min_val": 0.0,
+                    "max_val": 1.0
+                },
+                "2": {
+                    "name": "mask",
+                    "channel": "segm_cells",
+                    "binarize": "binarize",
+                    "min_val": 0.0,
+                    "max_val": 1.0
+                },
+                "formula": "mask",
+                "keep_input_data_type": true,
+                "save_as_segm": true
+            }))?,
+        )?;
+
+        let result = combine_channels(CombineChannelsConfig {
+            position_dir: Some(position),
+            experiment_dir: None,
+            recipe_path,
+            append_name: "combined".into(),
+        })?;
+
+        let output = &result.output_paths[0];
+        let loaded = load_mask_data(
+            output,
+            Some(&MaskPathResolution {
+                size_t: Some(1),
+                size_z: Some(2),
+                layout: Some(SegmentationLayout::ZYX),
+            }),
+        )?;
+        assert_eq!(loaded.layout, SegmentationLayout::ZYX);
+        assert_eq!(loaded.values.shape(), &[2, 2, 2]);
+        let values = loaded.values.iter().copied().collect::<Vec<_>>();
+        assert_eq!(values, vec![0, 1, 1, 0, 0, 1, 1, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn combines_channels_into_tiff_and_preserves_integer_dtype() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_planes_u16(
+            &images.join("demo_a.tif"),
+            &[vec![0, 0, 65535, 65535]],
+            2,
+            2,
+        )?;
+        write_test_planes_u16(
+            &images.join("demo_b.tif"),
+            &[vec![0, 65535, 0, 65535]],
+            2,
+            2,
+        )?;
+        let recipe_path = temp.path().join("image_recipe.json");
+        fs::write(
+            &recipe_path,
+            serde_json::to_vec_pretty(&json!({
+                "1": {
+                    "name": "A",
+                    "channel": "a",
+                    "binarize": "No",
+                    "min_val": 0.0,
+                    "max_val": 1.0
+                },
+                "2": {
+                    "name": "B",
+                    "channel": "b",
+                    "binarize": "No",
+                    "min_val": 0.0,
+                    "max_val": 1.0
+                },
+                "formula": "B - A",
+                "keep_input_data_type": true,
+                "save_as_segm": false
+            }))?,
+        )?;
+
+        let result = combine_channels(CombineChannelsConfig {
+            position_dir: Some(position),
+            experiment_dir: None,
+            recipe_path,
+            append_name: "combined".into(),
+        })?;
+
+        let (pixels, shape) = crate::image_io::load_image_stack_as_f32(&result.output_paths[0])?;
+        assert_eq!(shape.frames, 1);
+        assert_eq!(shape.height, 2);
+        assert_eq!(shape.width, 2);
+        assert_eq!(pixels[1], 65535.0);
+        assert_eq!(pixels[2], 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn applies_trackmate_xml_tracking_and_remaps_acdc_output() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        save_mask_data(
+            &images.join("demo_segm.npz"),
+            &MaskData {
+                values: Array3::from_shape_vec(
+                    (2, 2, 2),
+                    vec![
+                        1, 1, 0, 0, //
+                        2, 2, 0, 0, //
+                    ],
+                )?
+                .into_dyn(),
+                layout: SegmentationLayout::TYX,
+                source_path: images.join("demo_segm.npz"),
+            },
+        )?;
+        write_table(
+            &images.join("demo_acdc_output.csv"),
+            &Table {
+                headers: vec![
+                    "frame_i".into(),
+                    "Cell_ID".into(),
+                    "relative_ID".into(),
+                ],
+                rows: vec![vec![
+                    TableValue::Number(1.0),
+                    TableValue::Number(2.0),
+                    TableValue::Number(-1.0),
+                ]],
+            },
+        )?;
+        let xml_path = temp.path().join("tracks.xml");
+        fs::write(
+            &xml_path,
+            r#"<Tracks>
+<particle>
+  <detection t="0" x="0" y="0" z="0"/>
+  <detection t="1" x="0" y="0" z="0"/>
+</particle>
+</Tracks>"#,
+        )?;
+
+        let result = apply_tracking_from_trackmate_xml(ApplyTrackingFromTrackMateXmlConfig {
+            position_dir: position,
+            segm_endname: "segm".into(),
+            xml_path,
+            output_segmentation_path: None,
+            source_acdc_output_path: None,
+            output_acdc_output_path: None,
+            delete_untracked_ids: false,
+        })?;
+
+        assert!(result.primary_path.ends_with("demo_segm_tracked.npz"));
+        let output_acdc = result
+            .secondary_paths
+            .iter()
+            .find(|path| path.ends_with("demo_acdc_output_tracked.csv"))
+            .cloned()
+            .expect("tracked acdc_output path");
+        let table = read_table(&output_acdc)?;
+        assert_eq!(
+            table.rows[0][table.header_index("Cell_ID")?].as_i64(),
+            Some(1)
+        );
         Ok(())
     }
 
@@ -2232,6 +3657,30 @@ mod tests {
             row.insert(key.to_string(), value.0);
         }
         row
+    }
+
+    fn write_test_stack_u16(path: &Path, frame_values: &[u16]) -> Result<()> {
+        let file = File::create(path)?;
+        let mut encoder = TiffEncoder::new(file)?;
+        for value in frame_values {
+            let data = vec![*value; 4];
+            encoder.write_image::<colortype::Gray16>(2, 2, &data)?;
+        }
+        Ok(())
+    }
+
+    fn write_test_planes_u16(
+        path: &Path,
+        planes: &[Vec<u16>],
+        width: usize,
+        height: usize,
+    ) -> Result<()> {
+        let file = File::create(path)?;
+        let mut encoder = TiffEncoder::new(file)?;
+        for plane in planes {
+            encoder.write_image::<colortype::Gray16>(width as u32, height as u32, plane)?;
+        }
+        Ok(())
     }
 
     struct RowValue(TableValue);
