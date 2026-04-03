@@ -64,7 +64,11 @@ pub fn load_npz_archive_arrays_as_f32(path: &Path) -> Result<Vec<NamedArrayF32>>
     for name in names {
         let shape = read_npz_shape(path, &name)?;
         let values = read_npz_pixels(path, &name)?;
-        arrays.push(NamedArrayF32 { name, values, shape });
+        arrays.push(NamedArrayF32 {
+            name,
+            values,
+            shape,
+        });
     }
     Ok(arrays)
 }
@@ -161,7 +165,10 @@ fn load_tiff_stack_as_u32(path: &Path) -> Result<(Vec<u32>, StackShape)> {
     Ok((pixels, shape))
 }
 
-fn read_tiff_page_as_f32(decoder: &mut Decoder<File>, path: &Path) -> Result<(Vec<f32>, StackShape)> {
+fn read_tiff_page_as_f32(
+    decoder: &mut Decoder<File>,
+    path: &Path,
+) -> Result<(Vec<f32>, StackShape)> {
     let (width, height) = read_tiff_page_shape(decoder, path)?;
     let page_pixels = match decoder
         .read_image()
@@ -195,7 +202,10 @@ fn read_tiff_page_as_f32(decoder: &mut Decoder<File>, path: &Path) -> Result<(Ve
     ))
 }
 
-fn read_tiff_page_as_u32(decoder: &mut Decoder<File>, path: &Path) -> Result<(Vec<u32>, StackShape)> {
+fn read_tiff_page_as_u32(
+    decoder: &mut Decoder<File>,
+    path: &Path,
+) -> Result<(Vec<u32>, StackShape)> {
     let (width, height) = read_tiff_page_shape(decoder, path)?;
     let page_pixels = match decoder
         .read_image()
@@ -251,7 +261,12 @@ fn read_tiff_page_shape(decoder: &mut Decoder<File>, path: &Path) -> Result<(usi
     Ok((dimensions.0 as usize, dimensions.1 as usize))
 }
 
-fn validate_tiff_page_len(path: &Path, width: usize, height: usize, actual_len: usize) -> Result<()> {
+fn validate_tiff_page_len(
+    path: &Path,
+    width: usize,
+    height: usize,
+    actual_len: usize,
+) -> Result<()> {
     if actual_len != width * height {
         bail!(
             "Unexpected pixel count in {}: got {}, expected {}",
@@ -529,13 +544,29 @@ fn load_h5_stack_as_u32(path: &Path) -> Result<(Vec<u32>, StackShape)> {
     let pixels = dataset
         .read_array::<u32>()
         .map(|values| values.into_iter().collect::<Vec<_>>())
-        .or_else(|_| dataset.read_array::<u16>().map(|values| values.into_iter().map(|v| v as u32).collect()))
-        .or_else(|_| dataset.read_array::<u8>().map(|values| values.into_iter().map(|v| v as u32).collect()))
+        .or_else(|_| {
+            dataset
+                .read_array::<u16>()
+                .map(|values| values.into_iter().map(|v| v as u32).collect())
+        })
+        .or_else(|_| {
+            dataset
+                .read_array::<u8>()
+                .map(|values| values.into_iter().map(|v| v as u32).collect())
+        })
         .or_else(|_| try_h5_array!(i32))
         .or_else(|_| try_h5_array!(i16))
         .or_else(|_| try_h5_array!(i8))
-        .or_else(|_| dataset.read_array::<f32>().map(|values| values.into_iter().map(|v| v.max(0.0) as u32).collect()))
-        .or_else(|_| dataset.read_array::<f64>().map(|values| values.into_iter().map(|v| v.max(0.0) as u32).collect()))
+        .or_else(|_| {
+            dataset
+                .read_array::<f32>()
+                .map(|values| values.into_iter().map(|v| v.max(0.0) as u32).collect())
+        })
+        .or_else(|_| {
+            dataset
+                .read_array::<f64>()
+                .map(|values| values.into_iter().map(|v| v.max(0.0) as u32).collect())
+        })
         .with_context(|| format!("Unsupported H5 dataset type in {}", path.display()))?;
 
     Ok((pixels, shape))

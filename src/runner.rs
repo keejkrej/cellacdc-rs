@@ -592,14 +592,22 @@ mod tests {
         let headers = reader.headers()?.clone();
         assert_eq!(
             headers.iter().take(5).collect::<Vec<_>>(),
-            vec!["frame_i", "time_seconds", "time_minutes", "time_hours", "Cell_ID"]
+            vec![
+                "frame_i",
+                "time_seconds",
+                "time_minutes",
+                "time_hours",
+                "Cell_ID"
+            ]
         );
 
         let frame_i = header_index(&headers, "frame_i");
         let time_seconds = header_index(&headers, "time_seconds");
         let time_minutes = header_index(&headers, "time_minutes");
         let cell_id = header_index(&headers, "Cell_ID");
-        let rows = reader.records().collect::<std::result::Result<Vec<_>, _>>()?;
+        let rows = reader
+            .records()
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().any(|row| {
@@ -707,7 +715,9 @@ mod tests {
         let frame_i = header_index(&headers, "frame_i");
         let cell_id = header_index(&headers, "Cell_ID");
         let disappears_before_end = header_index(&headers, "disappears_before_end");
-        let rows = reader.records().collect::<std::result::Result<Vec<_>, _>>()?;
+        let rows = reader
+            .records()
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         assert_eq!(rows.len(), 4);
         assert!(rows.iter().any(|row| {

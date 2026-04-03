@@ -346,7 +346,11 @@ fn longest_common_prefix(left: &str, right: &str) -> String {
     out
 }
 
-fn discover_channels(images_dir: &Path, files: &[PathBuf], basename: &str) -> Result<Vec<ChannelSpec>> {
+fn discover_channels(
+    images_dir: &Path,
+    files: &[PathBuf],
+    basename: &str,
+) -> Result<Vec<ChannelSpec>> {
     let mut candidates = BTreeMap::<String, (usize, PathBuf)>::new();
 
     for path in files {
@@ -441,11 +445,7 @@ fn channel_image_path(channels: &[ChannelSpec], channel_name: &str) -> Result<Pa
         .iter()
         .find(|channel| channel.name == channel_name)
         .map(|channel| channel.image_path.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No supported file found for channel \"{channel_name}\""
-            )
-        })
+        .ok_or_else(|| anyhow::anyhow!("No supported file found for channel \"{channel_name}\""))
 }
 
 #[cfg(test)]
@@ -561,7 +561,11 @@ mod tests {
 
         let spec = resolve_position(&position, "phase", "gfp")?;
         assert_eq!(spec.channels.len(), 3);
-        let gfp = spec.channels.iter().find(|channel| channel.name == "gfp").unwrap();
+        let gfp = spec
+            .channels
+            .iter()
+            .find(|channel| channel.name == "gfp")
+            .unwrap();
         assert!(gfp
             .background_data_path
             .as_ref()

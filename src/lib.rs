@@ -1,17 +1,24 @@
 mod image_io;
 mod layout;
+mod mask_io;
 mod measure;
 #[cfg(test)]
 mod measurements;
 mod metadata;
 mod model;
 mod runner;
+mod tabular;
 mod tracking;
+mod utilities;
 
 pub use layout::{
     discover_experiment, discover_measurement_experiment, resolve_measurement_position,
     resolve_position, ChannelSpec, ExperimentSpec, MeasurementExperimentSpec,
     MeasurementPositionSpec, PositionSpec,
+};
+pub use mask_io::{
+    load_mask_data, save_mask_data, MaskData, MaskDimensionality, MaskPathResolution,
+    SegmentationLayout,
 };
 pub use measure::{
     measure_experiment, measure_position, MeasurementExperimentConfig, MeasurementOutputPaths,
@@ -22,4 +29,13 @@ pub use runner::{
     resolve_position_run_config, run_experiment, run_position, ExperimentRunConfig,
     OverwritePolicy, RunOutputPaths, RunResult, SegmentationParams, SegmentationRunConfig,
 };
+pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
 pub use tracking::TrackingConfig;
+pub use utilities::{
+    add_lineage_tree, apply_tracking_from_table, combine_metrics, concat_acdc_outputs,
+    count_objects, fill_holes, filter_segm_from_table, generate_mother_bud_total,
+    ApplyTrackingConfig, CombineMetricsConfig, CombineMetricsResult, ConcatConfig, ConcatResult,
+    CoordinateFilterConfig, CountObjectsConfig, CountObjectsResult, FillHolesConfig,
+    GenerateMotherBudTotalConfig, LineageTreeConfig, ObjectsCountSummary, TrackingColumnMap,
+    UtilityOutputPaths,
+};

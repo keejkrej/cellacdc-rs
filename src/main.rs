@@ -1,11 +1,17 @@
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use cellacdc_rs::{
+    add_lineage_tree, apply_tracking_from_table, combine_metrics, concat_acdc_outputs,
+    count_objects, fill_holes, filter_segm_from_table, generate_mother_bud_total,
     measure_experiment, measure_position, resolve_position, run_experiment, run_position,
-    ExperimentRunConfig, MeasurementExperimentConfig, MeasurementRunConfig, OverwritePolicy,
-    SegmentationParams, SegmentationRunConfig, TrackingConfig,
+    ApplyTrackingConfig, CombineMetricsConfig, ConcatConfig, CoordinateFilterConfig,
+    CountObjectsConfig, ExperimentRunConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
+    LineageTreeConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
+    OverwritePolicy, SegmentationLayout, SegmentationParams, SegmentationRunConfig, TableFormat,
+    TrackingColumnMap, TrackingConfig,
 };
 
 #[derive(Debug, Parser)]
@@ -22,6 +28,14 @@ enum Command {
     RunExperiment(RunExperimentArgs),
     MeasurePosition(MeasurePositionArgs),
     MeasureExperiment(MeasureExperimentArgs),
+    ConcatAcdcOutput(ConcatAcdcOutputArgs),
+    CombineMetrics(CombineMetricsArgs),
+    CountObjects(CountObjectsArgs),
+    FillHoles(FillHolesArgs),
+    FilterSegmFromTable(FilterSegmFromTableArgs),
+    ApplyTrackingFromTable(ApplyTrackingFromTableArgs),
+    AddLineageTree(AddLineageTreeArgs),
+    GenerateMotherBudTotal(GenerateMotherBudTotalArgs),
 }
 
 #[derive(Debug, Args)]
@@ -92,6 +106,158 @@ struct MeasureExperimentArgs {
     overwrite: bool,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TableFormatArg {
+    Csv,
+    Xlsx,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum LayoutArg {
+    Yx,
+    Tyx,
+    Zyx,
+    Tzyx,
+}
+
+#[derive(Debug, Args)]
+struct MaskResolutionArgs {
+    #[arg(long)]
+    size_t: Option<usize>,
+    #[arg(long)]
+    size_z: Option<usize>,
+    #[arg(long, value_enum)]
+    layout: Option<LayoutArg>,
+}
+
+#[derive(Debug, Args)]
+struct ConcatAcdcOutputArgs {
+    #[arg(long = "experiment", required = true)]
+    experiments: Vec<PathBuf>,
+    #[arg(long, default_value = "acdc_output")]
+    table_endname: String,
+    #[arg(long, value_enum, default_value_t = TableFormatArg::Csv)]
+    format: TableFormatArg,
+    #[arg(long = "column")]
+    columns: Vec<String>,
+    #[arg(long)]
+    output_name: Option<String>,
+    #[arg(long)]
+    multi_experiment_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct CombineMetricsArgs {
+    #[arg(long = "source", required = true)]
+    sources: Vec<PathBuf>,
+    #[arg(long = "formula", required = true)]
+    formulas: Vec<String>,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    equations: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct CountObjectsArgs {
+    #[arg(long)]
+    segmentation: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[command(flatten)]
+    resolution: MaskResolutionArgs,
+}
+
+#[derive(Debug, Args)]
+struct FillHolesArgs {
+    #[arg(long)]
+    segmentation: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[command(flatten)]
+    resolution: MaskResolutionArgs,
+}
+
+#[derive(Debug, Args)]
+struct FilterSegmFromTableArgs {
+    #[arg(long)]
+    segmentation: PathBuf,
+    #[arg(long)]
+    table: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    x_col: String,
+    #[arg(long)]
+    y_col: String,
+    #[arg(long)]
+    z_col: Option<String>,
+    #[arg(long)]
+    frame_col: Option<String>,
+    #[arg(long)]
+    position_col: Option<String>,
+    #[arg(long)]
+    position_value: Option<String>,
+    #[command(flatten)]
+    resolution: MaskResolutionArgs,
+}
+
+#[derive(Debug, Args)]
+struct ApplyTrackingFromTableArgs {
+    #[arg(long)]
+    segmentation: PathBuf,
+    #[arg(long)]
+    table: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    frame_index_col: String,
+    #[arg(long)]
+    track_ids_col: String,
+    #[arg(long)]
+    mask_ids_col: Option<String>,
+    #[arg(long)]
+    x_centroid_col: Option<String>,
+    #[arg(long)]
+    y_centroid_col: Option<String>,
+    #[arg(long)]
+    z_centroid_col: Option<String>,
+    #[arg(long)]
+    first_frame_one: bool,
+    #[arg(long)]
+    delete_untracked_ids: bool,
+    #[arg(long)]
+    source_acdc_output: Option<PathBuf>,
+    #[arg(long)]
+    output_acdc_output: Option<PathBuf>,
+    #[command(flatten)]
+    resolution: MaskResolutionArgs,
+}
+
+#[derive(Debug, Args)]
+struct AddLineageTreeArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct GenerateMotherBudTotalArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long = "column-operation", required = true)]
+    column_operations: Vec<String>,
+    #[arg(long = "grouping-column")]
+    grouping_columns: Vec<String>,
+    #[arg(long, default_value = "entity")]
+    entity_colname: String,
+    #[arg(long)]
+    selected_columns_only: bool,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -99,6 +265,14 @@ fn main() -> Result<()> {
         Command::RunExperiment(args) => run_experiment_command(args),
         Command::MeasurePosition(args) => measure_position_command(args),
         Command::MeasureExperiment(args) => measure_experiment_command(args),
+        Command::ConcatAcdcOutput(args) => concat_acdc_output_command(args),
+        Command::CombineMetrics(args) => combine_metrics_command(args),
+        Command::CountObjects(args) => count_objects_command(args),
+        Command::FillHoles(args) => fill_holes_command(args),
+        Command::FilterSegmFromTable(args) => filter_segm_from_table_command(args),
+        Command::ApplyTrackingFromTable(args) => apply_tracking_from_table_command(args),
+        Command::AddLineageTree(args) => add_lineage_tree_command(args),
+        Command::GenerateMotherBudTotal(args) => generate_mother_bud_total_command(args),
     }
 }
 
@@ -189,6 +363,143 @@ fn measure_experiment_command(args: MeasureExperimentArgs) -> Result<()> {
     Ok(())
 }
 
+fn concat_acdc_output_command(args: ConcatAcdcOutputArgs) -> Result<()> {
+    let result = concat_acdc_outputs(ConcatConfig {
+        experiment_dirs: args.experiments,
+        table_endname: args.table_endname,
+        output_format: args.format.into(),
+        selected_columns: (!args.columns.is_empty()).then_some(args.columns),
+        output_name: args.output_name,
+        multi_experiment_dir: args.multi_experiment_dir,
+    })?;
+    println!(
+        "Wrote {} all-position table(s)",
+        result.all_position_outputs.len()
+    );
+    for path in result.all_position_outputs {
+        println!("{}", path.display());
+    }
+    if let Some(path) = result.multi_experiment_output {
+        println!("Multi-experiment output: {}", path.display());
+    }
+    Ok(())
+}
+
+fn combine_metrics_command(args: CombineMetricsArgs) -> Result<()> {
+    let result = combine_metrics(CombineMetricsConfig {
+        source_paths: args.sources,
+        formulas: parse_assignments(args.formulas, "formula")?,
+        output_path: args.output,
+        equations_path: args.equations,
+    })?;
+    println!(
+        "Wrote combined metrics to {} and equations to {}",
+        result.output_path.display(),
+        result.equations_path.display()
+    );
+    Ok(())
+}
+
+fn count_objects_command(args: CountObjectsArgs) -> Result<()> {
+    let result = count_objects(CountObjectsConfig {
+        segmentation_path: args.segmentation,
+        output_path: args.output,
+        resolution: Some(args.resolution.into()),
+    })?;
+    println!(
+        "Wrote object counts to {}",
+        result.summary.output_path.display()
+    );
+    Ok(())
+}
+
+fn fill_holes_command(args: FillHolesArgs) -> Result<()> {
+    let result = fill_holes(FillHolesConfig {
+        segmentation_path: args.segmentation,
+        output_path: args.output,
+        resolution: Some(args.resolution.into()),
+    })?;
+    println!(
+        "Wrote filled segmentation to {}",
+        result.primary_path.display()
+    );
+    Ok(())
+}
+
+fn filter_segm_from_table_command(args: FilterSegmFromTableArgs) -> Result<()> {
+    let result = filter_segm_from_table(CoordinateFilterConfig {
+        segmentation_path: args.segmentation,
+        coords_table_path: args.table,
+        output_path: args.output,
+        x_col: args.x_col,
+        y_col: args.y_col,
+        z_col: args.z_col,
+        frame_col: args.frame_col,
+        position_col: args.position_col,
+        position_value: args.position_value,
+        resolution: Some(args.resolution.into()),
+    })?;
+    println!(
+        "Wrote filtered segmentation to {}",
+        result.primary_path.display()
+    );
+    Ok(())
+}
+
+fn apply_tracking_from_table_command(args: ApplyTrackingFromTableArgs) -> Result<()> {
+    let result = apply_tracking_from_table(ApplyTrackingConfig {
+        segmentation_path: args.segmentation,
+        tracking_table_path: args.table,
+        output_path: args.output,
+        columns: TrackingColumnMap {
+            frame_index_col: args.frame_index_col,
+            is_first_frame_one: args.first_frame_one,
+            track_ids_col: args.track_ids_col,
+            mask_ids_col: args.mask_ids_col,
+            x_centroid_col: args.x_centroid_col,
+            y_centroid_col: args.y_centroid_col,
+            z_centroid_col: args.z_centroid_col,
+            delete_untracked_ids: args.delete_untracked_ids,
+        },
+        resolution: Some(args.resolution.into()),
+        source_acdc_output_path: args.source_acdc_output,
+        output_acdc_output_path: args.output_acdc_output,
+    })?;
+    println!(
+        "Wrote tracked segmentation to {}",
+        result.primary_path.display()
+    );
+    for path in result.secondary_paths {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
+fn add_lineage_tree_command(args: AddLineageTreeArgs) -> Result<()> {
+    let result = add_lineage_tree(LineageTreeConfig {
+        input_path: args.input,
+        output_path: args.output,
+    })?;
+    println!("Wrote lineage table to {}", result.primary_path.display());
+    Ok(())
+}
+
+fn generate_mother_bud_total_command(args: GenerateMotherBudTotalArgs) -> Result<()> {
+    let result = generate_mother_bud_total(GenerateMotherBudTotalConfig {
+        input_path: args.input,
+        output_path: args.output,
+        column_operation_mapper: parse_assignments(args.column_operations, "column-operation")?,
+        copy_all_nonselected_columns: !args.selected_columns_only,
+        grouping_columns: args.grouping_columns,
+        entity_colname: args.entity_colname,
+    })?;
+    println!(
+        "Wrote mother-bud-total table to {}",
+        result.primary_path.display()
+    );
+    Ok(())
+}
+
 fn overwrite_policy(overwrite: bool) -> OverwritePolicy {
     if overwrite {
         OverwritePolicy::Overwrite
@@ -214,4 +525,45 @@ impl CommonArgs {
             min_overlap_px: self.track_min_overlap_px,
         })
     }
+}
+
+impl From<TableFormatArg> for TableFormat {
+    fn from(value: TableFormatArg) -> Self {
+        match value {
+            TableFormatArg::Csv => TableFormat::Csv,
+            TableFormatArg::Xlsx => TableFormat::Xlsx,
+        }
+    }
+}
+
+impl From<LayoutArg> for SegmentationLayout {
+    fn from(value: LayoutArg) -> Self {
+        match value {
+            LayoutArg::Yx => SegmentationLayout::YX,
+            LayoutArg::Tyx => SegmentationLayout::TYX,
+            LayoutArg::Zyx => SegmentationLayout::ZYX,
+            LayoutArg::Tzyx => SegmentationLayout::TZYX,
+        }
+    }
+}
+
+impl From<MaskResolutionArgs> for MaskPathResolution {
+    fn from(value: MaskResolutionArgs) -> Self {
+        Self {
+            size_t: value.size_t,
+            size_z: value.size_z,
+            layout: value.layout.map(Into::into),
+        }
+    }
+}
+
+fn parse_assignments(items: Vec<String>, flag_name: &str) -> Result<BTreeMap<String, String>> {
+    let mut parsed = BTreeMap::new();
+    for item in items {
+        let Some((name, expression)) = item.split_once('=') else {
+            anyhow::bail!("Invalid --{flag_name} value {item:?}. Expected NAME=EXPRESSION.");
+        };
+        parsed.insert(name.trim().to_string(), expression.trim().to_string());
+    }
+    Ok(parsed)
 }

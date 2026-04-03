@@ -52,7 +52,9 @@ pub(crate) struct LoadedMeasurementPosition {
     pub mask_shape: StackShape,
 }
 
-pub(crate) fn measurement_position_from_position(position: &PositionSpec) -> MeasurementPositionSpec {
+pub(crate) fn measurement_position_from_position(
+    position: &PositionSpec,
+) -> MeasurementPositionSpec {
     MeasurementPositionSpec {
         position_dir: position.position_dir.clone(),
         images_dir: position.images_dir.clone(),
@@ -209,7 +211,9 @@ pub fn measure_position(config: MeasurementRunConfig) -> Result<MeasurementRunRe
     write_measurements(&loaded)
 }
 
-pub fn measure_experiment(config: MeasurementExperimentConfig) -> Result<Vec<MeasurementRunResult>> {
+pub fn measure_experiment(
+    config: MeasurementExperimentConfig,
+) -> Result<Vec<MeasurementRunResult>> {
     let experiment = discover_measurement_experiment(&config.experiment_dir)?;
     measure_experiment_from_spec(config, experiment)
 }
@@ -239,12 +243,13 @@ pub(crate) fn load_measurement_inputs(
     segm_endname: Option<&str>,
 ) -> Result<LoadedMeasurementPosition> {
     let outputs = measurement_output_paths(&spec.images_dir, &spec.basename, segm_endname);
-    let (mask_values, mask_shape) = load_mask_stack_as_u32(&outputs.segm_npz_path).with_context(|| {
-        format!(
-            "Failed to load segmentation masks from {}",
-            outputs.segm_npz_path.display()
-        )
-    })?;
+    let (mask_values, mask_shape) =
+        load_mask_stack_as_u32(&outputs.segm_npz_path).with_context(|| {
+            format!(
+                "Failed to load segmentation masks from {}",
+                outputs.segm_npz_path.display()
+            )
+        })?;
 
     if mask_shape.frames != spec.size_t {
         bail!(
@@ -263,13 +268,12 @@ pub(crate) fn load_measurement_inputs(
     })
 }
 
-pub(crate) fn write_measurements(loaded: &LoadedMeasurementPosition) -> Result<MeasurementRunResult> {
+pub(crate) fn write_measurements(
+    loaded: &LoadedMeasurementPosition,
+) -> Result<MeasurementRunResult> {
     let channels = load_channels(&loaded.spec, loaded.mask_shape)?;
     let roi_mask = load_data_prep_roi_mask(
-        loaded
-            .spec
-            .data_prep_background_rois_path
-            .as_deref(),
+        loaded.spec.data_prep_background_rois_path.as_deref(),
         loaded.mask_shape.height,
         loaded.mask_shape.width,
     )?;
@@ -281,7 +285,11 @@ pub(crate) fn write_measurements(loaded: &LoadedMeasurementPosition) -> Result<M
 
     for frame_i in 0..loaded.mask_shape.frames {
         let mask_frame = &loaded.mask_values[frame_i * frame_len..(frame_i + 1) * frame_len];
-        let regions = extract_regions(mask_frame, loaded.mask_shape.height, loaded.mask_shape.width);
+        let regions = extract_regions(
+            mask_frame,
+            loaded.mask_shape.height,
+            loaded.mask_shape.width,
+        );
         let current_centroids = regions
             .iter()
             .map(|region| (region.label, (region.centroid_x, region.centroid_y)))
@@ -305,9 +313,9 @@ pub(crate) fn write_measurements(loaded: &LoadedMeasurementPosition) -> Result<M
             insert_regionprop_values(&mut dynamic_values, &region_measurements);
 
             for channel in &channels {
-                let channel_frame =
-                    &channel.values[frame_i * frame_len..(frame_i + 1) * frame_len];
-                let object_values = collect_object_values(channel_frame, &region.pixels, loaded.mask_shape.width);
+                let channel_frame = &channel.values[frame_i * frame_len..(frame_i + 1) * frame_len];
+                let object_values =
+                    collect_object_values(channel_frame, &region.pixels, loaded.mask_shape.width);
                 let auto_background = collect_masked_values(
                     channel_frame,
                     auto_background_masks
@@ -335,7 +343,9 @@ pub(crate) fn write_measurements(loaded: &LoadedMeasurementPosition) -> Result<M
 
             let previous_centroid = previous_centroids.get(&region.label).copied();
             let velocity_pixel = previous_centroid
-                .map(|(prev_x, prev_y)| distance(prev_x, prev_y, region.centroid_x, region.centroid_y))
+                .map(|(prev_x, prev_y)| {
+                    distance(prev_x, prev_y, region.centroid_x, region.centroid_y)
+                })
                 .unwrap_or(f64::NAN);
             let velocity_um = previous_centroid
                 .map(|(prev_x, prev_y)| {
@@ -406,11 +416,17 @@ fn measurement_output_paths(
     }
 }
 
-fn load_channels(spec: &MeasurementPositionSpec, mask_shape: StackShape) -> Result<Vec<LoadedChannelData>> {
+fn load_channels(
+    spec: &MeasurementPositionSpec,
+    mask_shape: StackShape,
+) -> Result<Vec<LoadedChannelData>> {
     let mut channels = Vec::with_capacity(spec.channels.len());
     for channel in &spec.channels {
         let (values, shape) = load_image_stack_as_f32(&channel.image_path).with_context(|| {
-            format!("Failed to load channel image {}", channel.image_path.display())
+            format!(
+                "Failed to load channel image {}",
+                channel.image_path.display()
+            )
         })?;
         if shape != mask_shape {
             bail!(
@@ -457,10 +473,16 @@ fn load_data_prep_roi_mask(
         return Ok(None);
     };
     for item in items {
-        let Some((x, y)) = parse_pair(item.get("pos").or_else(|| item.get("state").and_then(|v| v.get("pos")))) else {
+        let Some((x, y)) = parse_pair(
+            item.get("pos")
+                .or_else(|| item.get("state").and_then(|v| v.get("pos"))),
+        ) else {
             continue;
         };
-        let Some((w, h)) = parse_pair(item.get("size").or_else(|| item.get("state").and_then(|v| v.get("size")))) else {
+        let Some((w, h)) = parse_pair(
+            item.get("size")
+                .or_else(|| item.get("state").and_then(|v| v.get("size"))),
+        ) else {
             continue;
         };
         let x0 = x.round().max(0.0) as usize;
@@ -601,7 +623,11 @@ fn insert_channel_measurements(
     let auto_q25 = quantile_f32(auto_background, 0.25);
     let auto_q95 = quantile_f32(auto_background, 0.95);
     let auto_q05 = quantile_f32(auto_background, 0.05);
-    insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_median"), auto_median);
+    insert_value(
+        out,
+        &format!("{prefix}autoBkgr_bkgrVal_median"),
+        auto_median,
+    );
     insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_mean"), auto_mean);
     insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_q75"), auto_q75);
     insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_q25"), auto_q25);
@@ -631,8 +657,16 @@ fn insert_channel_measurements(
     let data_q25 = quantile_f32(data_values, 0.25);
     let data_q95 = quantile_f32(data_values, 0.95);
     let data_q05 = quantile_f32(data_values, 0.05);
-    insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_median"), data_median);
-    insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_mean"), data_mean);
+    insert_value(
+        out,
+        &format!("{prefix}dataPrepBkgr_bkgrVal_median"),
+        data_median,
+    );
+    insert_value(
+        out,
+        &format!("{prefix}dataPrepBkgr_bkgrVal_mean"),
+        data_mean,
+    );
     insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_q75"), data_q75);
     insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_q25"), data_q25);
     insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_q95"), data_q95);
@@ -749,7 +783,8 @@ fn compute_region_measurements(region: &FrameRegion) -> RegionMeasurements {
     }
 
     let perimeter = perimeter_length(&local_mask, bbox_height, bbox_width);
-    let (components, holes, hole_area) = component_and_hole_stats(&local_mask, bbox_height, bbox_width);
+    let (components, holes, hole_area) =
+        component_and_hole_stats(&local_mask, bbox_height, bbox_width);
     let filled_area = (region.area + hole_area) as f64;
 
     let points = pixel_square_corners(&region.pixels);
@@ -891,7 +926,13 @@ fn inertia_metrics(region: &FrameRegion) -> (f64, f64, f64, f64, f64) {
     let major_axis_length = 4.0 * eig0.sqrt();
     let minor_axis_length = 4.0 * eig1.sqrt();
     let orientation = 0.5 * (2.0 * cov_xy).atan2(cov_xx - cov_yy);
-    (eig0, eig1, major_axis_length, minor_axis_length, orientation)
+    (
+        eig0,
+        eig1,
+        major_axis_length,
+        minor_axis_length,
+        orientation,
+    )
 }
 
 fn perimeter_length(mask: &[bool], height: usize, width: usize) -> f64 {
@@ -1084,7 +1125,8 @@ fn max_pair_distance(points: &[(f64, f64)]) -> f64 {
     let mut max_distance: f64 = 0.0;
     for i in 0..points.len() {
         for j in i + 1..points.len() {
-            max_distance = max_distance.max(distance(points[i].0, points[i].1, points[j].0, points[j].1));
+            max_distance =
+                max_distance.max(distance(points[i].0, points[i].1, points[j].0, points[j].1));
         }
     }
     max_distance
@@ -1274,8 +1316,8 @@ mod tests {
     use ndarray::Array3;
     use ndarray_npy::NpzWriter;
     use std::fs::File;
-    use tiff::encoder::{colortype, TiffEncoder};
     use tempfile::tempdir;
+    use tiff::encoder::{colortype, TiffEncoder};
 
     #[test]
     fn measures_position_from_existing_segmentation() -> Result<()> {
@@ -1291,13 +1333,7 @@ mod tests {
         write_mask_npz(
             &images.join("demo_segm.npz"),
             &[
-                1, 1, 0, 0,
-                1, 1, 0, 0,
-                0, 0, 2, 2,
-                0, 0, 2, 2,
-                1, 1, 0, 0,
-                1, 1, 0, 0,
-                0, 0, 0, 0,
+                1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 2, 2, 0, 0, 2, 2, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0,
             ],
             2,
@@ -1325,7 +1361,10 @@ mod tests {
         let images = temp.path().join("Position_1").join("Images");
         fs::create_dir_all(&images)?;
         write_test_stack(&images.join("demo_phase.tif"), &[10])?;
-        fs::write(images.join("demo_metadata.csv"), "Description,values\nbasename,demo_\n")?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\n",
+        )?;
         write_mask_npz(
             &images.join("demo_segm.npz"),
             &[
