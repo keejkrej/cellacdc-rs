@@ -29,6 +29,7 @@ pub fn rows_from_mask(
     height: usize,
     width: usize,
     frame_i: usize,
+    time_seconds: f64,
 ) -> Vec<MeasurementRow> {
     let mut accumulators = BTreeMap::<u32, RegionAccumulator>::new();
 
@@ -50,7 +51,7 @@ pub fn rows_from_mask(
         .map(|(cell_id, region)| MeasurementRow {
             frame_i,
             cell_id,
-            time_seconds: 0.0,
+            time_seconds,
             is_cell_dead: 0,
             is_cell_excluded: 0,
             was_manually_edited: 0,
@@ -104,10 +105,11 @@ mod tests {
             0, 0, 2, //
             2, 2, 2, //
         ];
-        let rows = rows_from_mask(&mask, 3, 3, 0);
+        let rows = rows_from_mask(&mask, 3, 3, 0, 12.0);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].cell_id, 1);
         assert_eq!(rows[0].cell_area_pxl, 2);
+        assert_eq!(rows[0].time_seconds, 12.0);
         assert_eq!(rows[1].cell_id, 2);
         assert_eq!(rows[1].cell_area_pxl, 4);
     }

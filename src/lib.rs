@@ -1,6 +1,7 @@
 mod image_io;
 mod layout;
 mod measurements;
+mod metadata;
 mod model;
 mod runner;
 

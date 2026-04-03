@@ -88,7 +88,8 @@ fn run_position_command(args: RunPositionArgs) -> Result<()> {
     };
     let result = run_position(config)?;
     println!(
-        "Segmented {} and wrote {} / {}",
+        "Segmented {} frame(s) in {} and wrote {} / {}",
+        result.frames_processed,
         result.position_dir.display(),
         result.outputs.segm_npz_path.display(),
         result.outputs.acdc_output_csv_path.display()
@@ -112,8 +113,9 @@ fn run_experiment_command(args: RunExperimentArgs) -> Result<()> {
     println!("Segmented {} positions", results.len());
     for result in results {
         println!(
-            "{} -> {}",
+            "{} ({} frame(s)) -> {}",
             result.position_dir.display(),
+            result.frames_processed,
             result.outputs.segm_npz_path.display()
         );
     }

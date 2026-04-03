@@ -2,9 +2,10 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::image_io::{ensure_metadata_file, load_tiff_as_f32, write_mask_npz};
+use crate::image_io::{load_tiff_stack_as_f32, write_mask_npz};
 use crate::layout::{discover_experiment, resolve_position, ExperimentSpec, PositionSpec};
 use crate::measurements::{rows_from_mask, write_acdc_output_csv};
+use crate::metadata::ensure_position_metadata;
 use crate::model::{CellposeModel, Segmenter};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +70,7 @@ pub struct RunResult {
     pub images_dir: PathBuf,
     pub outputs: RunOutputPaths,
     pub labels_found: u32,
+    pub frames_processed: usize,
 }
 
 pub fn run_position(config: SegmentationRunConfig) -> Result<RunResult> {
@@ -110,28 +112,39 @@ pub fn run_position_with_segmenter(
     config: SegmentationRunConfig,
     segmenter: &mut impl Segmenter,
 ) -> Result<RunResult> {
-    let (phase, height, width) =
-        load_tiff_as_f32(&config.position.phase_image).with_context(|| {
+    let (phase, phase_shape) =
+        load_tiff_stack_as_f32(&config.position.phase_image).with_context(|| {
             format!(
                 "Failed to load phase image {}",
                 config.position.phase_image.display()
             )
         })?;
-    let (fluo, fluo_height, fluo_width) = load_tiff_as_f32(&config.position.fluo_image)
-        .with_context(|| {
+    let (fluo, fluo_shape) =
+        load_tiff_stack_as_f32(&config.position.fluo_image).with_context(|| {
             format!(
                 "Failed to load fluorescence image {}",
                 config.position.fluo_image.display()
             )
         })?;
 
-    if (height, width) != (fluo_height, fluo_width) {
+    if phase_shape != fluo_shape {
         bail!(
-            "Input image size mismatch: phase is {}x{}, fluorescence is {}x{}",
-            width,
-            height,
-            fluo_width,
-            fluo_height
+            "Input image stack mismatch: phase is {} frame(s) of {}x{}, fluorescence is {} frame(s) of {}x{}",
+            phase_shape.frames,
+            phase_shape.width,
+            phase_shape.height,
+            fluo_shape.frames,
+            fluo_shape.width,
+            fluo_shape.height
+        );
+    }
+
+    if config.position.size_t != phase_shape.frames {
+        bail!(
+            "Resolved metadata SizeT ({}) does not match TIFF page count ({}) for {}",
+            config.position.size_t,
+            phase_shape.frames,
+            config.position.phase_image.display()
         );
     }
 
@@ -142,13 +155,51 @@ pub fn run_position_with_segmenter(
     );
     guard_outputs(&outputs, config.overwrite_policy)?;
 
-    let masks = segmenter.segment_pair(phase, fluo, height, width, &config.params)?;
-    let labels_found = masks.iter().copied().max().unwrap_or(0);
+    let frame_len = phase_shape.height * phase_shape.width;
+    let mut masks = Vec::with_capacity(phase.len());
+    let mut rows = Vec::new();
+    let mut labels_found = 0;
 
-    ensure_metadata_file(&config.position, height, width)?;
-    write_mask_npz(&outputs.segm_npz_path, &masks, height, width)?;
+    for frame_i in 0..phase_shape.frames {
+        let start = frame_i * frame_len;
+        let end = start + frame_len;
+        let frame_masks = segmenter.segment_pair(
+            phase[start..end].to_vec(),
+            fluo[start..end].to_vec(),
+            phase_shape.height,
+            phase_shape.width,
+            &config.params,
+        )?;
+        labels_found = labels_found.max(frame_masks.iter().copied().max().unwrap_or(0));
+        masks.extend_from_slice(&frame_masks);
+        rows.extend(rows_from_mask(
+            &frame_masks,
+            phase_shape.height,
+            phase_shape.width,
+            frame_i,
+            config.position.time_increment * frame_i as f64,
+        ));
+    }
 
-    let rows = rows_from_mask(&masks, height, width, 0);
+    ensure_position_metadata(
+        config.position.metadata_path.as_deref(),
+        &config.position.images_dir,
+        &config.position.basename,
+        &config.position.phase_channel,
+        &config.position.fluo_channel,
+        phase_shape.frames,
+        phase_shape.height,
+        phase_shape.width,
+        config.position.time_increment,
+    )?;
+    write_mask_npz(
+        &outputs.segm_npz_path,
+        &masks,
+        phase_shape.frames,
+        phase_shape.height,
+        phase_shape.width,
+    )?;
+
     write_acdc_output_csv(&outputs.acdc_output_csv_path, &rows)?;
     write_hyperparams_ini(
         &outputs.segm_hyperparams_ini_path,
@@ -164,6 +215,7 @@ pub fn run_position_with_segmenter(
         images_dir: config.position.images_dir,
         outputs,
         labels_found,
+        frames_processed: phase_shape.frames,
     })
 }
 
@@ -261,11 +313,15 @@ fn write_hyperparams_ini(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageBuffer, Luma};
+    use ndarray::Array3;
+    use ndarray_npy::NpzReader;
+    use std::fs::File;
     use tempfile::tempdir;
+    use tiff::encoder::{colortype, TiffEncoder};
 
     struct FakeSegmenter {
-        mask: Vec<u32>,
+        masks_per_call: Vec<Vec<u32>>,
+        calls: usize,
     }
 
     impl Segmenter for FakeSegmenter {
@@ -277,7 +333,9 @@ mod tests {
             _width: usize,
             _params: &SegmentationParams,
         ) -> Result<Vec<u32>> {
-            Ok(self.mask.clone())
+            let index = self.calls.min(self.masks_per_call.len().saturating_sub(1));
+            self.calls += 1;
+            Ok(self.masks_per_call[index].clone())
         }
     }
 
@@ -301,16 +359,18 @@ mod tests {
         )?;
 
         let mut segmenter = FakeSegmenter {
-            mask: vec![
+            masks_per_call: vec![vec![
                 0, 1, 1, 0, //
                 0, 1, 1, 0, //
                 0, 0, 2, 2, //
                 0, 0, 2, 2, //
-            ],
+            ]],
+            calls: 0,
         };
 
         let result = run_position_with_segmenter(config, &mut segmenter)?;
         assert_eq!(result.labels_found, 2);
+        assert_eq!(result.frames_processed, 1);
         assert!(result.outputs.segm_npz_path.exists());
         assert!(result.outputs.acdc_output_csv_path.exists());
         assert!(result.outputs.segm_hyperparams_ini_path.exists());
@@ -337,7 +397,10 @@ mod tests {
             SegmentationParams::default(),
         )?;
 
-        let mut segmenter = FakeSegmenter { mask: vec![0; 16] };
+        let mut segmenter = FakeSegmenter {
+            masks_per_call: vec![vec![0; 16]],
+            calls: 0,
+        };
         let err = run_position_with_segmenter(config, &mut segmenter).unwrap_err();
         assert!(err.to_string().contains("Refusing to overwrite"));
         Ok(())
@@ -353,7 +416,10 @@ mod tests {
             write_test_tiff(&images.join("demo_fluo.tif"))?;
         }
 
-        let mut segmenter = FakeSegmenter { mask: vec![0; 16] };
+        let mut segmenter = FakeSegmenter {
+            masks_per_call: vec![vec![0; 16]],
+            calls: 0,
+        };
         let results = run_experiment_with_segmenter(
             ExperimentRunConfig {
                 experiment_dir: temp.path().to_path_buf(),
@@ -380,10 +446,108 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn writes_timelapse_outputs_for_multi_page_position() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10, 20, 30])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[15, 25, 35])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,3\nSizeZ,1\nTimeIncrement,30\n",
+        )?;
+
+        let config = resolve_position_run_config(
+            temp.path().join("Position_1"),
+            "phase",
+            "fluo",
+            "unused-model.onnx",
+            None,
+            OverwritePolicy::Refuse,
+            true,
+            SegmentationParams::default(),
+        )?;
+
+        let mut segmenter = FakeSegmenter {
+            masks_per_call: vec![
+                vec![
+                    0, 1, 1, 0, //
+                    0, 1, 1, 0, //
+                    0, 0, 0, 0, //
+                    0, 0, 0, 0, //
+                ],
+                vec![
+                    0, 0, 0, 0, //
+                    0, 2, 2, 0, //
+                    0, 2, 2, 0, //
+                    0, 0, 0, 0, //
+                ],
+                vec![
+                    0, 0, 3, 3, //
+                    0, 0, 3, 3, //
+                    0, 0, 0, 0, //
+                    0, 0, 0, 0, //
+                ],
+            ],
+            calls: 0,
+        };
+
+        let result = run_position_with_segmenter(config, &mut segmenter)?;
+        assert_eq!(result.frames_processed, 3);
+        assert_eq!(result.labels_found, 3);
+        assert_eq!(segmenter.calls, 3);
+
+        let mut npz = NpzReader::new(File::open(&result.outputs.segm_npz_path)?)?;
+        let masks: Array3<u32> = npz.by_name("arr_0.npy")?;
+        assert_eq!(masks.shape(), &[3, 4, 4]);
+
+        let csv = fs::read_to_string(&result.outputs.acdc_output_csv_path)?;
+        assert!(csv.contains("0,0,1"));
+        assert!(csv.contains("1,30,2"));
+        assert!(csv.contains("2,60,3"));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_mismatched_channel_frame_counts() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10, 20, 30])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[15, 25])?;
+
+        let config = resolve_position_run_config(
+            temp.path().join("Position_1"),
+            "phase",
+            "fluo",
+            "unused-model.onnx",
+            None,
+            OverwritePolicy::Refuse,
+            true,
+            SegmentationParams::default(),
+        )?;
+
+        let mut segmenter = FakeSegmenter {
+            masks_per_call: vec![vec![0; 16]],
+            calls: 0,
+        };
+        let err = run_position_with_segmenter(config, &mut segmenter).unwrap_err();
+        assert!(err.to_string().contains("Input image stack mismatch"));
+        Ok(())
+    }
+
     fn write_test_tiff(path: &Path) -> Result<()> {
-        let image: ImageBuffer<Luma<u16>, Vec<u16>> =
-            ImageBuffer::from_fn(4, 4, |x, y| Luma([((x + y) * 100) as u16]));
-        image.save(path)?;
+        write_test_stack(path, &[100])
+    }
+
+    fn write_test_stack(path: &Path, frame_values: &[u16]) -> Result<()> {
+        let file = File::create(path)?;
+        let mut encoder = TiffEncoder::new(file)?;
+        for value in frame_values {
+            let data = vec![*value; 16];
+            encoder.write_image::<colortype::Gray16>(4, 4, &data)?;
+        }
         Ok(())
     }
 }

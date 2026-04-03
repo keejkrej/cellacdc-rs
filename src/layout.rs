@@ -1,8 +1,10 @@
+use crate::image_io::inspect_tiff_stack;
+use crate::metadata::{read_metadata_summary, DEFAULT_TIME_INCREMENT};
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PositionSpec {
     pub position_dir: PathBuf,
     pub images_dir: PathBuf,
@@ -12,9 +14,11 @@ pub struct PositionSpec {
     pub phase_image: PathBuf,
     pub fluo_image: PathBuf,
     pub metadata_path: Option<PathBuf>,
+    pub size_t: usize,
+    pub time_increment: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExperimentSpec {
     pub experiment_dir: PathBuf,
     pub positions: Vec<PositionSpec>,
@@ -42,11 +46,14 @@ pub fn resolve_position(
         })
         .cloned();
 
-    let basename = metadata_path
+    let metadata = metadata_path
         .as_ref()
-        .map(|path| read_basename_from_metadata(path))
+        .map(|path| read_metadata_summary(path))
         .transpose()?
-        .flatten()
+        .unwrap_or_default();
+
+    let basename = metadata
+        .basename
         .or_else(|| infer_basename(&files))
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
@@ -61,6 +68,24 @@ pub fn resolve_position(
     let fluo_image = find_channel_file(&files, &basename, &fluo_channel)
         .with_context(|| format!("Failed to resolve fluorescence channel \"{fluo_channel}\""))?;
 
+    if metadata.size_z.unwrap_or(1) > 1 {
+        bail!(
+            "Metadata in {} declares SizeZ > 1, but this phase only supports 2D timelapse inputs.",
+            images_dir.display()
+        );
+    }
+
+    let phase_shape = inspect_tiff_stack(&phase_image)?;
+    if let Some(size_t) = metadata.size_t {
+        if size_t != phase_shape.frames {
+            bail!(
+                "Metadata SizeT ({size_t}) does not match TIFF page count ({}) in {}",
+                phase_shape.frames,
+                phase_image.display()
+            );
+        }
+    }
+
     Ok(PositionSpec {
         position_dir,
         images_dir,
@@ -70,6 +95,8 @@ pub fn resolve_position(
         phase_image,
         fluo_image,
         metadata_path,
+        size_t: metadata.size_t.unwrap_or(phase_shape.frames),
+        time_increment: metadata.time_increment.unwrap_or(DEFAULT_TIME_INCREMENT),
     })
 }
 
@@ -162,21 +189,6 @@ fn list_dir_sorted(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(items)
 }
 
-fn read_basename_from_metadata(path: &Path) -> Result<Option<String>> {
-    let mut reader = csv::Reader::from_path(path)
-        .with_context(|| format!("Failed to open metadata file {}", path.display()))?;
-    for record in reader.records() {
-        let record = record?;
-        if record.get(0) == Some("basename") {
-            let value = record.get(1).unwrap_or_default().trim();
-            if !value.is_empty() {
-                return Ok(Some(value.to_string()));
-            }
-        }
-    }
-    Ok(None)
-}
-
 fn infer_basename(files: &[PathBuf]) -> Option<String> {
     let mut candidates: Vec<String> = files
         .iter()
@@ -265,6 +277,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+    use tiff::encoder::{colortype, TiffEncoder};
 
     #[test]
     fn resolves_position_from_images_dir() -> Result<()> {
@@ -272,14 +285,15 @@ mod tests {
         let position = temp.path().join("Position_1");
         let images = position.join("Images");
         fs::create_dir_all(&images)?;
-        fs::write(images.join("test_phase.tif"), [])?;
-        fs::write(images.join("test_fluo.tif"), [])?;
+        write_test_stack(&images.join("test_phase.tif"), &[1])?;
+        write_test_stack(&images.join("test_fluo.tif"), &[1])?;
         let mut metadata = fs::File::create(images.join("test_metadata.csv"))?;
         writeln!(metadata, "Description,values")?;
         writeln!(metadata, "basename,test_")?;
 
         let spec = resolve_position(images, "phase", "fluo")?;
         assert_eq!(spec.basename, "test_");
+        assert_eq!(spec.size_t, 1);
         assert!(spec.phase_image.ends_with("test_phase.tif"));
         Ok(())
     }
@@ -290,11 +304,33 @@ mod tests {
         let position = temp.path().join("Position_2");
         let images = position.join("Images");
         fs::create_dir_all(&images)?;
-        fs::write(images.join("abc_phase.tif"), [])?;
-        fs::write(images.join("abc_fluo.tif"), [])?;
+        write_test_stack(&images.join("abc_phase.tif"), &[1])?;
+        write_test_stack(&images.join("abc_fluo.tif"), &[1])?;
 
         let spec = resolve_position(&position, "phase", "fluo")?;
         assert_eq!(spec.basename, "abc_");
+        Ok(())
+    }
+
+    #[test]
+    fn reads_metadata_time_increment_and_frame_count() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_3");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[1, 2, 3])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[1, 2, 3])?;
+
+        let mut metadata = fs::File::create(images.join("demo_metadata.csv"))?;
+        writeln!(metadata, "Description,values")?;
+        writeln!(metadata, "basename,demo_")?;
+        writeln!(metadata, "SizeT,3")?;
+        writeln!(metadata, "SizeZ,1")?;
+        writeln!(metadata, "TimeIncrement,30")?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+        assert_eq!(spec.size_t, 3);
+        assert_eq!(spec.time_increment, 30.0);
         Ok(())
     }
 
@@ -304,12 +340,22 @@ mod tests {
         for idx in 1..=2 {
             let images = temp.path().join(format!("Position_{idx}")).join("Images");
             fs::create_dir_all(&images)?;
-            fs::write(images.join("demo_phase.tif"), [])?;
-            fs::write(images.join("demo_fluo.tif"), [])?;
+            write_test_stack(&images.join("demo_phase.tif"), &[1])?;
+            write_test_stack(&images.join("demo_fluo.tif"), &[1])?;
         }
 
         let experiment = discover_experiment(temp.path(), "phase", "fluo")?;
         assert_eq!(experiment.positions.len(), 2);
+        Ok(())
+    }
+
+    fn write_test_stack(path: &Path, frame_values: &[u16]) -> Result<()> {
+        let file = fs::File::create(path)?;
+        let mut encoder = TiffEncoder::new(file)?;
+        for value in frame_values {
+            let data = vec![*value; 6];
+            encoder.write_image::<colortype::Gray16>(3, 2, &data)?;
+        }
         Ok(())
     }
 }
