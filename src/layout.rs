@@ -1,4 +1,4 @@
-use crate::image_io::inspect_tiff_stack;
+use crate::image_io::inspect_image_stack;
 use crate::metadata::{read_metadata_summary, DEFAULT_TIME_INCREMENT};
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -16,6 +16,8 @@ pub struct PositionSpec {
     pub metadata_path: Option<PathBuf>,
     pub size_t: usize,
     pub time_increment: f64,
+    pub physical_size_x: f64,
+    pub physical_size_y: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,11 +77,11 @@ pub fn resolve_position(
         );
     }
 
-    let phase_shape = inspect_tiff_stack(&phase_image)?;
+    let phase_shape = inspect_image_stack(&phase_image)?;
     if let Some(size_t) = metadata.size_t {
         if size_t != phase_shape.frames {
             bail!(
-                "Metadata SizeT ({size_t}) does not match TIFF page count ({}) in {}",
+                "Metadata SizeT ({size_t}) does not match image frame count ({}) in {}",
                 phase_shape.frames,
                 phase_image.display()
             );
@@ -97,6 +99,8 @@ pub fn resolve_position(
         metadata_path,
         size_t: metadata.size_t.unwrap_or(phase_shape.frames),
         time_increment: metadata.time_increment.unwrap_or(DEFAULT_TIME_INCREMENT),
+        physical_size_x: metadata.physical_size_x.unwrap_or(1.0),
+        physical_size_y: metadata.physical_size_y.unwrap_or(1.0),
     })
 }
 
@@ -194,7 +198,11 @@ fn infer_basename(files: &[PathBuf]) -> Option<String> {
         .iter()
         .filter_map(|path| {
             let name = path.file_name()?.to_str()?;
-            if !(name.ends_with(".tif") || name.ends_with(".tiff")) {
+            let is_supported = name.ends_with(".tif")
+                || name.ends_with(".tiff")
+                || name.ends_with("_aligned.npz")
+                || name.ends_with(".h5");
+            if !is_supported {
                 return None;
             }
             let stem = Path::new(name).file_stem()?.to_str()?;
@@ -235,46 +243,33 @@ fn longest_common_prefix(left: &str, right: &str) -> String {
 }
 
 fn find_channel_file(files: &[PathBuf], basename: &str, channel_name: &str) -> Result<PathBuf> {
-    let expected_tif = format!("{basename}{channel_name}.tif");
-    let expected_tiff = format!("{basename}{channel_name}.tiff");
-    let unsupported = [
-        format!("{basename}{channel_name}.h5"),
+    let candidates = [
         format!("{basename}{channel_name}_aligned.h5"),
-        format!("{basename}{channel_name}.npz"),
+        format!("{basename}{channel_name}.h5"),
         format!("{basename}{channel_name}_aligned.npz"),
+        format!("{basename}{channel_name}.tif"),
+        format!("{basename}{channel_name}.tiff"),
     ];
 
-    let mut tif_match = None;
-    let mut unsupported_match = None;
-    for path in files {
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if file_name == expected_tif || file_name == expected_tiff {
-            tif_match = Some(path.clone());
-        }
-        if unsupported.iter().any(|name| name == file_name) {
-            unsupported_match = Some(path.clone());
+    for candidate in candidates {
+        for path in files {
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if file_name == candidate {
+                return Ok(path.clone());
+            }
         }
     }
 
-    if let Some(path) = tif_match {
-        return Ok(path);
-    }
-
-    if let Some(path) = unsupported_match {
-        bail!(
-            "Found channel file {}, but phase 1 only supports 2D TIFF inputs",
-            path.display()
-        );
-    }
-
-    bail!("No TIFF file found for channel \"{channel_name}\" with basename \"{basename}\"")
+    bail!("No supported file found for channel \"{channel_name}\" with basename \"{basename}\"")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray::Array2;
+    use ndarray_npy::NpzWriter;
     use std::io::Write;
     use tempfile::tempdir;
     use tiff::encoder::{colortype, TiffEncoder};
@@ -313,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_metadata_time_increment_and_frame_count() -> Result<()> {
+    fn reads_metadata_time_increment_frame_count_and_pixel_size() -> Result<()> {
         let temp = tempdir()?;
         let position = temp.path().join("Position_3");
         let images = position.join("Images");
@@ -327,10 +322,14 @@ mod tests {
         writeln!(metadata, "SizeT,3")?;
         writeln!(metadata, "SizeZ,1")?;
         writeln!(metadata, "TimeIncrement,30")?;
+        writeln!(metadata, "PhysicalSizeX,0.25")?;
+        writeln!(metadata, "PhysicalSizeY,0.5")?;
 
         let spec = resolve_position(&position, "phase", "fluo")?;
         assert_eq!(spec.size_t, 3);
         assert_eq!(spec.time_increment, 30.0);
+        assert_eq!(spec.physical_size_x, 0.25);
+        assert_eq!(spec.physical_size_y, 0.5);
         Ok(())
     }
 
@@ -349,6 +348,21 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn prefers_aligned_h5_then_h5_then_npz_then_tiff() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_4");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[1])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[1])?;
+        write_test_npz(&images.join("demo_phase_aligned.npz"), vec![1u16; 6])?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+        assert!(spec.phase_image.ends_with("demo_phase_aligned.npz"));
+        Ok(())
+    }
+
     fn write_test_stack(path: &Path, frame_values: &[u16]) -> Result<()> {
         let file = fs::File::create(path)?;
         let mut encoder = TiffEncoder::new(file)?;
@@ -356,6 +370,15 @@ mod tests {
             let data = vec![*value; 6];
             encoder.write_image::<colortype::Gray16>(3, 2, &data)?;
         }
+        Ok(())
+    }
+
+    fn write_test_npz(path: &Path, data: Vec<u16>) -> Result<()> {
+        let file = fs::File::create(path)?;
+        let mut writer = NpzWriter::new(file);
+        let array = Array2::from_shape_vec((2, 3), data)?;
+        writer.add_array("arr_0", &array)?;
+        writer.finish()?;
         Ok(())
     }
 }

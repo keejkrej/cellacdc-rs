@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use csv::{Reader, Writer};
+use csv::{ReaderBuilder, Writer};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -11,11 +11,15 @@ pub struct MetadataSummary {
     pub size_t: Option<usize>,
     pub size_z: Option<usize>,
     pub time_increment: Option<f64>,
+    pub physical_size_x: Option<f64>,
+    pub physical_size_y: Option<f64>,
 }
 
 pub fn read_metadata_map(path: &Path) -> Result<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
-    let mut reader = Reader::from_path(path)
+    let mut reader = ReaderBuilder::new()
+        .flexible(true)
+        .from_path(path)
         .with_context(|| format!("Failed to open metadata file {}", path.display()))?;
 
     for record in reader.records() {
@@ -24,7 +28,13 @@ pub fn read_metadata_map(path: &Path) -> Result<BTreeMap<String, String>> {
         if key.is_empty() {
             continue;
         }
-        let value = record.get(1).unwrap_or_default().trim().to_string();
+        let value = record
+            .iter()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join(",")
+            .trim()
+            .to_string();
         map.insert(key.to_string(), value);
     }
 
@@ -41,9 +51,12 @@ pub fn read_metadata_summary(path: &Path) -> Result<MetadataSummary> {
         size_t: parse_optional_usize(values.get("SizeT"))?,
         size_z: parse_optional_usize(values.get("SizeZ"))?,
         time_increment: parse_optional_f64(values.get("TimeIncrement"))?,
+        physical_size_x: parse_optional_f64(values.get("PhysicalSizeX"))?,
+        physical_size_y: parse_optional_f64(values.get("PhysicalSizeY"))?,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn ensure_position_metadata(
     existing_path: Option<&Path>,
     images_dir: &Path,
@@ -54,6 +67,7 @@ pub fn ensure_position_metadata(
     height: usize,
     width: usize,
     time_increment: f64,
+    segm_endname: &str,
 ) -> Result<PathBuf> {
     let target_path = existing_path
         .map(Path::to_path_buf)
@@ -73,6 +87,7 @@ pub fn ensure_position_metadata(
     values.insert("TimeIncrement".into(), time_increment.to_string());
     values.insert("channel_0_name".into(), phase_channel.to_string());
     values.insert("channel_1_name".into(), fluo_channel.to_string());
+    values.insert(format!("{segm_endname}_isSegm3D"), "False".into());
     values
         .entry("PhysicalSizeZ".into())
         .or_insert_with(|| "1.0".into());
@@ -87,21 +102,24 @@ pub fn ensure_position_metadata(
         .with_context(|| format!("Failed to create {}", target_path.display()))?;
     writer.write_record(["Description", "values"])?;
 
-    for key in [
-        "basename",
-        "SizeT",
-        "SizeZ",
-        "SizeY",
-        "SizeX",
-        "TimeIncrement",
-        "PhysicalSizeZ",
-        "PhysicalSizeY",
-        "PhysicalSizeX",
-        "channel_0_name",
-        "channel_1_name",
-    ] {
-        if let Some(value) = values.remove(key) {
-            writer.write_record([key, value.as_str()])?;
+    let ordered_keys = vec![
+        "basename".to_string(),
+        "SizeT".to_string(),
+        "SizeZ".to_string(),
+        "SizeY".to_string(),
+        "SizeX".to_string(),
+        "TimeIncrement".to_string(),
+        "PhysicalSizeZ".to_string(),
+        "PhysicalSizeY".to_string(),
+        "PhysicalSizeX".to_string(),
+        "channel_0_name".to_string(),
+        "channel_1_name".to_string(),
+        format!("{segm_endname}_isSegm3D"),
+    ];
+
+    for key in ordered_keys {
+        if let Some(value) = values.remove(&key) {
+            writer.write_record([key.as_str(), value.as_str()])?;
         }
     }
 
@@ -150,12 +168,16 @@ mod tests {
         writeln!(file, "SizeT,3")?;
         writeln!(file, "SizeZ,1")?;
         writeln!(file, "TimeIncrement,12.5")?;
+        writeln!(file, "PhysicalSizeX,0.25")?;
+        writeln!(file, "PhysicalSizeY,0.5")?;
 
         let summary = read_metadata_summary(&path)?;
         assert_eq!(summary.basename.as_deref(), Some("demo_"));
         assert_eq!(summary.size_t, Some(3));
         assert_eq!(summary.size_z, Some(1));
         assert_eq!(summary.time_increment, Some(12.5));
+        assert_eq!(summary.physical_size_x, Some(0.25));
+        assert_eq!(summary.physical_size_y, Some(0.5));
         Ok(())
     }
 
@@ -163,8 +185,9 @@ mod tests {
     fn creates_or_updates_required_metadata_fields() -> Result<()> {
         let temp = tempdir()?;
         let images_dir = temp.path();
-        let path =
-            ensure_position_metadata(None, images_dir, "demo_", "phase", "fluo", 4, 32, 24, 15.0)?;
+        let path = ensure_position_metadata(
+            None, images_dir, "demo_", "phase", "fluo", 4, 32, 24, 15.0, "segm",
+        )?;
 
         let values = read_metadata_map(&path)?;
         assert_eq!(values.get("SizeT").map(String::as_str), Some("4"));
@@ -172,6 +195,10 @@ mod tests {
         assert_eq!(
             values.get("channel_0_name").map(String::as_str),
             Some("phase")
+        );
+        assert_eq!(
+            values.get("segm_isSegm3D").map(String::as_str),
+            Some("False")
         );
         Ok(())
     }

@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
-use ndarray::{Array2, Array3};
-use ndarray_npy::NpzWriter;
+use hdf5_reader::Hdf5File;
+use ndarray::{Array2, Array3, ArrayD, IxDyn, OwnedRepr};
+use ndarray_npy::{NpzReader, NpzWriter};
 use std::fs::{self, File};
 use std::path::Path;
 use tiff::decoder::{Decoder, DecodingResult};
@@ -13,12 +14,30 @@ pub struct StackShape {
     pub width: usize,
 }
 
-pub fn inspect_tiff_stack(path: &Path) -> Result<StackShape> {
-    let (_, shape) = load_tiff_stack_as_f32(path)?;
+pub fn inspect_image_stack(path: &Path) -> Result<StackShape> {
+    let (_, shape) = load_image_stack_as_f32(path)?;
     Ok(shape)
 }
 
-pub fn load_tiff_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
+pub fn load_image_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("tif") | Some("tiff") => load_tiff_stack_as_f32(path),
+        Some("npz") => load_npz_stack_as_f32(path),
+        Some("h5") => load_h5_stack_as_f32(path),
+        other => bail!(
+            "Unsupported image format {:?} for {}. Supported formats are TIFF, NPZ, and H5.",
+            other,
+            path.display()
+        ),
+    }
+}
+
+fn load_tiff_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
     let file = File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
     let mut decoder =
         Decoder::new(file).with_context(|| format!("Failed to decode TIFF {}", path.display()))?;
@@ -113,6 +132,188 @@ pub fn load_tiff_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
     Ok((pixels, shape))
 }
 
+fn load_npz_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
+    let mut npz = NpzReader::new(File::open(path)?)
+        .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+    let names = npz
+        .names()
+        .with_context(|| format!("Failed to list NPZ arrays in {}", path.display()))?;
+    let first = names
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("NPZ archive is empty: {}", path.display()))?
+        .clone();
+    drop(npz);
+
+    let shape = read_npz_shape(path, &first)?;
+    let pixels = read_npz_pixels(path, &first)?;
+    Ok((pixels, shape))
+}
+
+fn read_npz_shape(path: &Path, name: &str) -> Result<StackShape> {
+    let mut npz = NpzReader::new(File::open(path)?)
+        .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+
+    if let Ok(array) = npz.by_name::<OwnedRepr<f32>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<f64>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u8>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u16>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u32>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u64>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i8>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i16>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i32>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i64>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+
+    bail!("Unsupported NPZ element type in {}", path.display())
+}
+
+fn read_npz_pixels(path: &Path, name: &str) -> Result<Vec<f32>> {
+    let mut npz = NpzReader::new(File::open(path)?)
+        .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+
+    if let Ok(array) = npz.by_name::<OwnedRepr<f32>, IxDyn>(name) {
+        return Ok(flatten_array(array));
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<f64>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u8>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u16>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u32>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u64>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i8>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i16>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i32>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i64>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+
+    bail!("Unsupported NPZ element type in {}", path.display())
+}
+
+fn load_h5_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
+    let file =
+        Hdf5File::open(path).with_context(|| format!("Failed to open H5 {}", path.display()))?;
+    let dataset = file
+        .dataset("/data")
+        .or_else(|_| file.dataset("data"))
+        .with_context(|| format!("Failed to open dataset \"data\" in {}", path.display()))?;
+    let shape = infer_stack_shape_from_dims(
+        dataset.shape().iter().map(|dim| *dim as usize).collect(),
+        path,
+    )?;
+
+    macro_rules! try_h5_array {
+        ($ty:ty) => {
+            dataset.read_array::<$ty>().map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| value as f32)
+                    .collect::<Vec<_>>()
+            })
+        };
+    }
+
+    let pixels = try_h5_array!(f32)
+        .or_else(|_| try_h5_array!(f64))
+        .or_else(|_| try_h5_array!(u8))
+        .or_else(|_| try_h5_array!(u16))
+        .or_else(|_| try_h5_array!(u32))
+        .or_else(|_| try_h5_array!(u64))
+        .or_else(|_| try_h5_array!(i8))
+        .or_else(|_| try_h5_array!(i16))
+        .or_else(|_| try_h5_array!(i32))
+        .or_else(|_| try_h5_array!(i64))
+        .with_context(|| format!("Unsupported H5 dataset type in {}", path.display()))?;
+
+    Ok((pixels, shape))
+}
+
+fn infer_stack_shape_from_dims(dims: Vec<usize>, path: &Path) -> Result<StackShape> {
+    match dims.as_slice() {
+        [height, width] => Ok(StackShape {
+            frames: 1,
+            height: *height,
+            width: *width,
+        }),
+        [frames, height, width] => Ok(StackShape {
+            frames: *frames,
+            height: *height,
+            width: *width,
+        }),
+        _ => bail!(
+            "Unsupported image shape {:?} in {}. This phase only supports 2D images or 2D timelapse stacks.",
+            dims,
+            path.display()
+        ),
+    }
+}
+
+fn flatten_array<T>(array: ArrayD<T>) -> Vec<T> {
+    array.into_iter().collect()
+}
+
 pub fn write_mask_npz(
     path: &Path,
     masks: &[u32],
@@ -162,7 +363,7 @@ mod tests {
         let path = temp.path().join("stack.tif");
         write_test_stack(&path, &[1, 5])?;
 
-        let (pixels, shape) = load_tiff_stack_as_f32(&path)?;
+        let (pixels, shape) = load_image_stack_as_f32(&path)?;
         assert_eq!(
             shape,
             StackShape {
@@ -174,6 +375,26 @@ mod tests {
         assert_eq!(pixels.len(), 12);
         assert_eq!(pixels[0], 1.0);
         assert_eq!(pixels[6], 5.0);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_npz_stack() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("stack.npz");
+        let file = File::create(&path)?;
+        let mut writer = NpzWriter::new(file);
+        let array =
+            Array3::from_shape_vec((2, 2, 3), vec![1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])?;
+        writer.add_array("arr_0", &array)?;
+        writer.finish()?;
+
+        let (pixels, shape) = load_image_stack_as_f32(&path)?;
+        assert_eq!(shape.frames, 2);
+        assert_eq!(shape.height, 2);
+        assert_eq!(shape.width, 3);
+        assert_eq!(pixels[0], 1.0);
+        assert_eq!(pixels[11], 12.0);
         Ok(())
     }
 

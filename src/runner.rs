@@ -1,12 +1,22 @@
 use anyhow::{bail, Context, Result};
+use chrono::Local;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::image_io::{load_tiff_stack_as_f32, write_mask_npz};
+#[cfg(test)]
+use ndarray::Array3;
+#[cfg(test)]
+use ndarray_npy::NpzReader;
+#[cfg(test)]
+use std::fs::File;
+
+use crate::image_io::{load_image_stack_as_f32, write_mask_npz};
 use crate::layout::{discover_experiment, resolve_position, ExperimentSpec, PositionSpec};
 use crate::measurements::{rows_from_mask, write_acdc_output_csv};
 use crate::metadata::ensure_position_metadata;
 use crate::model::{CellposeModel, Segmenter};
+use crate::tracking::{track_sequence, TrackingConfig};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SegmentationParams {
@@ -43,6 +53,7 @@ pub struct SegmentationRunConfig {
     pub overwrite_policy: OverwritePolicy,
     pub cpu: bool,
     pub params: SegmentationParams,
+    pub tracking: Option<TrackingConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +66,7 @@ pub struct ExperimentRunConfig {
     pub overwrite_policy: OverwritePolicy,
     pub cpu: bool,
     pub params: SegmentationParams,
+    pub tracking: Option<TrackingConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +114,7 @@ pub fn run_experiment_with_segmenter(
             overwrite_policy: config.overwrite_policy,
             cpu: config.cpu,
             params: config.params.clone(),
+            tracking: config.tracking.clone(),
         };
         results.push(run_position_with_segmenter(run_config, segmenter)?);
     }
@@ -113,14 +126,14 @@ pub fn run_position_with_segmenter(
     segmenter: &mut impl Segmenter,
 ) -> Result<RunResult> {
     let (phase, phase_shape) =
-        load_tiff_stack_as_f32(&config.position.phase_image).with_context(|| {
+        load_image_stack_as_f32(&config.position.phase_image).with_context(|| {
             format!(
                 "Failed to load phase image {}",
                 config.position.phase_image.display()
             )
         })?;
     let (fluo, fluo_shape) =
-        load_tiff_stack_as_f32(&config.position.fluo_image).with_context(|| {
+        load_image_stack_as_f32(&config.position.fluo_image).with_context(|| {
             format!(
                 "Failed to load fluorescence image {}",
                 config.position.fluo_image.display()
@@ -141,7 +154,7 @@ pub fn run_position_with_segmenter(
 
     if config.position.size_t != phase_shape.frames {
         bail!(
-            "Resolved metadata SizeT ({}) does not match TIFF page count ({}) for {}",
+            "Resolved metadata SizeT ({}) does not match image frame count ({}) for {}",
             config.position.size_t,
             phase_shape.frames,
             config.position.phase_image.display()
@@ -156,31 +169,63 @@ pub fn run_position_with_segmenter(
     guard_outputs(&outputs, config.overwrite_policy)?;
 
     let frame_len = phase_shape.height * phase_shape.width;
-    let mut masks = Vec::with_capacity(phase.len());
-    let mut rows = Vec::new();
-    let mut labels_found = 0;
+    let mut raw_frame_masks = Vec::with_capacity(phase_shape.frames);
 
     for frame_i in 0..phase_shape.frames {
         let start = frame_i * frame_len;
         let end = start + frame_len;
-        let frame_masks = segmenter.segment_pair(
+        let mask = segmenter.segment_pair(
             phase[start..end].to_vec(),
             fluo[start..end].to_vec(),
             phase_shape.height,
             phase_shape.width,
             &config.params,
         )?;
-        labels_found = labels_found.max(frame_masks.iter().copied().max().unwrap_or(0));
-        masks.extend_from_slice(&frame_masks);
+        raw_frame_masks.push(mask);
+    }
+
+    let (tracked_frames, labels_found, disappeared) = if let Some(tracking) = &config.tracking {
+        let tracked = track_sequence(
+            &raw_frame_masks,
+            phase_shape.height,
+            phase_shape.width,
+            tracking,
+        );
+        (tracked.frames, tracked.labels_found, tracked.disappeared)
+    } else {
+        let labels_found = raw_frame_masks
+            .iter()
+            .flat_map(|frame| frame.iter().copied())
+            .max()
+            .unwrap_or(0);
+        (raw_frame_masks, labels_found, Vec::new())
+    };
+
+    let pixel_area_um2 = config.position.physical_size_x * config.position.physical_size_y;
+    let mut rows = Vec::new();
+    let mut row_indices = HashMap::<(usize, u32), usize>::new();
+    for (frame_i, frame_mask) in tracked_frames.iter().enumerate() {
+        let start_index = rows.len();
         rows.extend(rows_from_mask(
-            &frame_masks,
+            frame_mask,
             phase_shape.height,
             phase_shape.width,
             frame_i,
             config.position.time_increment * frame_i as f64,
+            pixel_area_um2,
         ));
+        for (offset, row) in rows[start_index..].iter().enumerate() {
+            row_indices.insert((row.frame_i, row.cell_id), start_index + offset);
+        }
+    }
+    for (frame_i, cell_id) in disappeared {
+        if let Some(row_index) = row_indices.get(&(frame_i, cell_id)).copied() {
+            rows[row_index].disappears_before_end = Some(1);
+        }
     }
 
+    let masks = tracked_frames.into_iter().flatten().collect::<Vec<_>>();
+    let segm_name = segmentation_name(config.segm_endname.as_deref());
     ensure_position_metadata(
         config.position.metadata_path.as_deref(),
         &config.position.images_dir,
@@ -191,6 +236,7 @@ pub fn run_position_with_segmenter(
         phase_shape.height,
         phase_shape.width,
         config.position.time_increment,
+        &segm_name,
     )?;
     write_mask_npz(
         &outputs.segm_npz_path,
@@ -199,7 +245,6 @@ pub fn run_position_with_segmenter(
         phase_shape.height,
         phase_shape.width,
     )?;
-
     write_acdc_output_csv(&outputs.acdc_output_csv_path, &rows)?;
     write_hyperparams_ini(
         &outputs.segm_hyperparams_ini_path,
@@ -208,6 +253,8 @@ pub fn run_position_with_segmenter(
         &config.params,
         config.cpu,
         config.segm_endname.as_deref(),
+        config.tracking.as_ref(),
+        &outputs.segm_npz_path,
     )?;
 
     Ok(RunResult {
@@ -237,7 +284,15 @@ pub fn resolve_position_run_config(
         overwrite_policy,
         cpu,
         params,
+        tracking: None,
     })
+}
+
+fn segmentation_name(endname: Option<&str>) -> String {
+    match endname {
+        Some(value) if !value.trim().is_empty() => format!("segm_{value}"),
+        _ => "segm".to_string(),
+    }
 }
 
 fn output_paths(images_dir: &Path, basename: &str, endname: Option<&str>) -> RunOutputPaths {
@@ -283,20 +338,57 @@ fn write_hyperparams_ini(
     params: &SegmentationParams,
     cpu: bool,
     segm_endname: Option<&str>,
+    tracking: Option<&TrackingConfig>,
+    segm_npz_path: &Path,
 ) -> Result<()> {
-    let mut content = String::new();
-    content.push_str("[workflow]\n");
-    content.push_str("type = segmentation\n");
-    content.push_str(&format!("phase_channel = {}\n", position.phase_channel));
-    content.push_str(&format!("fluo_channel = {}\n", position.fluo_channel));
-    content.push_str(&format!("cpu = {}\n", cpu));
-    if let Some(endname) = segm_endname {
-        if !endname.is_empty() {
-            content.push_str(&format!("segm_endname = {}\n", endname));
-        }
+    let segm_name = segmentation_name(segm_endname);
+    let existing = if path.exists() {
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?
+    } else {
+        String::new()
+    };
+    let run_prefix = format!("{segm_name}.metadata.run_number_");
+    let run_number = existing
+        .lines()
+        .filter(|line| {
+            line.strip_prefix('[')
+                .and_then(|line| line.strip_suffix(']'))
+                .map(|section| section.starts_with(&run_prefix))
+                .unwrap_or(false)
+        })
+        .count()
+        + 1;
+
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
     }
-    content.push_str("\n[cellpose]\n");
+
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.6f");
+    let model_name = model_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("cellpose");
+
+    content.push_str(&format!("[{segm_name}.metadata.run_number_{run_number}]\n"));
+    content.push_str(&format!(
+        "segmentation_filename = {}\n",
+        segm_npz_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("segm.npz")
+    ));
+    content.push_str(&format!("segmented_channel = {}\n", position.phase_channel));
+    content.push_str(&format!("segmented_on = {}\n", timestamp));
+    content.push_str(&format!("model_name = {}\n\n", model_name));
+
+    content.push_str(&format!("[{segm_name}.init.run_number_{run_number}]\n"));
     content.push_str(&format!("model_path = {}\n", model_path.display()));
+    content.push_str(&format!("cpu = {}\n", cpu));
+    content.push_str(&format!("phase_channel = {}\n", position.phase_channel));
+    content.push_str(&format!("fluo_channel = {}\n\n", position.fluo_channel));
+
+    content.push_str(&format!("[{segm_name}.segment.run_number_{run_number}]\n"));
     content.push_str(&format!("tile = {}\n", params.tile));
     content.push_str(&format!("batch_size = {}\n", params.batch_size));
     content.push_str(&format!(
@@ -305,6 +397,18 @@ fn write_hyperparams_ini(
     ));
     content.push_str(&format!("niter = {}\n", params.niter));
     content.push_str(&format!("min_size = {}\n", params.min_size));
+    if let Some(tracking) = tracking {
+        content.push_str("track = true\n");
+        content.push_str(&format!(
+            "track_max_distance_px = {}\n",
+            tracking.max_distance_px
+        ));
+        content.push_str(&format!(
+            "track_min_overlap_px = {}\n",
+            tracking.min_overlap_px
+        ));
+    }
+    content.push('\n');
 
     fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
@@ -313,9 +417,6 @@ fn write_hyperparams_ini(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array3;
-    use ndarray_npy::NpzReader;
-    use std::fs::File;
     use tempfile::tempdir;
     use tiff::encoder::{colortype, TiffEncoder};
 
@@ -430,6 +531,7 @@ mod tests {
                 overwrite_policy: OverwritePolicy::Refuse,
                 cpu: true,
                 params: SegmentationParams::default(),
+                tracking: None,
             },
             discover_experiment(temp.path(), "phase", "fluo")?,
             &mut segmenter,
@@ -503,9 +605,10 @@ mod tests {
         assert_eq!(masks.shape(), &[3, 4, 4]);
 
         let csv = fs::read_to_string(&result.outputs.acdc_output_csv_path)?;
-        assert!(csv.contains("0,0,1"));
-        assert!(csv.contains("1,30,2"));
-        assert!(csv.contains("2,60,3"));
+        assert!(csv.contains("frame_i,Cell_ID,time_seconds,time_minutes,time_hours"));
+        assert!(csv.contains("0,1,0,0,0"));
+        assert!(csv.contains("1,2,30,0.5"));
+        assert!(csv.contains("2,3,60,1"));
         Ok(())
     }
 
@@ -537,8 +640,118 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn tracks_ids_across_frames_and_marks_disappearances() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10, 20, 30])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[15, 25, 35])?;
+
+        let base = resolve_position_run_config(
+            temp.path().join("Position_1"),
+            "phase",
+            "fluo",
+            "unused-model.onnx",
+            Some("tracked".into()),
+            OverwritePolicy::Refuse,
+            true,
+            SegmentationParams::default(),
+        )?;
+        let config = SegmentationRunConfig {
+            tracking: Some(TrackingConfig {
+                max_distance_px: 4.0,
+                min_overlap_px: 1,
+            }),
+            ..base
+        };
+
+        let mut segmenter = FakeSegmenter {
+            masks_per_call: vec![
+                vec![
+                    1, 1, 0, 0, //
+                    1, 1, 0, 0, //
+                    0, 0, 2, 2, //
+                    0, 0, 2, 2, //
+                ],
+                vec![
+                    0, 3, 3, 0, //
+                    0, 3, 3, 0, //
+                    0, 0, 0, 0, //
+                    0, 0, 0, 0, //
+                ],
+                vec![
+                    0, 0, 4, 4, //
+                    0, 0, 4, 4, //
+                    0, 0, 0, 0, //
+                    0, 0, 0, 0, //
+                ],
+            ],
+            calls: 0,
+        };
+
+        let result = run_position_with_segmenter(config, &mut segmenter)?;
+        let csv = fs::read_to_string(&result.outputs.acdc_output_csv_path)?;
+        assert!(csv.contains("disappears_before_end"));
+        assert!(csv.contains("0,1,0"));
+        assert!(csv.contains("\n1,1,1,"));
+        assert!(csv.contains("\n2,1,2,"));
+        assert!(csv.contains("0,2,0"));
+        assert!(csv.contains(",1\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn writes_python_compatible_hyperparams_sections() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("segm_hyperparams.ini");
+        let position = PositionSpec {
+            position_dir: temp.path().join("Position_1"),
+            images_dir: temp.path().to_path_buf(),
+            basename: "demo_".into(),
+            phase_channel: "phase".into(),
+            fluo_channel: "fluo".into(),
+            phase_image: temp.path().join("demo_phase.tif"),
+            fluo_image: temp.path().join("demo_fluo.tif"),
+            metadata_path: None,
+            size_t: 1,
+            time_increment: 1.0,
+            physical_size_x: 1.0,
+            physical_size_y: 1.0,
+        };
+
+        write_hyperparams_ini(
+            &path,
+            &position,
+            Path::new("/tmp/model.onnx"),
+            &SegmentationParams::default(),
+            true,
+            Some("rust"),
+            None,
+            Path::new("/tmp/demo_segm_rust.npz"),
+        )?;
+        write_hyperparams_ini(
+            &path,
+            &position,
+            Path::new("/tmp/model.onnx"),
+            &SegmentationParams::default(),
+            true,
+            Some("rust"),
+            None,
+            Path::new("/tmp/demo_segm_rust.npz"),
+        )?;
+
+        let text = fs::read_to_string(&path)?;
+        assert!(text.contains("[segm_rust.metadata.run_number_1]"));
+        assert!(text.contains("[segm_rust.init.run_number_1]"));
+        assert!(text.contains("[segm_rust.segment.run_number_1]"));
+        assert!(text.contains("[segm_rust.metadata.run_number_2]"));
+        Ok(())
+    }
+
     fn write_test_tiff(path: &Path) -> Result<()> {
-        write_test_stack(path, &[100])
+        write_test_stack(path, &[1])?;
+        Ok(())
     }
 
     fn write_test_stack(path: &Path, frame_values: &[u16]) -> Result<()> {

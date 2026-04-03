@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use cellacdc_rs::{
     resolve_position, run_experiment, run_position, ExperimentRunConfig, OverwritePolicy,
-    SegmentationParams, SegmentationRunConfig,
+    SegmentationParams, SegmentationRunConfig, TrackingConfig,
 };
 
 #[derive(Debug, Parser)]
@@ -45,6 +45,12 @@ struct CommonArgs {
     niter: usize,
     #[arg(long, default_value_t = 15)]
     min_size: usize,
+    #[arg(long)]
+    track: bool,
+    #[arg(long, default_value_t = 25.0)]
+    track_max_distance_px: f32,
+    #[arg(long, default_value_t = 1)]
+    track_min_overlap_px: usize,
 }
 
 #[derive(Debug, Args)]
@@ -85,6 +91,7 @@ fn run_position_command(args: RunPositionArgs) -> Result<()> {
         overwrite_policy: overwrite_policy(common.overwrite),
         cpu: common.cpu,
         params: common.params(),
+        tracking: common.tracking(),
     };
     let result = run_position(config)?;
     println!(
@@ -100,6 +107,7 @@ fn run_position_command(args: RunPositionArgs) -> Result<()> {
 fn run_experiment_command(args: RunExperimentArgs) -> Result<()> {
     let common = args.common;
     let params = common.params();
+    let tracking = common.tracking();
     let results = run_experiment(ExperimentRunConfig {
         experiment_dir: args.experiment,
         phase_channel: common.phase_channel,
@@ -109,6 +117,7 @@ fn run_experiment_command(args: RunExperimentArgs) -> Result<()> {
         overwrite_policy: overwrite_policy(common.overwrite),
         cpu: common.cpu,
         params,
+        tracking,
     })?;
     println!("Segmented {} positions", results.len());
     for result in results {
@@ -139,5 +148,12 @@ impl CommonArgs {
             niter: self.niter,
             min_size: self.min_size,
         }
+    }
+
+    fn tracking(&self) -> Option<TrackingConfig> {
+        self.track.then(|| TrackingConfig {
+            max_distance_px: self.track_max_distance_px,
+            min_overlap_px: self.track_min_overlap_px,
+        })
     }
 }
