@@ -1194,6 +1194,12 @@ fn apply_tracked_ids_mapper_to_table(
     let frame_idx = table.header_index("frame_i")?;
     let cell_idx = table.header_index("Cell_ID")?;
     let rel_idx = table.maybe_header_index("relative_ID");
+    let lineage_indices = [
+        table.maybe_header_index("Cell_ID_tree"),
+        table.maybe_header_index("parent_ID_tree"),
+        table.maybe_header_index("root_ID_tree"),
+        table.maybe_header_index("sister_ID_tree"),
+    ];
     let mut rows = Vec::new();
     for row in &table.rows {
         let frame = row[frame_idx]
@@ -1234,6 +1240,13 @@ fn apply_tracked_ids_mapper_to_table(
                 if let Some(relative_id) = new_row[rel_idx].as_i64() {
                     if relative_id >= 0 {
                         new_row[rel_idx] = TableValue::Number(remap(relative_id as u32) as f64);
+                    }
+                }
+            }
+            for index in lineage_indices.into_iter().flatten() {
+                if let Some(lineage_id) = new_row[index].as_i64() {
+                    if lineage_id >= 0 {
+                        new_row[index] = TableValue::Number(remap(lineage_id as u32) as f64);
                     }
                 }
             }
@@ -2410,9 +2423,21 @@ mod tests {
         write_table(
             &acdc_path,
             &Table {
-                headers: vec!["frame_i".into(), "Cell_ID".into(), "relative_ID".into()],
+                headers: vec![
+                    "frame_i".into(),
+                    "Cell_ID".into(),
+                    "relative_ID".into(),
+                    "Cell_ID_tree".into(),
+                    "parent_ID_tree".into(),
+                    "root_ID_tree".into(),
+                    "sister_ID_tree".into(),
+                ],
                 rows: vec![vec![
                     TableValue::Number(0.0),
+                    TableValue::Number(2.0),
+                    TableValue::Number(-1.0),
+                    TableValue::Number(2.0),
+                    TableValue::Number(-1.0),
                     TableValue::Number(2.0),
                     TableValue::Number(-1.0),
                 ]],
@@ -2447,6 +2472,14 @@ mod tests {
         let table = read_table(&output_acdc)?;
         assert_eq!(
             table.rows[0][table.header_index("Cell_ID")?].as_i64(),
+            Some(1)
+        );
+        assert_eq!(
+            table.rows[0][table.header_index("Cell_ID_tree")?].as_i64(),
+            Some(1)
+        );
+        assert_eq!(
+            table.rows[0][table.header_index("root_ID_tree")?].as_i64(),
             Some(1)
         );
         Ok(())

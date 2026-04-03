@@ -490,14 +490,7 @@ fn write_hyperparams_ini(
     content.push_str(&format!("min_size = {}\n", params.min_size));
     if let Some(tracking) = tracking {
         content.push_str("track = true\n");
-        content.push_str(&format!(
-            "track_max_distance_px = {}\n",
-            tracking.max_distance_px
-        ));
-        content.push_str(&format!(
-            "track_min_overlap_px = {}\n",
-            tracking.min_overlap_px
-        ));
+        content.push_str(&format!("IoA_thresh = {}\n", tracking.ioa_threshold));
     }
     content.push('\n');
 
@@ -845,8 +838,7 @@ mod tests {
         )?;
         let config = SegmentationRunConfig {
             tracking: Some(TrackingConfig {
-                max_distance_px: 4.0,
-                min_overlap_px: 1,
+                ioa_threshold: 0.4,
             }),
             ..base
         };
@@ -960,6 +952,50 @@ mod tests {
         assert!(text.contains("[segm_rust.init.run_number_1]"));
         assert!(text.contains("[segm_rust.segment.run_number_1]"));
         assert!(text.contains("[segm_rust.metadata.run_number_2]"));
+        assert!(!text.contains("track_max_distance_px"));
+        assert!(!text.contains("track_min_overlap_px"));
+        Ok(())
+    }
+
+    #[test]
+    fn writes_tracking_hyperparams_using_ioa_threshold() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("segm_hyperparams.ini");
+        let position = PositionSpec {
+            position_dir: temp.path().join("Position_1"),
+            images_dir: temp.path().to_path_buf(),
+            basename: "demo_".into(),
+            channels: Vec::new(),
+            phase_channel: "phase".into(),
+            fluo_channel: "fluo".into(),
+            phase_image: temp.path().join("demo_phase.tif"),
+            fluo_image: temp.path().join("demo_fluo.tif"),
+            metadata_path: None,
+            data_prep_background_rois_path: None,
+            segm_info_path: None,
+            size_t: 1,
+            size_z: 1,
+            time_increment: 1.0,
+            physical_size_z: 1.0,
+            physical_size_x: 1.0,
+            physical_size_y: 1.0,
+            segm_is_3d: BTreeMap::new(),
+        };
+
+        write_hyperparams_ini(
+            &path,
+            &position,
+            Path::new("/tmp/model.onnx"),
+            &SegmentationParams::default(),
+            true,
+            Some("tracked"),
+            Some(&TrackingConfig { ioa_threshold: 0.55 }),
+            Path::new("/tmp/demo_segm_tracked.npz"),
+        )?;
+
+        let text = fs::read_to_string(&path)?;
+        assert!(text.contains("track = true"));
+        assert!(text.contains("IoA_thresh = 0.55"));
         Ok(())
     }
 

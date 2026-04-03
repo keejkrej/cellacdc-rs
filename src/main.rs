@@ -72,10 +72,8 @@ struct CommonArgs {
     min_size: usize,
     #[arg(long)]
     track: bool,
-    #[arg(long, default_value_t = 25.0)]
-    track_max_distance_px: f32,
-    #[arg(long, default_value_t = 1)]
-    track_min_overlap_px: usize,
+    #[arg(long, default_value_t = 0.4)]
+    track_ioa_threshold: f32,
 }
 
 #[derive(Debug, Args)]
@@ -601,8 +599,7 @@ impl CommonArgs {
 
     fn tracking(&self) -> Option<TrackingConfig> {
         self.track.then(|| TrackingConfig {
-            max_distance_px: self.track_max_distance_px,
-            min_overlap_px: self.track_min_overlap_px,
+            ioa_threshold: self.track_ioa_threshold,
         })
     }
 }

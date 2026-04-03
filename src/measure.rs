@@ -100,6 +100,17 @@ struct MeasurementRow {
     z_slice_used: Option<usize>,
     which_z_proj: Option<String>,
     cell_id: u32,
+    cell_cycle_stage: String,
+    generation_num: i32,
+    relative_id: i32,
+    relationship: String,
+    emerg_frame_i: i32,
+    division_frame_i: i32,
+    is_history_known: bool,
+    corrected_on_frame_i: i32,
+    will_divide: u8,
+    daughter_disappears_before_division: u8,
+    disappears_before_division: u8,
     is_cell_dead: u8,
     is_cell_excluded: u8,
     was_manually_edited: u8,
@@ -215,6 +226,12 @@ const REGIONPROP_HEADERS: &[&str] = &[
     "bbox-2",
     "bbox-3",
 ];
+
+const DEFAULT_CELL_CYCLE_STAGE: &str = "G1";
+const DEFAULT_RELATIONSHIP: &str = "mother";
+const DEFAULT_GENERATION_NUM: i32 = 2;
+const DEFAULT_UNASSIGNED_FRAME: i32 = -1;
+const DEFAULT_RELATIVE_ID: i32 = -1;
 
 pub fn measure_position(config: MeasurementRunConfig) -> Result<MeasurementRunResult> {
     let spec = resolve_measurement_position(&config.position_path)?;
@@ -424,6 +441,17 @@ pub(crate) fn write_measurements(
                     .as_ref()
                     .map(|record| record.which_z_proj.as_str().to_string()),
                 cell_id: region.label,
+                cell_cycle_stage: DEFAULT_CELL_CYCLE_STAGE.to_string(),
+                generation_num: DEFAULT_GENERATION_NUM,
+                relative_id: DEFAULT_RELATIVE_ID,
+                relationship: DEFAULT_RELATIONSHIP.to_string(),
+                emerg_frame_i: DEFAULT_UNASSIGNED_FRAME,
+                division_frame_i: DEFAULT_UNASSIGNED_FRAME,
+                is_history_known: false,
+                corrected_on_frame_i: DEFAULT_UNASSIGNED_FRAME,
+                will_divide: 0,
+                daughter_disappears_before_division: 0,
+                disappears_before_division: 0,
                 is_cell_dead: 0,
                 is_cell_excluded: 0,
                 was_manually_edited: 0,
@@ -1383,6 +1411,17 @@ fn build_headers(channels: &[ChannelSpec]) -> Vec<String> {
         "z_slice_used".to_string(),
         "which_z_proj".to_string(),
         "Cell_ID".to_string(),
+        "cell_cycle_stage".to_string(),
+        "generation_num".to_string(),
+        "relative_ID".to_string(),
+        "relationship".to_string(),
+        "emerg_frame_i".to_string(),
+        "division_frame_i".to_string(),
+        "is_history_known".to_string(),
+        "corrected_on_frame_i".to_string(),
+        "will_divide".to_string(),
+        "daughter_disappears_before_division".to_string(),
+        "disappears_before_division".to_string(),
         "is_cell_dead".to_string(),
         "is_cell_excluded".to_string(),
         "was_manually_edited".to_string(),
@@ -1435,6 +1474,19 @@ fn write_measurement_csv(path: &Path, headers: &[String], rows: &[MeasurementRow
                     .clone()
                     .unwrap_or_else(|| "NaN".to_string()),
                 "Cell_ID" => row.cell_id.to_string(),
+                "cell_cycle_stage" => row.cell_cycle_stage.clone(),
+                "generation_num" => row.generation_num.to_string(),
+                "relative_ID" => row.relative_id.to_string(),
+                "relationship" => row.relationship.clone(),
+                "emerg_frame_i" => row.emerg_frame_i.to_string(),
+                "division_frame_i" => row.division_frame_i.to_string(),
+                "is_history_known" => row.is_history_known.to_string(),
+                "corrected_on_frame_i" => row.corrected_on_frame_i.to_string(),
+                "will_divide" => row.will_divide.to_string(),
+                "daughter_disappears_before_division" => {
+                    row.daughter_disappears_before_division.to_string()
+                }
+                "disappears_before_division" => row.disappears_before_division.to_string(),
                 "is_cell_dead" => row.is_cell_dead.to_string(),
                 "is_cell_excluded" => row.is_cell_excluded.to_string(),
                 "was_manually_edited" => row.was_manually_edited.to_string(),
@@ -1539,6 +1591,8 @@ fn coefficient_of_variation(values: &[f32]) -> f64 {
 mod tests {
     use super::*;
     use crate::image_io::write_mask_npz;
+    use crate::tabular::read_table;
+    use crate::utilities::{add_lineage_tree, LineageTreeConfig};
     use ndarray::Array3;
     use ndarray_npy::NpzWriter;
     use std::fs::File;
@@ -1572,12 +1626,93 @@ mod tests {
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
         })?;
-        let csv = fs::read_to_string(result.outputs.acdc_output_csv_path)?;
-        assert!(csv.contains("demo_acdc_output.csv") == false);
-        assert!(csv.contains("cell_vol_vox"));
-        assert!(csv.contains("phase_mean"));
-        assert!(csv.contains("gfp_mean"));
-        assert!(csv.contains("disappears_before_end"));
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader.headers()?.iter().map(str::to_string).collect::<Vec<_>>();
+        assert!(!headers.iter().any(|header| header == "demo_acdc_output.csv"));
+        for required in [
+            "cell_vol_vox",
+            "phase_mean",
+            "gfp_mean",
+            "cell_cycle_stage",
+            "generation_num",
+            "relative_ID",
+            "relationship",
+            "emerg_frame_i",
+            "division_frame_i",
+            "is_history_known",
+            "corrected_on_frame_i",
+            "will_divide",
+            "daughter_disappears_before_division",
+            "disappears_before_division",
+        ] {
+            assert!(
+                headers.iter().any(|header| header == required),
+                "missing required header {required}"
+            );
+        }
+        let first_row = reader.records().next().transpose()?.expect("first output row");
+        let get = |name: &str| -> Result<&str> {
+            let idx = headers
+                .iter()
+                .position(|header| header == name)
+                .ok_or_else(|| anyhow::anyhow!("missing header {name}"))?;
+            Ok(first_row.get(idx).expect("value"))
+        };
+        assert_eq!(get("cell_cycle_stage")?, "G1");
+        assert_eq!(get("generation_num")?, "2");
+        assert_eq!(get("relative_ID")?, "-1");
+        assert_eq!(get("relationship")?, "mother");
+        assert_eq!(get("is_history_known")?, "false");
+        assert_eq!(get("corrected_on_frame_i")?, "-1");
+        Ok(())
+    }
+
+    #[test]
+    fn measured_output_can_flow_into_lineage_tree_utility() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+        })?;
+        let lineage_output = images.join("demo_acdc_output_lineage.csv");
+        add_lineage_tree(LineageTreeConfig {
+            input_path: result.outputs.acdc_output_csv_path,
+            output_path: lineage_output.clone(),
+        })?;
+        let table = read_table(&lineage_output)?;
+        for required in [
+            "Cell_ID_tree",
+            "generation_num_tree",
+            "parent_ID_tree",
+            "root_ID_tree",
+            "sister_ID_tree",
+        ] {
+            assert!(
+                table.headers.iter().any(|header| header == required),
+                "missing lineage header {required}"
+            );
+        }
         Ok(())
     }
 
