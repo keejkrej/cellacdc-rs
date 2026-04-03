@@ -71,6 +71,7 @@ pub fn rows_from_mask(
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn write_acdc_output_csv(path: &Path, rows: &[MeasurementRow]) -> Result<()> {
     let include_disappears = rows.iter().any(|row| row.disappears_before_end.is_some());
     let mut writer =

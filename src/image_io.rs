@@ -14,18 +14,20 @@ pub struct StackShape {
     pub width: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedArrayF32 {
+    pub name: String,
+    pub values: Vec<f32>,
+    pub shape: StackShape,
+}
+
 pub fn inspect_image_stack(path: &Path) -> Result<StackShape> {
     let (_, shape) = load_image_stack_as_f32(path)?;
     Ok(shape)
 }
 
 pub fn load_image_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .as_deref()
-    {
+    match extension(path).as_deref() {
         Some("tif") | Some("tiff") => load_tiff_stack_as_f32(path),
         Some("npz") => load_npz_stack_as_f32(path),
         Some("h5") => load_h5_stack_as_f32(path),
@@ -35,6 +37,42 @@ pub fn load_image_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
             path.display()
         ),
     }
+}
+
+pub fn load_mask_stack_as_u32(path: &Path) -> Result<(Vec<u32>, StackShape)> {
+    match extension(path).as_deref() {
+        Some("tif") | Some("tiff") => load_tiff_stack_as_u32(path),
+        Some("npz") => load_npz_stack_as_u32(path),
+        Some("h5") => load_h5_stack_as_u32(path),
+        other => bail!(
+            "Unsupported mask format {:?} for {}. Supported formats are TIFF, NPZ, and H5.",
+            other,
+            path.display()
+        ),
+    }
+}
+
+pub fn load_npz_archive_arrays_as_f32(path: &Path) -> Result<Vec<NamedArrayF32>> {
+    let mut npz = NpzReader::new(File::open(path)?)
+        .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+    let names = npz
+        .names()
+        .with_context(|| format!("Failed to list NPZ arrays in {}", path.display()))?;
+    drop(npz);
+
+    let mut arrays = Vec::with_capacity(names.len());
+    for name in names {
+        let shape = read_npz_shape(path, &name)?;
+        let values = read_npz_pixels(path, &name)?;
+        arrays.push(NamedArrayF32 { name, values, shape });
+    }
+    Ok(arrays)
+}
+
+fn extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
 }
 
 fn load_tiff_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
@@ -47,60 +85,8 @@ fn load_tiff_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
     let mut expected_shape = None;
 
     loop {
-        let dimensions = decoder
-            .dimensions()
-            .with_context(|| format!("Failed to read TIFF dimensions from {}", path.display()))?;
-        let color_type = decoder
-            .colortype()
-            .with_context(|| format!("Failed to read TIFF color type from {}", path.display()))?;
+        let (page_pixels, page_shape) = read_tiff_page_as_f32(&mut decoder, path)?;
 
-        match color_type {
-            ColorType::Gray(_) => {}
-            _ => {
-                bail!(
-                    "Unsupported TIFF color type {:?} in {}. This phase expects grayscale 2D TIFF inputs.",
-                    color_type,
-                    path.display()
-                );
-            }
-        }
-
-        let (width, height) = (dimensions.0 as usize, dimensions.1 as usize);
-        let page_pixels = match decoder
-            .read_image()
-            .with_context(|| format!("Failed to read TIFF pixels from {}", path.display()))?
-        {
-            DecodingResult::U8(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::U16(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::U32(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::U64(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::I8(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::I16(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::I32(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::I64(values) => values.into_iter().map(|v| v as f32).collect(),
-            DecodingResult::F32(values) => values,
-            DecodingResult::F64(values) => values.into_iter().map(|v| v as f32).collect(),
-            other => bail!(
-                "Unsupported TIFF pixel format {:?} in {}",
-                other,
-                path.display()
-            ),
-        };
-
-        if page_pixels.len() != width * height {
-            bail!(
-                "Unexpected pixel count in {}: got {}, expected {}",
-                path.display(),
-                page_pixels.len(),
-                width * height
-            );
-        }
-
-        let page_shape = StackShape {
-            frames: 1,
-            height,
-            width,
-        };
         if let Some(expected) = expected_shape {
             if expected != page_shape {
                 bail!(
@@ -132,6 +118,151 @@ fn load_tiff_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
     Ok((pixels, shape))
 }
 
+fn load_tiff_stack_as_u32(path: &Path) -> Result<(Vec<u32>, StackShape)> {
+    let file = File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+    let mut decoder =
+        Decoder::new(file).with_context(|| format!("Failed to decode TIFF {}", path.display()))?;
+
+    let mut pixels = Vec::new();
+    let mut frames = 0usize;
+    let mut expected_shape = None;
+
+    loop {
+        let (page_pixels, page_shape) = read_tiff_page_as_u32(&mut decoder, path)?;
+
+        if let Some(expected) = expected_shape {
+            if expected != page_shape {
+                bail!(
+                    "TIFF pages in {} do not share the same dimensions",
+                    path.display()
+                );
+            }
+        } else {
+            expected_shape = Some(page_shape);
+        }
+
+        pixels.extend(page_pixels);
+        frames += 1;
+
+        if !decoder.more_images() {
+            break;
+        }
+
+        decoder
+            .next_image()
+            .with_context(|| format!("Failed to advance TIFF pages in {}", path.display()))?;
+    }
+
+    let shape = StackShape {
+        frames,
+        height: expected_shape.map(|shape| shape.height).unwrap_or(0),
+        width: expected_shape.map(|shape| shape.width).unwrap_or(0),
+    };
+    Ok((pixels, shape))
+}
+
+fn read_tiff_page_as_f32(decoder: &mut Decoder<File>, path: &Path) -> Result<(Vec<f32>, StackShape)> {
+    let (width, height) = read_tiff_page_shape(decoder, path)?;
+    let page_pixels = match decoder
+        .read_image()
+        .with_context(|| format!("Failed to read TIFF pixels from {}", path.display()))?
+    {
+        DecodingResult::U8(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::U16(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::U32(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::U64(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::I8(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::I16(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::I32(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::I64(values) => values.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::F32(values) => values,
+        DecodingResult::F64(values) => values.into_iter().map(|v| v as f32).collect(),
+        other => bail!(
+            "Unsupported TIFF pixel format {:?} in {}",
+            other,
+            path.display()
+        ),
+    };
+
+    validate_tiff_page_len(path, width, height, page_pixels.len())?;
+    Ok((
+        page_pixels,
+        StackShape {
+            frames: 1,
+            height,
+            width,
+        },
+    ))
+}
+
+fn read_tiff_page_as_u32(decoder: &mut Decoder<File>, path: &Path) -> Result<(Vec<u32>, StackShape)> {
+    let (width, height) = read_tiff_page_shape(decoder, path)?;
+    let page_pixels = match decoder
+        .read_image()
+        .with_context(|| format!("Failed to read TIFF pixels from {}", path.display()))?
+    {
+        DecodingResult::U8(values) => values.into_iter().map(|v| v as u32).collect(),
+        DecodingResult::U16(values) => values.into_iter().map(|v| v as u32).collect(),
+        DecodingResult::U32(values) => values,
+        DecodingResult::U64(values) => values.into_iter().map(|v| v as u32).collect(),
+        DecodingResult::I8(values) => values.into_iter().map(|v| v.max(0) as u32).collect(),
+        DecodingResult::I16(values) => values.into_iter().map(|v| v.max(0) as u32).collect(),
+        DecodingResult::I32(values) => values.into_iter().map(|v| v.max(0) as u32).collect(),
+        DecodingResult::I64(values) => values.into_iter().map(|v| v.max(0) as u32).collect(),
+        DecodingResult::F32(values) => values.into_iter().map(|v| v.max(0.0) as u32).collect(),
+        DecodingResult::F64(values) => values.into_iter().map(|v| v.max(0.0) as u32).collect(),
+        other => bail!(
+            "Unsupported TIFF mask pixel format {:?} in {}",
+            other,
+            path.display()
+        ),
+    };
+
+    validate_tiff_page_len(path, width, height, page_pixels.len())?;
+    Ok((
+        page_pixels,
+        StackShape {
+            frames: 1,
+            height,
+            width,
+        },
+    ))
+}
+
+fn read_tiff_page_shape(decoder: &mut Decoder<File>, path: &Path) -> Result<(usize, usize)> {
+    let dimensions = decoder
+        .dimensions()
+        .with_context(|| format!("Failed to read TIFF dimensions from {}", path.display()))?;
+    let color_type = decoder
+        .colortype()
+        .with_context(|| format!("Failed to read TIFF color type from {}", path.display()))?;
+
+    match color_type {
+        ColorType::Gray(_) => {}
+        _ => {
+            bail!(
+                "Unsupported TIFF color type {:?} in {}. This phase expects grayscale 2D TIFF inputs.",
+                color_type,
+                path.display()
+            );
+        }
+    }
+
+    Ok((dimensions.0 as usize, dimensions.1 as usize))
+}
+
+fn validate_tiff_page_len(path: &Path, width: usize, height: usize, actual_len: usize) -> Result<()> {
+    if actual_len != width * height {
+        bail!(
+            "Unexpected pixel count in {}: got {}, expected {}",
+            path.display(),
+            actual_len,
+            width * height
+        );
+    }
+    Ok(())
+}
+
 fn load_npz_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
     let mut npz = NpzReader::new(File::open(path)?)
         .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
@@ -146,6 +277,23 @@ fn load_npz_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
 
     let shape = read_npz_shape(path, &first)?;
     let pixels = read_npz_pixels(path, &first)?;
+    Ok((pixels, shape))
+}
+
+fn load_npz_stack_as_u32(path: &Path) -> Result<(Vec<u32>, StackShape)> {
+    let mut npz = NpzReader::new(File::open(path)?)
+        .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+    let names = npz
+        .names()
+        .with_context(|| format!("Failed to list NPZ arrays in {}", path.display()))?;
+    let first = names
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("NPZ archive is empty: {}", path.display()))?
+        .clone();
+    drop(npz);
+
+    let shape = read_npz_shape(path, &first)?;
+    let pixels = read_npz_pixels_as_u32(path, &first)?;
     Ok((pixels, shape))
 }
 
@@ -252,6 +400,71 @@ fn read_npz_pixels(path: &Path, name: &str) -> Result<Vec<f32>> {
     bail!("Unsupported NPZ element type in {}", path.display())
 }
 
+fn read_npz_pixels_as_u32(path: &Path, name: &str) -> Result<Vec<u32>> {
+    let mut npz = NpzReader::new(File::open(path)?)
+        .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+
+    if let Ok(array) = npz.by_name::<OwnedRepr<f32>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value.max(0.0) as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<f64>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value.max(0.0) as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u8>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u16>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u32>, IxDyn>(name) {
+        return Ok(flatten_array(array));
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u64>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i8>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value.max(0) as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i16>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value.max(0) as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i32>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value.max(0) as u32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i64>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value.max(0) as u32)
+            .collect());
+    }
+
+    bail!("Unsupported NPZ element type in {}", path.display())
+}
+
 fn load_h5_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
     let file =
         Hdf5File::open(path).with_context(|| format!("Failed to open H5 {}", path.display()))?;
@@ -285,6 +498,44 @@ fn load_h5_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
         .or_else(|_| try_h5_array!(i16))
         .or_else(|_| try_h5_array!(i32))
         .or_else(|_| try_h5_array!(i64))
+        .with_context(|| format!("Unsupported H5 dataset type in {}", path.display()))?;
+
+    Ok((pixels, shape))
+}
+
+fn load_h5_stack_as_u32(path: &Path) -> Result<(Vec<u32>, StackShape)> {
+    let file =
+        Hdf5File::open(path).with_context(|| format!("Failed to open H5 {}", path.display()))?;
+    let dataset = file
+        .dataset("/data")
+        .or_else(|_| file.dataset("data"))
+        .with_context(|| format!("Failed to open dataset \"data\" in {}", path.display()))?;
+    let shape = infer_stack_shape_from_dims(
+        dataset.shape().iter().map(|dim| *dim as usize).collect(),
+        path,
+    )?;
+
+    macro_rules! try_h5_array {
+        ($ty:ty) => {
+            dataset.read_array::<$ty>().map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| value.max(0 as $ty) as u32)
+                    .collect::<Vec<_>>()
+            })
+        };
+    }
+
+    let pixels = dataset
+        .read_array::<u32>()
+        .map(|values| values.into_iter().collect::<Vec<_>>())
+        .or_else(|_| dataset.read_array::<u16>().map(|values| values.into_iter().map(|v| v as u32).collect()))
+        .or_else(|_| dataset.read_array::<u8>().map(|values| values.into_iter().map(|v| v as u32).collect()))
+        .or_else(|_| try_h5_array!(i32))
+        .or_else(|_| try_h5_array!(i16))
+        .or_else(|_| try_h5_array!(i8))
+        .or_else(|_| dataset.read_array::<f32>().map(|values| values.into_iter().map(|v| v.max(0.0) as u32).collect()))
+        .or_else(|_| dataset.read_array::<f64>().map(|values| values.into_iter().map(|v| v.max(0.0) as u32).collect()))
         .with_context(|| format!("Unsupported H5 dataset type in {}", path.display()))?;
 
     Ok((pixels, shape))
@@ -395,6 +646,41 @@ mod tests {
         assert_eq!(shape.width, 3);
         assert_eq!(pixels[0], 1.0);
         assert_eq!(pixels[11], 12.0);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_masks_as_u32() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("segm.npz");
+        let file = File::create(&path)?;
+        let mut writer = NpzWriter::new(file);
+        let array = Array3::from_shape_vec((2, 2, 2), vec![0u16, 1, 2, 3, 4, 5, 6, 7])?;
+        writer.add_array("arr_0", &array)?;
+        writer.finish()?;
+
+        let (pixels, shape) = load_mask_stack_as_u32(&path)?;
+        assert_eq!(shape.frames, 2);
+        assert_eq!(pixels[3], 3);
+        assert_eq!(pixels[7], 7);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_all_npz_arrays() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("bkgr.npz");
+        let file = File::create(&path)?;
+        let mut writer = NpzWriter::new(file);
+        let left = Array2::from_shape_vec((2, 2), vec![1u16, 2, 3, 4])?;
+        let right = Array2::from_shape_vec((2, 2), vec![5u16, 6, 7, 8])?;
+        writer.add_array("roi0_data", &left)?;
+        writer.add_array("roi1_data", &right)?;
+        writer.finish()?;
+
+        let arrays = load_npz_archive_arrays_as_f32(&path)?;
+        assert_eq!(arrays.len(), 2);
+        assert_eq!(arrays[0].shape.height, 2);
         Ok(())
     }
 

@@ -284,6 +284,7 @@ dependencies = [
  "image",
  "ndarray 0.16.1",
  "ndarray-npy",
+ "serde_json",
  "tempfile",
  "tiff 0.10.3",
 ]

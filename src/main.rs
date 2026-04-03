@@ -3,7 +3,8 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 use cellacdc_rs::{
-    resolve_position, run_experiment, run_position, ExperimentRunConfig, OverwritePolicy,
+    measure_experiment, measure_position, resolve_position, run_experiment, run_position,
+    ExperimentRunConfig, MeasurementExperimentConfig, MeasurementRunConfig, OverwritePolicy,
     SegmentationParams, SegmentationRunConfig, TrackingConfig,
 };
 
@@ -19,6 +20,8 @@ struct Cli {
 enum Command {
     RunPosition(RunPositionArgs),
     RunExperiment(RunExperimentArgs),
+    MeasurePosition(MeasurePositionArgs),
+    MeasureExperiment(MeasureExperimentArgs),
 }
 
 #[derive(Debug, Args)]
@@ -69,11 +72,33 @@ struct RunExperimentArgs {
     common: CommonArgs,
 }
 
+#[derive(Debug, Args)]
+struct MeasurePositionArgs {
+    #[arg(long)]
+    position: PathBuf,
+    #[arg(long)]
+    segm_endname: Option<String>,
+    #[arg(long)]
+    overwrite: bool,
+}
+
+#[derive(Debug, Args)]
+struct MeasureExperimentArgs {
+    #[arg(long)]
+    experiment: PathBuf,
+    #[arg(long)]
+    segm_endname: Option<String>,
+    #[arg(long)]
+    overwrite: bool,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::RunPosition(args) => run_position_command(args),
         Command::RunExperiment(args) => run_experiment_command(args),
+        Command::MeasurePosition(args) => measure_position_command(args),
+        Command::MeasureExperiment(args) => measure_experiment_command(args),
     }
 }
 
@@ -126,6 +151,39 @@ fn run_experiment_command(args: RunExperimentArgs) -> Result<()> {
             result.position_dir.display(),
             result.frames_processed,
             result.outputs.segm_npz_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn measure_position_command(args: MeasurePositionArgs) -> Result<()> {
+    let result = measure_position(MeasurementRunConfig {
+        position_path: args.position,
+        segm_endname: args.segm_endname,
+        overwrite_policy: overwrite_policy(args.overwrite),
+    })?;
+    println!(
+        "Measured {} frame(s) in {} and wrote {}",
+        result.frames_processed,
+        result.position_dir.display(),
+        result.outputs.acdc_output_csv_path.display()
+    );
+    Ok(())
+}
+
+fn measure_experiment_command(args: MeasureExperimentArgs) -> Result<()> {
+    let results = measure_experiment(MeasurementExperimentConfig {
+        experiment_dir: args.experiment,
+        segm_endname: args.segm_endname,
+        overwrite_policy: overwrite_policy(args.overwrite),
+    })?;
+    println!("Measured {} positions", results.len());
+    for result in results {
+        println!(
+            "{} ({} frame(s)) -> {}",
+            result.position_dir.display(),
+            result.frames_processed,
+            result.outputs.acdc_output_csv_path.display()
         );
     }
     Ok(())

@@ -1,9 +1,10 @@
 use anyhow::{bail, Context, Result};
 use chrono::Local;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use csv::Reader;
 #[cfg(test)]
 use ndarray::Array3;
 #[cfg(test)]
@@ -13,7 +14,9 @@ use std::fs::File;
 
 use crate::image_io::{load_image_stack_as_f32, write_mask_npz};
 use crate::layout::{discover_experiment, resolve_position, ExperimentSpec, PositionSpec};
-use crate::measurements::{rows_from_mask, write_acdc_output_csv};
+use crate::measure::{
+    load_measurement_inputs, measurement_position_from_position, write_measurements,
+};
 use crate::metadata::ensure_position_metadata;
 use crate::model::{CellposeModel, Segmenter};
 use crate::tracking::{track_sequence, TrackingConfig};
@@ -184,45 +187,22 @@ pub fn run_position_with_segmenter(
         raw_frame_masks.push(mask);
     }
 
-    let (tracked_frames, labels_found, disappeared) = if let Some(tracking) = &config.tracking {
+    let (tracked_frames, labels_found) = if let Some(tracking) = &config.tracking {
         let tracked = track_sequence(
             &raw_frame_masks,
             phase_shape.height,
             phase_shape.width,
             tracking,
         );
-        (tracked.frames, tracked.labels_found, tracked.disappeared)
+        (tracked.frames, tracked.labels_found)
     } else {
         let labels_found = raw_frame_masks
             .iter()
             .flat_map(|frame| frame.iter().copied())
             .max()
             .unwrap_or(0);
-        (raw_frame_masks, labels_found, Vec::new())
+        (raw_frame_masks, labels_found)
     };
-
-    let pixel_area_um2 = config.position.physical_size_x * config.position.physical_size_y;
-    let mut rows = Vec::new();
-    let mut row_indices = HashMap::<(usize, u32), usize>::new();
-    for (frame_i, frame_mask) in tracked_frames.iter().enumerate() {
-        let start_index = rows.len();
-        rows.extend(rows_from_mask(
-            frame_mask,
-            phase_shape.height,
-            phase_shape.width,
-            frame_i,
-            config.position.time_increment * frame_i as f64,
-            pixel_area_um2,
-        ));
-        for (offset, row) in rows[start_index..].iter().enumerate() {
-            row_indices.insert((row.frame_i, row.cell_id), start_index + offset);
-        }
-    }
-    for (frame_i, cell_id) in disappeared {
-        if let Some(row_index) = row_indices.get(&(frame_i, cell_id)).copied() {
-            rows[row_index].disappears_before_end = Some(1);
-        }
-    }
 
     let masks = tracked_frames.into_iter().flatten().collect::<Vec<_>>();
     let segm_name = segmentation_name(config.segm_endname.as_deref());
@@ -245,7 +225,6 @@ pub fn run_position_with_segmenter(
         phase_shape.height,
         phase_shape.width,
     )?;
-    write_acdc_output_csv(&outputs.acdc_output_csv_path, &rows)?;
     write_hyperparams_ini(
         &outputs.segm_hyperparams_ini_path,
         &config.position,
@@ -257,12 +236,17 @@ pub fn run_position_with_segmenter(
         &outputs.segm_npz_path,
     )?;
 
+    let measurement_result = write_measurements(&load_measurement_inputs(
+        measurement_position_from_position(&config.position),
+        config.segm_endname.as_deref(),
+    )?)?;
+
     Ok(RunResult {
         position_dir: config.position.position_dir,
         images_dir: config.position.images_dir,
         outputs,
-        labels_found,
-        frames_processed: phase_shape.frames,
+        labels_found: measurement_result.labels_found.max(labels_found),
+        frames_processed: measurement_result.frames_processed,
     })
 }
 
@@ -604,11 +588,38 @@ mod tests {
         let masks: Array3<u32> = npz.by_name("arr_0.npy")?;
         assert_eq!(masks.shape(), &[3, 4, 4]);
 
-        let csv = fs::read_to_string(&result.outputs.acdc_output_csv_path)?;
-        assert!(csv.contains("frame_i,Cell_ID,time_seconds,time_minutes,time_hours"));
-        assert!(csv.contains("0,1,0,0,0"));
-        assert!(csv.contains("1,2,30,0.5"));
-        assert!(csv.contains("2,3,60,1"));
+        let mut reader = Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader.headers()?.clone();
+        assert_eq!(
+            headers.iter().take(5).collect::<Vec<_>>(),
+            vec!["frame_i", "time_seconds", "time_minutes", "time_hours", "Cell_ID"]
+        );
+
+        let frame_i = header_index(&headers, "frame_i");
+        let time_seconds = header_index(&headers, "time_seconds");
+        let time_minutes = header_index(&headers, "time_minutes");
+        let cell_id = header_index(&headers, "Cell_ID");
+        let rows = reader.records().collect::<std::result::Result<Vec<_>, _>>()?;
+
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().any(|row| {
+            row.get(frame_i) == Some("0")
+                && row.get(cell_id) == Some("1")
+                && row.get(time_seconds) == Some("0")
+                && row.get(time_minutes) == Some("0")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.get(frame_i) == Some("1")
+                && row.get(cell_id) == Some("2")
+                && row.get(time_seconds) == Some("30")
+                && row.get(time_minutes) == Some("0.5")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.get(frame_i) == Some("2")
+                && row.get(cell_id) == Some("3")
+                && row.get(time_seconds) == Some("60")
+                && row.get(time_minutes) == Some("1")
+        }));
         Ok(())
     }
 
@@ -691,13 +702,34 @@ mod tests {
         };
 
         let result = run_position_with_segmenter(config, &mut segmenter)?;
-        let csv = fs::read_to_string(&result.outputs.acdc_output_csv_path)?;
-        assert!(csv.contains("disappears_before_end"));
-        assert!(csv.contains("0,1,0"));
-        assert!(csv.contains("\n1,1,1,"));
-        assert!(csv.contains("\n2,1,2,"));
-        assert!(csv.contains("0,2,0"));
-        assert!(csv.contains(",1\n"));
+        let mut reader = Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader.headers()?.clone();
+        let frame_i = header_index(&headers, "frame_i");
+        let cell_id = header_index(&headers, "Cell_ID");
+        let disappears_before_end = header_index(&headers, "disappears_before_end");
+        let rows = reader.records().collect::<std::result::Result<Vec<_>, _>>()?;
+
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().any(|row| {
+            row.get(frame_i) == Some("0")
+                && row.get(cell_id) == Some("1")
+                && row.get(disappears_before_end) == Some("0")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.get(frame_i) == Some("1")
+                && row.get(cell_id) == Some("1")
+                && row.get(disappears_before_end) == Some("0")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.get(frame_i) == Some("2")
+                && row.get(cell_id) == Some("1")
+                && row.get(disappears_before_end) == Some("0")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.get(frame_i) == Some("0")
+                && row.get(cell_id) == Some("2")
+                && row.get(disappears_before_end) == Some("1")
+        }));
         Ok(())
     }
 
@@ -709,11 +741,13 @@ mod tests {
             position_dir: temp.path().join("Position_1"),
             images_dir: temp.path().to_path_buf(),
             basename: "demo_".into(),
+            channels: Vec::new(),
             phase_channel: "phase".into(),
             fluo_channel: "fluo".into(),
             phase_image: temp.path().join("demo_phase.tif"),
             fluo_image: temp.path().join("demo_fluo.tif"),
             metadata_path: None,
+            data_prep_background_rois_path: None,
             size_t: 1,
             time_increment: 1.0,
             physical_size_x: 1.0,
@@ -762,5 +796,12 @@ mod tests {
             encoder.write_image::<colortype::Gray16>(4, 4, &data)?;
         }
         Ok(())
+    }
+
+    fn header_index(headers: &csv::StringRecord, name: &str) -> usize {
+        headers
+            .iter()
+            .position(|header| header == name)
+            .unwrap_or_else(|| panic!("missing CSV header {name}"))
     }
 }
