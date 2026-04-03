@@ -8,18 +8,24 @@ use csv::Reader;
 #[cfg(test)]
 use ndarray::Array3;
 #[cfg(test)]
-use ndarray_npy::NpzReader;
+use ndarray::Array4;
+#[cfg(test)]
+use ndarray_npy::{NpzReader, NpzWriter};
+#[cfg(test)]
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::fs::File;
 
-use crate::image_io::{load_image_stack_as_f32, write_mask_npz};
+use crate::image_io::{load_image_stack_as_f32, load_image_volume_as_f32, write_mask_npz};
 use crate::layout::{discover_experiment, resolve_position, ExperimentSpec, PositionSpec};
 use crate::measure::{
     load_measurement_inputs, measurement_position_from_position, write_measurements,
 };
 use crate::metadata::ensure_position_metadata;
 use crate::model::{CellposeModel, Segmenter};
+use crate::segm_info::load_segm_info;
 use crate::tracking::{track_sequence, TrackingConfig};
+use crate::zstack::project_frame_f32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SegmentationParams {
@@ -128,70 +134,166 @@ pub fn run_position_with_segmenter(
     config: SegmentationRunConfig,
     segmenter: &mut impl Segmenter,
 ) -> Result<RunResult> {
-    let (phase, phase_shape) =
-        load_image_stack_as_f32(&config.position.phase_image).with_context(|| {
-            format!(
-                "Failed to load phase image {}",
-                config.position.phase_image.display()
-            )
-        })?;
-    let (fluo, fluo_shape) =
-        load_image_stack_as_f32(&config.position.fluo_image).with_context(|| {
-            format!(
-                "Failed to load fluorescence image {}",
-                config.position.fluo_image.display()
-            )
-        })?;
-
-    if phase_shape != fluo_shape {
-        bail!(
-            "Input image stack mismatch: phase is {} frame(s) of {}x{}, fluorescence is {} frame(s) of {}x{}",
-            phase_shape.frames,
-            phase_shape.width,
-            phase_shape.height,
-            fluo_shape.frames,
-            fluo_shape.width,
-            fluo_shape.height
-        );
-    }
-
-    if config.position.size_t != phase_shape.frames {
-        bail!(
-            "Resolved metadata SizeT ({}) does not match image frame count ({}) for {}",
-            config.position.size_t,
-            phase_shape.frames,
-            config.position.phase_image.display()
-        );
-    }
-
     let outputs = output_paths(
         &config.position.images_dir,
         &config.position.basename,
         config.segm_endname.as_deref(),
     );
     guard_outputs(&outputs, config.overwrite_policy)?;
+    let mut raw_frame_masks = Vec::with_capacity(config.position.size_t);
+    let (frame_height, frame_width) = if config.position.size_z > 1 {
+        let (phase, phase_shape) =
+            load_image_volume_as_f32(
+                &config.position.phase_image,
+                Some(config.position.size_t),
+                Some(config.position.size_z),
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to load phase image {}",
+                    config.position.phase_image.display()
+                )
+            })?;
+        let (fluo, fluo_shape) =
+            load_image_volume_as_f32(
+                &config.position.fluo_image,
+                Some(config.position.size_t),
+                Some(config.position.size_z),
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to load fluorescence image {}",
+                    config.position.fluo_image.display()
+                )
+            })?;
+        if phase_shape != fluo_shape {
+            bail!(
+                "Input z-stack mismatch: phase is {}x{}x{}x{}, fluorescence is {}x{}x{}x{}",
+                phase_shape.size_t,
+                phase_shape.size_z,
+                phase_shape.height,
+                phase_shape.width,
+                fluo_shape.size_t,
+                fluo_shape.size_z,
+                fluo_shape.height,
+                fluo_shape.width
+            );
+        }
+        let segm_info_path = config.position.segm_info_path.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Position {} is a z-stack but no _segmInfo.csv was found. Run prepare-zstack-segm-info first.",
+                config.position.position_dir.display()
+            )
+        })?;
+        let segm_info = load_segm_info(segm_info_path)?;
+        let phase_filename = config
+            .position
+            .phase_image
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Invalid phase filename"))?;
+        let fluo_filename = config
+            .position
+            .fluo_image
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Invalid fluorescence filename"))?;
+        for frame_i in 0..phase_shape.size_t {
+            let phase_record = segm_info.get(phase_filename, frame_i).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Missing _segmInfo entry for {:?} frame {}",
+                    phase_filename,
+                    frame_i
+                )
+            })?;
+            let fluo_record = segm_info.get(fluo_filename, frame_i).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Missing _segmInfo entry for {:?} frame {}",
+                    fluo_filename,
+                    frame_i
+                )
+            })?;
+            let phase_frame = project_frame_f32(
+                &phase,
+                phase_shape,
+                frame_i,
+                phase_record.z_slice_used_data_prep,
+                phase_record.which_z_proj,
+            )?;
+            let fluo_frame = project_frame_f32(
+                &fluo,
+                fluo_shape,
+                frame_i,
+                fluo_record.z_slice_used_data_prep,
+                fluo_record.which_z_proj,
+            )?;
+            raw_frame_masks.push(segmenter.segment_pair(
+                phase_frame,
+                fluo_frame,
+                phase_shape.height,
+                phase_shape.width,
+                &config.params,
+            )?);
+        }
+        (phase_shape.height, phase_shape.width)
+    } else {
+        let (phase, phase_shape) =
+            load_image_stack_as_f32(&config.position.phase_image).with_context(|| {
+                format!(
+                    "Failed to load phase image {}",
+                    config.position.phase_image.display()
+                )
+            })?;
+        let (fluo, fluo_shape) =
+            load_image_stack_as_f32(&config.position.fluo_image).with_context(|| {
+                format!(
+                    "Failed to load fluorescence image {}",
+                    config.position.fluo_image.display()
+                )
+            })?;
 
-    let frame_len = phase_shape.height * phase_shape.width;
-    let mut raw_frame_masks = Vec::with_capacity(phase_shape.frames);
+        if phase_shape != fluo_shape {
+            bail!(
+                "Input image stack mismatch: phase is {} frame(s) of {}x{}, fluorescence is {} frame(s) of {}x{}",
+                phase_shape.frames,
+                phase_shape.width,
+                phase_shape.height,
+                fluo_shape.frames,
+                fluo_shape.width,
+                fluo_shape.height
+            );
+        }
 
-    for frame_i in 0..phase_shape.frames {
-        let start = frame_i * frame_len;
-        let end = start + frame_len;
-        let mask = segmenter.segment_pair(
-            phase[start..end].to_vec(),
-            fluo[start..end].to_vec(),
-            phase_shape.height,
-            phase_shape.width,
-            &config.params,
-        )?;
-        raw_frame_masks.push(mask);
-    }
+        if config.position.size_t != phase_shape.frames {
+            bail!(
+                "Resolved metadata SizeT ({}) does not match image frame count ({}) for {}",
+                config.position.size_t,
+                phase_shape.frames,
+                config.position.phase_image.display()
+            );
+        }
+
+        let frame_len = phase_shape.height * phase_shape.width;
+        for frame_i in 0..phase_shape.frames {
+            let start = frame_i * frame_len;
+            let end = start + frame_len;
+            let mask = segmenter.segment_pair(
+                phase[start..end].to_vec(),
+                fluo[start..end].to_vec(),
+                phase_shape.height,
+                phase_shape.width,
+                &config.params,
+            )?;
+            raw_frame_masks.push(mask);
+        }
+        (phase_shape.height, phase_shape.width)
+    };
 
     let (tracked_frames, labels_found) = if let Some(tracking) = &config.tracking {
         let tracked = track_sequence(
             &raw_frame_masks,
-            phase_shape.height,
-            phase_shape.width,
+            frame_height,
+            frame_width,
             tracking,
         );
         (tracked.frames, tracked.labels_found)
@@ -212,18 +314,23 @@ pub fn run_position_with_segmenter(
         &config.position.basename,
         &config.position.phase_channel,
         &config.position.fluo_channel,
-        phase_shape.frames,
-        phase_shape.height,
-        phase_shape.width,
+        config.position.size_t,
+        config.position.size_z,
+        frame_height,
+        frame_width,
         config.position.time_increment,
+        config.position.physical_size_z,
+        config.position.physical_size_y,
+        config.position.physical_size_x,
         &segm_name,
+        false,
     )?;
     write_mask_npz(
         &outputs.segm_npz_path,
         &masks,
-        phase_shape.frames,
-        phase_shape.height,
-        phase_shape.width,
+        config.position.size_t,
+        frame_height,
+        frame_width,
     )?;
     write_hyperparams_ini(
         &outputs.segm_hyperparams_ini_path,
@@ -597,7 +704,7 @@ mod tests {
                 "time_seconds",
                 "time_minutes",
                 "time_hours",
-                "Cell_ID"
+                "z_slice_used"
             ]
         );
 
@@ -628,6 +735,65 @@ mod tests {
                 && row.get(time_seconds) == Some("60")
                 && row.get(time_minutes) == Some("1")
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn runs_zstack_position_using_segm_info_projection() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_volume_npz(&images.join("demo_phase_aligned.npz"), &[1.0, 5.0], 2, 2)?;
+        write_test_volume_npz(&images.join("demo_fluo_aligned.npz"), &[2.0, 6.0], 2, 2)?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,2\nTimeIncrement,30\nPhysicalSizeZ,1.5\nPhysicalSizeY,0.5\nPhysicalSizeX,0.25\n",
+        )?;
+        fs::write(
+            images.join("demo_segmInfo.csv"),
+            concat!(
+                "filename,frame_i,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep,z_slice_used_gui,which_z_proj_gui,resegmented_in_gui\n",
+                "demo_phase_aligned.npz,0,1,single z-slice,1,1,single z-slice,0\n",
+                "demo_phase_aligned.npz,1,1,single z-slice,1,1,single z-slice,0\n",
+                "demo_fluo_aligned.npz,0,1,single z-slice,1,1,single z-slice,0\n",
+                "demo_fluo_aligned.npz,1,1,single z-slice,1,1,single z-slice,0\n",
+            ),
+        )?;
+
+        let config = resolve_position_run_config(
+            temp.path().join("Position_1"),
+            "phase",
+            "fluo",
+            "unused-model.onnx",
+            None,
+            OverwritePolicy::Refuse,
+            true,
+            SegmentationParams::default(),
+        )?;
+
+        let mut segmenter = FakeSegmenter {
+            masks_per_call: vec![
+                vec![
+                    0, 1, 0, 0, //
+                    0, 1, 0, 0, //
+                    0, 0, 0, 0, //
+                    0, 0, 0, 0, //
+                ],
+                vec![
+                    0, 0, 2, 0, //
+                    0, 0, 2, 0, //
+                    0, 0, 0, 0, //
+                    0, 0, 0, 0, //
+                ],
+            ],
+            calls: 0,
+        };
+
+        let result = run_position_with_segmenter(config, &mut segmenter)?;
+        let csv = fs::read_to_string(result.outputs.acdc_output_csv_path)?;
+        assert!(csv.contains("z_slice_used"));
+        assert!(csv.contains("single z-slice"));
+        assert!(csv.contains(",1,"));
         Ok(())
     }
 
@@ -758,10 +924,14 @@ mod tests {
             fluo_image: temp.path().join("demo_fluo.tif"),
             metadata_path: None,
             data_prep_background_rois_path: None,
+            segm_info_path: None,
             size_t: 1,
+            size_z: 1,
             time_increment: 1.0,
+            physical_size_z: 1.0,
             physical_size_x: 1.0,
             physical_size_y: 1.0,
+            segm_is_3d: BTreeMap::new(),
         };
 
         write_hyperparams_ini(
@@ -805,6 +975,21 @@ mod tests {
             let data = vec![*value; 16];
             encoder.write_image::<colortype::Gray16>(4, 4, &data)?;
         }
+        Ok(())
+    }
+
+    fn write_test_volume_npz(path: &Path, frame_values: &[f32], size_t: usize, size_z: usize) -> Result<()> {
+        let file = File::create(path)?;
+        let mut writer = NpzWriter::new(file);
+        let mut values = Vec::new();
+        for value in frame_values {
+            for _ in 0..size_z {
+                values.extend(vec![*value; 16]);
+            }
+        }
+        let array = Array4::from_shape_vec((size_t, size_z, 4, 4), values)?;
+        writer.add_array("arr_0", &array)?;
+        writer.finish()?;
         Ok(())
     }
 

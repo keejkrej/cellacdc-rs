@@ -2,6 +2,7 @@ use crate::mask_io::{
     load_mask_data, save_mask_data, MaskData, MaskPathResolution, SegmentationLayout,
 };
 use crate::tabular::{read_table, write_table, Table, TableFormat, TableValue};
+use crate::zstack::{connect_3d_lab_z_boundaries, stack_2d_lab_to_3d};
 use anyhow::{anyhow, bail, Context, Result};
 use evalexpr::{ContextWithMutableVariables, HashMapContext, Value as EvalValue};
 use serde_json::json;
@@ -93,6 +94,21 @@ pub struct CountObjectsResult {
 pub struct FillHolesConfig {
     pub segmentation_path: PathBuf,
     pub output_path: PathBuf,
+    pub resolution: Option<MaskPathResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connect3DSegmConfig {
+    pub segmentation_path: PathBuf,
+    pub output_path: PathBuf,
+    pub resolution: Option<MaskPathResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stack2DSegmTo3DConfig {
+    pub segmentation_path: PathBuf,
+    pub output_path: PathBuf,
+    pub size_z: usize,
     pub resolution: Option<MaskPathResolution>,
 }
 
@@ -426,6 +442,104 @@ pub fn fill_holes(config: FillHolesConfig) -> Result<UtilityOutputPaths> {
     let mut masks = load_mask_data(&config.segmentation_path, config.resolution.as_ref())?;
     fill_holes_in_mask_data(&mut masks)?;
     save_mask_data(&config.output_path, &masks)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn connect_3d_segm(config: Connect3DSegmConfig) -> Result<UtilityOutputPaths> {
+    let masks = load_mask_data(&config.segmentation_path, config.resolution.as_ref())?;
+    let connected = match masks.layout {
+        SegmentationLayout::ZYX => {
+            let shape = masks.values.shape();
+            let values = masks.values.iter().copied().collect::<Vec<_>>();
+            let connected =
+                connect_3d_lab_z_boundaries(&values, shape[0], shape[1], shape[2]);
+            MaskData {
+                values: ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(shape), connected)?,
+                layout: masks.layout,
+                source_path: masks.source_path.clone(),
+            }
+        }
+        SegmentationLayout::TZYX => {
+            let shape = masks.values.shape();
+            let frame_len = shape[1] * shape[2] * shape[3];
+            let mut connected = Vec::with_capacity(masks.values.len());
+            let values = masks.values.iter().copied().collect::<Vec<_>>();
+            for frame_i in 0..shape[0] {
+                let start = frame_i * frame_len;
+                connected.extend(connect_3d_lab_z_boundaries(
+                    &values[start..start + frame_len],
+                    shape[1],
+                    shape[2],
+                    shape[3],
+                ));
+            }
+            MaskData {
+                values: ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(shape), connected)?,
+                layout: masks.layout,
+                source_path: masks.source_path.clone(),
+            }
+        }
+        other => bail!(
+            "connect_3d_segm requires ZYX or TZYX masks, got {:?}",
+            other
+        ),
+    };
+    save_mask_data(&config.output_path, &connected)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn stack_2d_segm_to_3d(config: Stack2DSegmTo3DConfig) -> Result<UtilityOutputPaths> {
+    let masks = load_mask_data(&config.segmentation_path, config.resolution.as_ref())?;
+    if config.size_z == 0 {
+        bail!("stack_2d_segm_to_3d requires size_z > 0");
+    }
+    let stacked = match masks.layout {
+        SegmentationLayout::YX => {
+            let shape = masks.values.shape();
+            let values = masks.values.iter().copied().collect::<Vec<_>>();
+            let stacked = stack_2d_lab_to_3d(&values, config.size_z);
+            MaskData {
+                values: ndarray::ArrayD::from_shape_vec(
+                    ndarray::IxDyn(&[config.size_z, shape[0], shape[1]]),
+                    stacked,
+                )?,
+                layout: SegmentationLayout::ZYX,
+                source_path: masks.source_path.clone(),
+            }
+        }
+        SegmentationLayout::TYX => {
+            let shape = masks.values.shape();
+            let plane_len = shape[1] * shape[2];
+            let mut stacked = Vec::with_capacity(masks.values.len() * config.size_z);
+            let values = masks.values.iter().copied().collect::<Vec<_>>();
+            for frame_i in 0..shape[0] {
+                let start = frame_i * plane_len;
+                stacked.extend(stack_2d_lab_to_3d(
+                    &values[start..start + plane_len],
+                    config.size_z,
+                ));
+            }
+            MaskData {
+                values: ndarray::ArrayD::from_shape_vec(
+                    ndarray::IxDyn(&[shape[0], config.size_z, shape[1], shape[2]]),
+                    stacked,
+                )?,
+                layout: SegmentationLayout::TZYX,
+                source_path: masks.source_path.clone(),
+            }
+        }
+        other => bail!(
+            "stack_2d_segm_to_3d requires YX or TYX masks, got {:?}",
+            other
+        ),
+    };
+    save_mask_data(&config.output_path, &stacked)?;
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),

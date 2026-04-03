@@ -5,12 +5,14 @@ use std::path::PathBuf;
 
 use cellacdc_rs::{
     add_lineage_tree, apply_tracking_from_table, combine_metrics, concat_acdc_outputs,
-    count_objects, fill_holes, filter_segm_from_table, generate_mother_bud_total,
-    measure_experiment, measure_position, resolve_position, run_experiment, run_position,
-    ApplyTrackingConfig, CombineMetricsConfig, ConcatConfig, CoordinateFilterConfig,
+    connect_3d_segm, count_objects, fill_holes, filter_segm_from_table,
+    generate_mother_bud_total, measure_experiment, measure_position, prepare_zstack_segm_info,
+    resolve_position, run_experiment, run_position, stack_2d_segm_to_3d, ApplyTrackingConfig,
+    CombineMetricsConfig, ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig,
     CountObjectsConfig, ExperimentRunConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
     LineageTreeConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
-    OverwritePolicy, SegmentationLayout, SegmentationParams, SegmentationRunConfig, TableFormat,
+    OverwritePolicy, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, SegmentationLayout,
+    SegmentationParams, SegmentationRunConfig, Stack2DSegmTo3DConfig, TableFormat,
     TrackingColumnMap, TrackingConfig,
 };
 
@@ -32,6 +34,12 @@ enum Command {
     CombineMetrics(CombineMetricsArgs),
     CountObjects(CountObjectsArgs),
     FillHoles(FillHolesArgs),
+    #[command(name = "prepare-zstack-segm-info")]
+    PrepareZstackSegmInfo(PrepareZstackSegmInfoArgs),
+    #[command(name = "connect-3d-segm")]
+    Connect3DSegm(Connect3DSegmArgs),
+    #[command(name = "stack-2d-segm-to-3d")]
+    Stack2DSegmTo3D(Stack2DSegmTo3DArgs),
     FilterSegmFromTable(FilterSegmFromTableArgs),
     ApplyTrackingFromTable(ApplyTrackingFromTableArgs),
     AddLineageTree(AddLineageTreeArgs),
@@ -179,6 +187,38 @@ struct FillHolesArgs {
 }
 
 #[derive(Debug, Args)]
+struct PrepareZstackSegmInfoArgs {
+    #[arg(long, conflicts_with = "experiment")]
+    position: Option<PathBuf>,
+    #[arg(long, conflicts_with = "position")]
+    experiment: Option<PathBuf>,
+    #[arg(long)]
+    overwrite: bool,
+}
+
+#[derive(Debug, Args)]
+struct Connect3DSegmArgs {
+    #[arg(long)]
+    segmentation: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[command(flatten)]
+    resolution: MaskResolutionArgs,
+}
+
+#[derive(Debug, Args)]
+struct Stack2DSegmTo3DArgs {
+    #[arg(long)]
+    segmentation: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    size_z: usize,
+    #[command(flatten)]
+    resolution: MaskResolutionArgs,
+}
+
+#[derive(Debug, Args)]
 struct FilterSegmFromTableArgs {
     #[arg(long)]
     segmentation: PathBuf,
@@ -269,6 +309,9 @@ fn main() -> Result<()> {
         Command::CombineMetrics(args) => combine_metrics_command(args),
         Command::CountObjects(args) => count_objects_command(args),
         Command::FillHoles(args) => fill_holes_command(args),
+        Command::PrepareZstackSegmInfo(args) => prepare_zstack_segm_info_command(args),
+        Command::Connect3DSegm(args) => connect_3d_segm_command(args),
+        Command::Stack2DSegmTo3D(args) => stack_2d_segm_to_3d_command(args),
         Command::FilterSegmFromTable(args) => filter_segm_from_table_command(args),
         Command::ApplyTrackingFromTable(args) => apply_tracking_from_table_command(args),
         Command::AddLineageTree(args) => add_lineage_tree_command(args),
@@ -423,6 +466,43 @@ fn fill_holes_command(args: FillHolesArgs) -> Result<()> {
         "Wrote filled segmentation to {}",
         result.primary_path.display()
     );
+    Ok(())
+}
+
+fn prepare_zstack_segm_info_command(args: PrepareZstackSegmInfoArgs) -> Result<()> {
+    let target = match (args.position, args.experiment) {
+        (Some(position), None) => PrepareSegmInfoTarget::Position(position),
+        (None, Some(experiment)) => PrepareSegmInfoTarget::Experiment(experiment),
+        _ => anyhow::bail!("Provide exactly one of --position or --experiment."),
+    };
+    let outputs = prepare_zstack_segm_info(PrepareZStackSegmInfoConfig {
+        target,
+        overwrite_policy: overwrite_policy(args.overwrite),
+    })?;
+    for path in outputs {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
+fn connect_3d_segm_command(args: Connect3DSegmArgs) -> Result<()> {
+    let result = connect_3d_segm(Connect3DSegmConfig {
+        segmentation_path: args.segmentation,
+        output_path: args.output,
+        resolution: Some(args.resolution.into()),
+    })?;
+    println!("Wrote connected 3D mask to {}", result.primary_path.display());
+    Ok(())
+}
+
+fn stack_2d_segm_to_3d_command(args: Stack2DSegmTo3DArgs) -> Result<()> {
+    let result = stack_2d_segm_to_3d(Stack2DSegmTo3DConfig {
+        segmentation_path: args.segmentation,
+        output_path: args.output,
+        size_z: args.size_z,
+        resolution: Some(args.resolution.into()),
+    })?;
+    println!("Wrote stacked 3D mask to {}", result.primary_path.display());
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-use crate::image_io::inspect_image_stack;
+use crate::image_io::inspect_image_volume;
 use crate::metadata::{read_metadata_summary, DEFAULT_TIME_INCREMENT};
 use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
@@ -20,10 +20,14 @@ pub struct MeasurementPositionSpec {
     pub channels: Vec<ChannelSpec>,
     pub metadata_path: Option<PathBuf>,
     pub data_prep_background_rois_path: Option<PathBuf>,
+    pub segm_info_path: Option<PathBuf>,
     pub size_t: usize,
+    pub size_z: usize,
     pub time_increment: f64,
+    pub physical_size_z: f64,
     pub physical_size_x: f64,
     pub physical_size_y: f64,
+    pub segm_is_3d: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,10 +42,14 @@ pub struct PositionSpec {
     pub fluo_image: PathBuf,
     pub metadata_path: Option<PathBuf>,
     pub data_prep_background_rois_path: Option<PathBuf>,
+    pub segm_info_path: Option<PathBuf>,
     pub size_t: usize,
+    pub size_z: usize,
     pub time_increment: f64,
+    pub physical_size_z: f64,
     pub physical_size_x: f64,
     pub physical_size_y: f64,
+    pub segm_is_3d: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,10 +88,14 @@ pub fn resolve_position(
         fluo_image,
         metadata_path: base.metadata_path,
         data_prep_background_rois_path: base.data_prep_background_rois_path,
+        segm_info_path: base.segm_info_path,
         size_t: base.size_t,
+        size_z: base.size_z,
         time_increment: base.time_increment,
+        physical_size_z: base.physical_size_z,
         physical_size_x: base.physical_size_x,
         physical_size_y: base.physical_size_y,
+        segm_is_3d: base.segm_is_3d,
     })
 }
 
@@ -110,6 +122,15 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
                 .unwrap_or(false)
         })
         .cloned();
+    let segm_info_path = files
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with("segmInfo.csv"))
+                .unwrap_or(false)
+        })
+        .cloned();
 
     let metadata = metadata_path
         .as_ref()
@@ -130,19 +151,25 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
 
     let channels = discover_channels(&images_dir, &files, &basename)?;
 
-    if metadata.size_z.unwrap_or(1) > 1 {
-        bail!(
-            "Metadata in {} declares SizeZ > 1, but this phase only supports 2D timelapse inputs.",
-            images_dir.display()
-        );
-    }
-
-    let first_shape = inspect_image_stack(&channels[0].image_path)?;
+    let first_shape = inspect_image_volume(
+        &channels[0].image_path,
+        metadata.size_t,
+        metadata.size_z,
+    )?;
     if let Some(size_t) = metadata.size_t {
-        if size_t != first_shape.frames {
+        if size_t != first_shape.size_t {
             bail!(
                 "Metadata SizeT ({size_t}) does not match image frame count ({}) in {}",
-                first_shape.frames,
+                first_shape.size_t,
+                channels[0].image_path.display()
+            );
+        }
+    }
+    if let Some(size_z) = metadata.size_z {
+        if size_z != first_shape.size_z {
+            bail!(
+                "Metadata SizeZ ({size_z}) does not match image depth ({}) in {}",
+                first_shape.size_z,
                 channels[0].image_path.display()
             );
         }
@@ -155,10 +182,14 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
         channels,
         metadata_path,
         data_prep_background_rois_path,
-        size_t: metadata.size_t.unwrap_or(first_shape.frames),
+        segm_info_path,
+        size_t: metadata.size_t.unwrap_or(first_shape.size_t),
+        size_z: metadata.size_z.unwrap_or(first_shape.size_z),
         time_increment: metadata.time_increment.unwrap_or(DEFAULT_TIME_INCREMENT),
+        physical_size_z: metadata.physical_size_z.unwrap_or(1.0),
         physical_size_x: metadata.physical_size_x.unwrap_or(1.0),
         physical_size_y: metadata.physical_size_y.unwrap_or(1.0),
+        segm_is_3d: metadata.segm_is_3d,
     })
 }
 
