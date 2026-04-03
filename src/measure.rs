@@ -91,6 +91,44 @@ enum LoadedChannelShape {
     Volume(VolumeShape),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ChannelVariant {
+    Base,
+    MaxProj,
+    MeanProj,
+    ZSlice,
+    ThreeD,
+}
+
+impl ChannelVariant {
+    fn column_suffix(self) -> &'static str {
+        match self {
+            Self::Base => "",
+            Self::MaxProj => "_maxProj",
+            Self::MeanProj => "_meanProj",
+            Self::ZSlice => "_zSlice",
+            Self::ThreeD => "_3D",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MeasurementMaskContext {
+    projected_frames: Vec<Vec<u32>>,
+    frame_height: usize,
+    frame_width: usize,
+    voxel_counts_per_frame: Option<Vec<BTreeMap<u32, usize>>>,
+    volume_frames: Option<Vec<Vec<u32>>>,
+}
+
+#[derive(Debug, Clone)]
+struct ChannelFrameContext {
+    projected_foregrounds: BTreeMap<ChannelVariant, Vec<f32>>,
+    auto_backgrounds: BTreeMap<ChannelVariant, Vec<f32>>,
+    data_prep_backgrounds: BTreeMap<ChannelVariant, Vec<f32>>,
+    volume_foreground: Option<Vec<f32>>,
+}
+
 #[derive(Debug, Clone)]
 struct MeasurementRow {
     frame_i: usize,
@@ -286,8 +324,8 @@ pub(crate) fn load_measurement_inputs(
         size_z: Some(if is_segm_3d { spec.size_z } else { 1 }),
         layout: None,
     };
-    let mask_data = load_mask_data(&outputs.segm_npz_path, Some(&mask_resolution))
-        .with_context(|| {
+    let mask_data =
+        load_mask_data(&outputs.segm_npz_path, Some(&mask_resolution)).with_context(|| {
             format!(
                 "Failed to load segmentation masks from {}",
                 outputs.segm_npz_path.display()
@@ -330,27 +368,56 @@ pub(crate) fn load_measurement_inputs(
 pub(crate) fn write_measurements(
     loaded: &LoadedMeasurementPosition,
 ) -> Result<MeasurementRunResult> {
-    let (mask_frames, frame_height, frame_width, voxel_counts_per_frame) =
-        measurement_mask_frames(&loaded.mask_data);
-    let channels = load_channels(&loaded.spec, frame_height, frame_width, loaded.is_segm_3d)?;
-    let roi_mask =
-        load_data_prep_roi_mask(loaded.spec.data_prep_background_rois_path.as_deref(), frame_height, frame_width)?;
+    let mask_context = measurement_mask_context(&loaded.mask_data);
+    let channels = load_channels(
+        &loaded.spec,
+        mask_context.frame_height,
+        mask_context.frame_width,
+        loaded.is_segm_3d,
+    )?;
+    let variants = measurement_channel_variants(loaded.spec.size_z, loaded.is_segm_3d);
+    let roi_mask = load_data_prep_roi_mask(
+        loaded.spec.data_prep_background_rois_path.as_deref(),
+        mask_context.frame_height,
+        mask_context.frame_width,
+    )?;
     let pixel_area_um2 = loaded.spec.physical_size_x * loaded.spec.physical_size_y;
     let mut rows = Vec::new();
     let mut row_indices = HashMap::<(usize, u32), usize>::new();
     let mut previous_centroids = HashMap::<u32, (f64, f64)>::new();
 
-    for (frame_i, mask_frame) in mask_frames.iter().enumerate() {
-        let regions = extract_regions(mask_frame, frame_height, frame_width);
+    for (frame_i, mask_frame) in mask_context.projected_frames.iter().enumerate() {
+        let regions = extract_regions(
+            mask_frame,
+            mask_context.frame_height,
+            mask_context.frame_width,
+        );
         let current_centroids = regions
             .iter()
             .map(|region| (region.label, (region.centroid_x, region.centroid_y)))
             .collect::<HashMap<_, _>>();
-
-        let mut auto_background_masks = HashMap::<String, Vec<bool>>::new();
-        let background_mask = build_background_mask(mask_frame);
+        let mask_volume = mask_context
+            .volume_frames
+            .as_ref()
+            .and_then(|frames| frames.get(frame_i))
+            .map(Vec::as_slice);
+        let mut channel_contexts = HashMap::<String, ChannelFrameContext>::new();
         for channel in &channels {
-            auto_background_masks.insert(channel.spec.name.clone(), background_mask.clone());
+            let segm_info = segm_info_for_channel_from_table(
+                loaded.segm_info.as_ref(),
+                &channel.spec,
+                frame_i,
+            )?;
+            let context = build_channel_frame_context(
+                channel,
+                frame_i,
+                segm_info,
+                &variants,
+                mask_frame,
+                mask_volume,
+                roi_mask.as_deref(),
+            )?;
+            channel_contexts.insert(channel.spec.name.clone(), context);
         }
 
         for region in &regions {
@@ -361,7 +428,8 @@ pub(crate) fn write_measurements(
                 loaded.spec.physical_size_y,
                 loaded.spec.physical_size_x,
             );
-            let (cell_vol_vox_3d, cell_vol_fl_3d) = voxel_counts_per_frame
+            let (cell_vol_vox_3d, cell_vol_fl_3d) = mask_context
+                .voxel_counts_per_frame
                 .as_ref()
                 .and_then(|counts| counts.get(frame_i))
                 .and_then(|counts| counts.get(&region.label).copied())
@@ -385,36 +453,64 @@ pub(crate) fn write_measurements(
                 .transpose()?;
 
             for channel in &channels {
-                let channel_frame = channel_frame_slice(
-                    channel,
-                    frame_i,
-                    segm_info_for_channel_from_table(loaded.segm_info.as_ref(), &channel.spec, frame_i)?,
-                )?;
-                let object_values =
-                    collect_object_values(&channel_frame, &region.pixels, frame_width);
-                let auto_background = collect_masked_values(
-                    &channel_frame,
-                    auto_background_masks
-                        .get(&channel.spec.name)
-                        .expect("missing auto background mask"),
-                );
-                let data_prep_background = collect_data_prep_background(
-                    channel,
-                    frame_i,
-                    roi_mask.as_deref(),
-                    &channel_frame,
-                    mask_frame,
-                )?;
-                insert_channel_measurements(
-                    &mut dynamic_values,
-                    &channel.spec.name,
-                    &object_values,
-                    &auto_background,
-                    data_prep_background.as_deref(),
-                    region.area,
-                    cell_vol_vox,
-                    cell_vol_fl,
-                );
+                let channel_context = channel_contexts
+                    .get(&channel.spec.name)
+                    .expect("missing channel frame context");
+                for variant in &variants {
+                    let object_values = match variant {
+                        ChannelVariant::ThreeD => channel_context
+                            .volume_foreground
+                            .as_ref()
+                            .and_then(|volume| {
+                                mask_volume.map(|mask| {
+                                    collect_object_volume_values(volume, mask, region.label)
+                                })
+                            })
+                            .unwrap_or_default(),
+                        _ => channel_context
+                            .projected_foregrounds
+                            .get(variant)
+                            .map(|frame| {
+                                collect_object_values(
+                                    frame,
+                                    &region.pixels,
+                                    mask_context.frame_width,
+                                )
+                            })
+                            .unwrap_or_default(),
+                    };
+                    let auto_background = channel_context
+                        .auto_backgrounds
+                        .get(variant)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    let data_prep_background = channel_context
+                        .data_prep_backgrounds
+                        .get(variant)
+                        .map(Vec::as_slice);
+                    let (variant_cell_vol_vox, variant_cell_vol_fl) =
+                        if *variant == ChannelVariant::ThreeD {
+                            (cell_vol_vox_3d, cell_vol_fl_3d)
+                        } else {
+                            (cell_vol_vox, cell_vol_fl)
+                        };
+                    let variant_area = if *variant == ChannelVariant::ThreeD {
+                        object_values.len()
+                    } else {
+                        region.area
+                    };
+                    insert_channel_measurements(
+                        &mut dynamic_values,
+                        &channel.spec.name,
+                        *variant,
+                        &object_values,
+                        auto_background,
+                        data_prep_background,
+                        variant_area,
+                        variant_cell_vol_vox,
+                        variant_cell_vol_fl,
+                    );
+                }
             }
 
             let previous_centroid = previous_centroids.get(&region.label).copied();
@@ -436,7 +532,9 @@ pub(crate) fn write_measurements(
                 time_seconds: loaded.spec.time_increment * frame_i as f64,
                 time_minutes: loaded.spec.time_increment * frame_i as f64 / 60.0,
                 time_hours: loaded.spec.time_increment * frame_i as f64 / 3600.0,
-                z_slice_used: segm_info_record.as_ref().map(|record| record.z_slice_used_data_prep),
+                z_slice_used: segm_info_record
+                    .as_ref()
+                    .map(|record| record.z_slice_used_data_prep),
                 which_z_proj: segm_info_record
                     .as_ref()
                     .map(|record| record.which_z_proj.as_str().to_string()),
@@ -475,9 +573,14 @@ pub(crate) fn write_measurements(
         previous_centroids = current_centroids;
     }
 
-    mark_disappearances_for_frames(&mask_frames, frame_width, &row_indices, &mut rows);
+    mark_disappearances_for_frames(
+        &mask_context.projected_frames,
+        mask_context.frame_width,
+        &row_indices,
+        &mut rows,
+    );
 
-    let headers = build_headers(&loaded.spec.channels);
+    let headers = build_headers(&loaded.spec.channels, &variants);
     write_measurement_csv(&loaded.outputs.acdc_output_csv_path, &headers, &rows)?;
 
     Ok(MeasurementRunResult {
@@ -485,7 +588,7 @@ pub(crate) fn write_measurements(
         images_dir: loaded.spec.images_dir.clone(),
         outputs: loaded.outputs.clone(),
         labels_found: loaded.mask_data.values.iter().copied().max().unwrap_or(0),
-        frames_processed: mask_frames.len(),
+        frames_processed: mask_context.projected_frames.len(),
     })
 }
 
@@ -511,18 +614,17 @@ fn measurement_segmentation_name(endname: Option<&str>) -> String {
     }
 }
 
-fn measurement_mask_frames(
-    mask_data: &MaskData,
-) -> (Vec<Vec<u32>>, usize, usize, Option<Vec<BTreeMap<u32, usize>>>) {
+fn measurement_mask_context(mask_data: &MaskData) -> MeasurementMaskContext {
     match mask_data.layout {
         SegmentationLayout::YX => {
             let shape = mask_data.values.shape();
-            (
-                vec![mask_data.values.iter().copied().collect()],
-                shape[0],
-                shape[1],
-                None,
-            )
+            MeasurementMaskContext {
+                projected_frames: vec![mask_data.values.iter().copied().collect()],
+                frame_height: shape[0],
+                frame_width: shape[1],
+                voxel_counts_per_frame: None,
+                volume_frames: None,
+            }
         }
         SegmentationLayout::TYX => {
             let shape = mask_data.values.shape();
@@ -531,34 +633,57 @@ fn measurement_mask_frames(
             for frame_i in 0..shape[0] {
                 let start = frame_i * plane_len;
                 frames.push(
-                    mask_data.values.iter().copied().skip(start).take(plane_len).collect(),
+                    mask_data
+                        .values
+                        .iter()
+                        .copied()
+                        .skip(start)
+                        .take(plane_len)
+                        .collect(),
                 );
             }
-            (frames, shape[1], shape[2], None)
+            MeasurementMaskContext {
+                projected_frames: frames,
+                frame_height: shape[1],
+                frame_width: shape[2],
+                voxel_counts_per_frame: None,
+                volume_frames: None,
+            }
         }
         SegmentationLayout::ZYX => {
             let shape = mask_data.values.shape();
             let values = mask_data.values.iter().copied().collect::<Vec<_>>();
-            (
-                vec![project_mask_volume_max(&values, shape[0], shape[1], shape[2])],
-                shape[1],
-                shape[2],
-                Some(vec![count_mask_volume_labels(&values)]),
-            )
+            MeasurementMaskContext {
+                projected_frames: vec![project_mask_volume_max(
+                    &values, shape[0], shape[1], shape[2],
+                )],
+                frame_height: shape[1],
+                frame_width: shape[2],
+                voxel_counts_per_frame: Some(vec![count_mask_volume_labels(&values)]),
+                volume_frames: Some(vec![values]),
+            }
         }
         SegmentationLayout::TZYX => {
             let shape = mask_data.values.shape();
             let frame_len = shape[1] * shape[2] * shape[3];
-            let mut frames = Vec::with_capacity(shape[0]);
+            let mut projected_frames = Vec::with_capacity(shape[0]);
             let mut voxel_counts = Vec::with_capacity(shape[0]);
+            let mut volume_frames = Vec::with_capacity(shape[0]);
             let values = mask_data.values.iter().copied().collect::<Vec<_>>();
             for frame_i in 0..shape[0] {
                 let start = frame_i * frame_len;
                 let frame = &values[start..start + frame_len];
-                frames.push(project_mask_volume_max(frame, shape[1], shape[2], shape[3]));
+                projected_frames.push(project_mask_volume_max(frame, shape[1], shape[2], shape[3]));
                 voxel_counts.push(count_mask_volume_labels(frame));
+                volume_frames.push(frame.to_vec());
             }
-            (frames, shape[2], shape[3], Some(voxel_counts))
+            MeasurementMaskContext {
+                projected_frames,
+                frame_height: shape[2],
+                frame_width: shape[3],
+                voxel_counts_per_frame: Some(voxel_counts),
+                volume_frames: Some(volume_frames),
+            }
         }
     }
 }
@@ -572,7 +697,9 @@ fn segm_info_for_channel<'a>(
         .image_path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("Invalid image filename in {}", channel.image_path.display()))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("Invalid image filename in {}", channel.image_path.display())
+        })?;
     table.get(filename, frame_i).ok_or_else(|| {
         anyhow::anyhow!(
             "Missing _segmInfo entry for file {:?} frame {}",
@@ -593,31 +720,84 @@ fn segm_info_for_channel_from_table<'a>(
     }
 }
 
-fn channel_frame_slice(
-    channel: &LoadedChannelData,
+fn measurement_channel_variants(size_z: usize, is_segm_3d: bool) -> Vec<ChannelVariant> {
+    if size_z <= 1 {
+        return vec![ChannelVariant::Base];
+    }
+
+    let mut variants = vec![
+        ChannelVariant::MaxProj,
+        ChannelVariant::MeanProj,
+        ChannelVariant::ZSlice,
+    ];
+    if is_segm_3d {
+        variants.push(ChannelVariant::ThreeD);
+    }
+    variants
+}
+
+fn z_slice_for_variant(segm_info: Option<&SegmInfoRecord>, shape: VolumeShape) -> usize {
+    segm_info
+        .map(|record| record.z_slice_used_data_prep)
+        .unwrap_or(shape.size_z / 2)
+}
+
+fn volume_frame_slice<'a>(
+    values: &'a [f32],
+    shape: VolumeShape,
     frame_i: usize,
-    segm_info: Option<&SegmInfoRecord>,
-) -> Result<Vec<f32>> {
-    match channel.shape {
-        LoadedChannelShape::Stack(shape) => {
-            Ok(frame_slice(&channel.values, shape, frame_i)?.to_vec())
+) -> Result<&'a [f32]> {
+    let frame_len = shape.size_z * shape.height * shape.width;
+    match shape.size_t {
+        1 => Ok(values),
+        frames if frame_i < frames => {
+            let start = frame_i * frame_len;
+            Ok(&values[start..start + frame_len])
         }
-        LoadedChannelShape::Volume(shape) => {
-            let record = segm_info.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Missing _segmInfo for z-stack channel {}",
-                    channel.spec.name
-                )
-            })?;
-            project_frame_f32(
-                &channel.values,
-                shape,
-                frame_i,
-                record.z_slice_used_data_prep,
-                record.which_z_proj,
-            )
+        _ => bail!(
+            "Image volume frame index {} exceeds available frames {}",
+            frame_i,
+            shape.size_t
+        ),
+    }
+}
+
+fn project_volume_frame_variant(
+    frame: &[f32],
+    shape: VolumeShape,
+    z_slice: usize,
+    variant: ChannelVariant,
+) -> Result<Vec<f32>> {
+    match variant {
+        ChannelVariant::MaxProj => project_frame_f32(
+            frame,
+            VolumeShape { size_t: 1, ..shape },
+            0,
+            z_slice,
+            crate::segm_info::ZProjectionMode::MaxZProjection,
+        ),
+        ChannelVariant::MeanProj => project_frame_f32(
+            frame,
+            VolumeShape { size_t: 1, ..shape },
+            0,
+            z_slice,
+            crate::segm_info::ZProjectionMode::MeanZProjection,
+        ),
+        ChannelVariant::ZSlice => project_frame_f32(
+            frame,
+            VolumeShape { size_t: 1, ..shape },
+            0,
+            z_slice,
+            crate::segm_info::ZProjectionMode::SingleZSlice,
+        ),
+        ChannelVariant::Base | ChannelVariant::ThreeD => {
+            bail!("Variant {:?} is not a projected 2D variant", variant)
         }
     }
+}
+
+fn metric_column_name(channel_name: &str, metric_suffix: &str, variant: ChannelVariant) -> String {
+    format!("{channel_name}_{metric_suffix}{}", variant.column_suffix())
 }
 
 fn load_channels(
@@ -657,12 +837,13 @@ fn load_channels(
             }
             (values, LoadedChannelShape::Volume(shape))
         } else {
-            let (values, shape) = load_image_stack_as_f32(&channel.image_path).with_context(|| {
-                format!(
-                    "Failed to load channel image {}",
-                    channel.image_path.display()
-                )
-            })?;
+            let (values, shape) =
+                load_image_stack_as_f32(&channel.image_path).with_context(|| {
+                    format!(
+                        "Failed to load channel image {}",
+                        channel.image_path.display()
+                    )
+                })?;
             if shape.height != frame_height
                 || shape.width != frame_width
                 || shape.frames != spec.size_t
@@ -759,6 +940,99 @@ fn build_background_mask(mask_frame: &[u32]) -> Vec<bool> {
     mask_frame.iter().map(|label| *label == 0).collect()
 }
 
+fn build_channel_frame_context(
+    channel: &LoadedChannelData,
+    frame_i: usize,
+    segm_info: Option<&SegmInfoRecord>,
+    variants: &[ChannelVariant],
+    mask_frame: &[u32],
+    mask_volume: Option<&[u32]>,
+    roi_mask: Option<&[bool]>,
+) -> Result<ChannelFrameContext> {
+    let mut projected_foregrounds = BTreeMap::new();
+    let mut auto_backgrounds = BTreeMap::new();
+    let mut data_prep_backgrounds = BTreeMap::new();
+    let volume_foreground = match channel.shape {
+        LoadedChannelShape::Stack(shape) => {
+            let frame = frame_slice(&channel.values, shape, frame_i)?.to_vec();
+            let auto_background = collect_masked_values(&frame, &build_background_mask(mask_frame));
+            projected_foregrounds.insert(ChannelVariant::Base, frame.clone());
+            auto_backgrounds.insert(ChannelVariant::Base, auto_background);
+            if let Some(values) =
+                collect_archive_background(channel, frame_i, ChannelVariant::Base)?
+            {
+                data_prep_backgrounds.insert(ChannelVariant::Base, values);
+            } else if let Some(roi_mask) = roi_mask {
+                if let Some(values) =
+                    collect_projected_data_prep_background(&frame, roi_mask, mask_frame)
+                {
+                    data_prep_backgrounds.insert(ChannelVariant::Base, values);
+                }
+            }
+            None
+        }
+        LoadedChannelShape::Volume(shape) => {
+            let z_slice = z_slice_for_variant(segm_info, shape);
+            let volume_frame = volume_frame_slice(&channel.values, shape, frame_i)?.to_vec();
+            let projected_background_mask = build_background_mask(mask_frame);
+            for variant in variants
+                .iter()
+                .copied()
+                .filter(|variant| *variant != ChannelVariant::ThreeD)
+            {
+                let projected =
+                    project_volume_frame_variant(&volume_frame, shape, z_slice, variant)?;
+                let auto_background = collect_masked_values(&projected, &projected_background_mask);
+                projected_foregrounds.insert(variant, projected.clone());
+                auto_backgrounds.insert(variant, auto_background);
+
+                if let Some(values) = collect_archive_background(channel, frame_i, variant)? {
+                    data_prep_backgrounds.insert(variant, values);
+                } else if let Some(roi_mask) = roi_mask {
+                    if let Some(values) =
+                        collect_projected_data_prep_background(&projected, roi_mask, mask_frame)
+                    {
+                        data_prep_backgrounds.insert(variant, values);
+                    }
+                }
+            }
+
+            if variants.contains(&ChannelVariant::ThreeD) {
+                if let Some(mask_volume) = mask_volume {
+                    auto_backgrounds.insert(
+                        ChannelVariant::ThreeD,
+                        collect_object_volume_values(&volume_frame, mask_volume, 0),
+                    );
+                    if let Some(values) =
+                        collect_archive_background(channel, frame_i, ChannelVariant::ThreeD)?
+                    {
+                        data_prep_backgrounds.insert(ChannelVariant::ThreeD, values);
+                    } else if let Some(roi_mask) = roi_mask {
+                        let plane_len = shape.height * shape.width;
+                        if let Some(values) = collect_volume_data_prep_background(
+                            &volume_frame,
+                            roi_mask,
+                            mask_volume,
+                            plane_len,
+                        ) {
+                            data_prep_backgrounds.insert(ChannelVariant::ThreeD, values);
+                        }
+                    }
+                }
+            }
+
+            Some(volume_frame)
+        }
+    };
+
+    Ok(ChannelFrameContext {
+        projected_foregrounds,
+        auto_backgrounds,
+        data_prep_backgrounds,
+        volume_foreground,
+    })
+}
+
 fn collect_object_values(
     channel_frame: &[f32],
     pixels: &[(usize, usize)],
@@ -770,6 +1044,14 @@ fn collect_object_values(
         .collect()
 }
 
+fn collect_object_volume_values(volume_frame: &[f32], mask_volume: &[u32], label: u32) -> Vec<f32> {
+    volume_frame
+        .iter()
+        .zip(mask_volume.iter())
+        .filter_map(|(value, current_label)| (*current_label == label).then_some(*value))
+        .collect()
+}
+
 fn collect_masked_values(values: &[f32], mask: &[bool]) -> Vec<f32> {
     values
         .iter()
@@ -778,35 +1060,52 @@ fn collect_masked_values(values: &[f32], mask: &[bool]) -> Vec<f32> {
         .collect()
 }
 
-fn collect_data_prep_background(
-    channel: &LoadedChannelData,
-    frame_i: usize,
-    roi_mask: Option<&[bool]>,
+fn collect_projected_data_prep_background(
     channel_frame: &[f32],
+    roi_mask: &[bool],
     mask_frame: &[u32],
-) -> Result<Option<Vec<f32>>> {
-    if !channel.background_arrays.is_empty() {
-        let mut values = Vec::new();
-        for array in &channel.background_arrays {
-            values.extend(frame_slice(&array.values, array.shape, frame_i)?);
-        }
-        return Ok(Some(values));
-    }
-
-    let Some(roi_mask) = roi_mask else {
-        return Ok(None);
-    };
-
+) -> Option<Vec<f32>> {
     let mut values = Vec::new();
     for (idx, value) in channel_frame.iter().enumerate() {
         if roi_mask[idx] && mask_frame[idx] == 0 {
             values.push(*value);
         }
     }
-    if values.is_empty() {
+    (!values.is_empty()).then_some(values)
+}
+
+fn collect_volume_data_prep_background(
+    volume_frame: &[f32],
+    roi_mask: &[bool],
+    mask_volume: &[u32],
+    plane_len: usize,
+) -> Option<Vec<f32>> {
+    let mut values = Vec::new();
+    for (idx, value) in volume_frame.iter().enumerate() {
+        let yx_idx = idx % plane_len;
+        if roi_mask[yx_idx] && mask_volume[idx] == 0 {
+            values.push(*value);
+        }
+    }
+    (!values.is_empty()).then_some(values)
+}
+
+fn collect_archive_background(
+    channel: &LoadedChannelData,
+    frame_i: usize,
+    variant: ChannelVariant,
+) -> Result<Option<Vec<f32>>> {
+    if channel.background_arrays.is_empty() {
         return Ok(None);
     }
-    Ok(Some(values))
+    if variant == ChannelVariant::ThreeD {
+        return Ok(None);
+    }
+    let mut values = Vec::new();
+    for array in &channel.background_arrays {
+        values.extend(frame_slice(&array.values, array.shape, frame_i)?);
+    }
+    Ok((!values.is_empty()).then_some(values))
 }
 
 fn frame_slice<'a>(values: &'a [f32], shape: StackShape, frame_i: usize) -> Result<&'a [f32]> {
@@ -828,6 +1127,7 @@ fn frame_slice<'a>(values: &'a [f32], shape: StackShape, frame_i: usize) -> Resu
 fn insert_channel_measurements(
     out: &mut BTreeMap<String, f64>,
     channel_name: &str,
+    variant: ChannelVariant,
     object_values: &[f32],
     auto_background: &[f32],
     data_prep_background: Option<&[f32]>,
@@ -835,7 +1135,6 @@ fn insert_channel_measurements(
     cell_vol_vox: f64,
     cell_vol_fl: f64,
 ) {
-    let prefix = format!("{channel_name}_");
     let mean = mean_f32(object_values);
     let sum = sum_f32(object_values);
     let median = quantile_f32(object_values, 0.5);
@@ -847,16 +1146,24 @@ fn insert_channel_measurements(
     let q95 = quantile_f32(object_values, 0.95);
     let cv = coefficient_of_variation(object_values);
 
-    insert_value(out, &format!("{prefix}mean"), mean);
-    insert_value(out, &format!("{prefix}sum"), sum);
-    insert_value(out, &format!("{prefix}median"), median);
-    insert_value(out, &format!("{prefix}min"), min);
-    insert_value(out, &format!("{prefix}max"), max);
-    insert_value(out, &format!("{prefix}q25"), q25);
-    insert_value(out, &format!("{prefix}q75"), q75);
-    insert_value(out, &format!("{prefix}q05"), q05);
-    insert_value(out, &format!("{prefix}q95"), q95);
-    insert_value(out, &format!("{prefix}CV"), cv);
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "mean", variant),
+        mean,
+    );
+    insert_value(out, &metric_column_name(channel_name, "sum", variant), sum);
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "median", variant),
+        median,
+    );
+    insert_value(out, &metric_column_name(channel_name, "min", variant), min);
+    insert_value(out, &metric_column_name(channel_name, "max", variant), max);
+    insert_value(out, &metric_column_name(channel_name, "q25", variant), q25);
+    insert_value(out, &metric_column_name(channel_name, "q75", variant), q75);
+    insert_value(out, &metric_column_name(channel_name, "q05", variant), q05);
+    insert_value(out, &metric_column_name(channel_name, "q95", variant), q95);
+    insert_value(out, &metric_column_name(channel_name, "CV", variant), cv);
 
     let auto_median = quantile_f32(auto_background, 0.5);
     let auto_mean = mean_f32(auto_background);
@@ -866,28 +1173,52 @@ fn insert_channel_measurements(
     let auto_q05 = quantile_f32(auto_background, 0.05);
     insert_value(
         out,
-        &format!("{prefix}autoBkgr_bkgrVal_median"),
+        &metric_column_name(channel_name, "autoBkgr_bkgrVal_median", variant),
         auto_median,
     );
-    insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_mean"), auto_mean);
-    insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_q75"), auto_q75);
-    insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_q25"), auto_q25);
-    insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_q95"), auto_q95);
-    insert_value(out, &format!("{prefix}autoBkgr_bkgrVal_q05"), auto_q05);
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "autoBkgr_bkgrVal_mean", variant),
+        auto_mean,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "autoBkgr_bkgrVal_q75", variant),
+        auto_q75,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "autoBkgr_bkgrVal_q25", variant),
+        auto_q25,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "autoBkgr_bkgrVal_q95", variant),
+        auto_q95,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "autoBkgr_bkgrVal_q05", variant),
+        auto_q05,
+    );
     let auto_amount = if auto_median.is_nan() || mean.is_nan() {
         f64::NAN
     } else {
         (mean - auto_median) * area as f64
     };
-    insert_value(out, &format!("{prefix}amount_autoBkgr"), auto_amount);
     insert_value(
         out,
-        &format!("{prefix}concentration_autoBkgr_from_vol_vox"),
+        &metric_column_name(channel_name, "amount_autoBkgr", variant),
+        auto_amount,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "concentration_autoBkgr_from_vol_vox", variant),
         auto_amount / cell_vol_vox,
     );
     insert_value(
         out,
-        &format!("{prefix}concentration_autoBkgr_from_vol_fl"),
+        &metric_column_name(channel_name, "concentration_autoBkgr_from_vol_fl", variant),
         auto_amount / cell_vol_fl,
     );
 
@@ -900,32 +1231,60 @@ fn insert_channel_measurements(
     let data_q05 = quantile_f32(data_values, 0.05);
     insert_value(
         out,
-        &format!("{prefix}dataPrepBkgr_bkgrVal_median"),
+        &metric_column_name(channel_name, "dataPrepBkgr_bkgrVal_median", variant),
         data_median,
     );
     insert_value(
         out,
-        &format!("{prefix}dataPrepBkgr_bkgrVal_mean"),
+        &metric_column_name(channel_name, "dataPrepBkgr_bkgrVal_mean", variant),
         data_mean,
     );
-    insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_q75"), data_q75);
-    insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_q25"), data_q25);
-    insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_q95"), data_q95);
-    insert_value(out, &format!("{prefix}dataPrepBkgr_bkgrVal_q05"), data_q05);
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "dataPrepBkgr_bkgrVal_q75", variant),
+        data_q75,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "dataPrepBkgr_bkgrVal_q25", variant),
+        data_q25,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "dataPrepBkgr_bkgrVal_q95", variant),
+        data_q95,
+    );
+    insert_value(
+        out,
+        &metric_column_name(channel_name, "dataPrepBkgr_bkgrVal_q05", variant),
+        data_q05,
+    );
     let data_amount = if data_median.is_nan() || mean.is_nan() {
         f64::NAN
     } else {
         (mean - data_median) * area as f64
     };
-    insert_value(out, &format!("{prefix}amount_dataPrepBkgr"), data_amount);
     insert_value(
         out,
-        &format!("{prefix}concentration_dataPrepBkgr_from_vol_vox"),
+        &metric_column_name(channel_name, "amount_dataPrepBkgr", variant),
+        data_amount,
+    );
+    insert_value(
+        out,
+        &metric_column_name(
+            channel_name,
+            "concentration_dataPrepBkgr_from_vol_vox",
+            variant,
+        ),
         data_amount / cell_vol_vox,
     );
     insert_value(
         out,
-        &format!("{prefix}concentration_dataPrepBkgr_from_vol_fl"),
+        &metric_column_name(
+            channel_name,
+            "concentration_dataPrepBkgr_from_vol_fl",
+            variant,
+        ),
         data_amount / cell_vol_fl,
     );
 }
@@ -1402,7 +1761,7 @@ fn unique_labels(frame: &[u32]) -> BTreeSet<u32> {
     frame.iter().copied().filter(|label| *label != 0).collect()
 }
 
-fn build_headers(channels: &[ChannelSpec]) -> Vec<String> {
+fn build_headers(channels: &[ChannelSpec], variants: &[ChannelVariant]) -> Vec<String> {
     let mut headers = vec![
         "frame_i".to_string(),
         "time_seconds".to_string(),
@@ -1439,8 +1798,10 @@ fn build_headers(channels: &[ChannelSpec]) -> Vec<String> {
     ];
 
     for channel in channels {
-        for suffix in CHANNEL_METRIC_SUFFIXES {
-            headers.push(format!("{}_{}", channel.name, suffix));
+        for variant in variants {
+            for suffix in CHANNEL_METRIC_SUFFIXES {
+                headers.push(metric_column_name(&channel.name, suffix, *variant));
+            }
         }
     }
     headers.extend(REGIONPROP_HEADERS.iter().map(|header| header.to_string()));
@@ -1594,6 +1955,7 @@ mod tests {
     use crate::tabular::read_table;
     use crate::utilities::{add_lineage_tree, LineageTreeConfig};
     use ndarray::Array3;
+    use ndarray::Array4;
     use ndarray_npy::NpzWriter;
     use std::fs::File;
     use tempfile::tempdir;
@@ -1627,8 +1989,14 @@ mod tests {
             overwrite_policy: OverwritePolicy::Overwrite,
         })?;
         let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
-        let headers = reader.headers()?.iter().map(str::to_string).collect::<Vec<_>>();
-        assert!(!headers.iter().any(|header| header == "demo_acdc_output.csv"));
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(!headers
+            .iter()
+            .any(|header| header == "demo_acdc_output.csv"));
         for required in [
             "cell_vol_vox",
             "phase_mean",
@@ -1650,7 +2018,11 @@ mod tests {
                 "missing required header {required}"
             );
         }
-        let first_row = reader.records().next().transpose()?.expect("first output row");
+        let first_row = reader
+            .records()
+            .next()
+            .transpose()?
+            .expect("first output row");
         let get = |name: &str| -> Result<&str> {
             let idx = headers
                 .iter()
@@ -1762,6 +2134,153 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn emits_zstack_projection_variant_columns_for_2d_segmentation() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_volume_npz(
+            &images.join("demo_phase_aligned.npz"),
+            &[1.0, 5.0, 0.0, 10.0, 3.0, 7.0, 2.0, 12.0],
+            1,
+            2,
+            2,
+            2,
+        )?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,2\nPhysicalSizeX,1\nPhysicalSizeY,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, //
+                0, 0, //
+            ],
+            1,
+            2,
+            2,
+        )?;
+        write_test_segm_info(
+            &images.join("demo_segmInfo.csv"),
+            "demo_phase_aligned.npz",
+            0,
+            0,
+        )?;
+        fs::write(
+            images.join("demo_dataPrep_bkgrROIs.json"),
+            r#"[{"pos":[0,1],"size":[2,1]}]"#,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(headers.iter().any(|header| header == "phase_mean_maxProj"));
+        assert!(headers.iter().any(|header| header == "phase_mean_meanProj"));
+        assert!(headers.iter().any(|header| header == "phase_mean_zSlice"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "phase_autoBkgr_bkgrVal_median_maxProj"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "phase_dataPrepBkgr_bkgrVal_median_zSlice"));
+        assert!(!headers.iter().any(|header| header == "phase_mean"));
+
+        let row = reader
+            .records()
+            .next()
+            .transpose()?
+            .expect("first output row");
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_maxProj")?, 5.0);
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_meanProj")?, 4.0);
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_zSlice")?, 3.0);
+        assert_eq!(
+            csv_f64(&headers, &row, "phase_autoBkgr_bkgrVal_median_maxProj")?,
+            7.0
+        );
+        assert_eq!(
+            csv_f64(&headers, &row, "phase_dataPrepBkgr_bkgrVal_median_meanProj")?,
+            6.0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn emits_zstack_3d_variant_columns_for_3d_segmentation() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_volume_npz(
+            &images.join("demo_phase_aligned.npz"),
+            &[1.0, 5.0, 0.0, 10.0, 3.0, 7.0, 2.0, 12.0],
+            1,
+            2,
+            2,
+            2,
+        )?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,2\nsegm_isSegm3D,True\nPhysicalSizeZ,1\nPhysicalSizeX,1\nPhysicalSizeY,1\n",
+        )?;
+        write_test_mask_volume_npz(
+            &images.join("demo_segm.npz"),
+            &[1, 1, 0, 0, 1, 0, 0, 0],
+            1,
+            2,
+            2,
+            2,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(headers.iter().any(|header| header == "phase_mean_maxProj"));
+        assert!(headers.iter().any(|header| header == "phase_mean_meanProj"));
+        assert!(headers.iter().any(|header| header == "phase_mean_zSlice"));
+        assert!(headers.iter().any(|header| header == "phase_mean_3D"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "phase_amount_autoBkgr_3D"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "phase_concentration_autoBkgr_from_vol_vox_3D"));
+        assert!(!headers.iter().any(|header| header == "phase_mean"));
+
+        let row = reader
+            .records()
+            .next()
+            .transpose()?
+            .expect("first output row");
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_maxProj")?, 5.0);
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_3D")?, 3.0);
+        assert_eq!(csv_f64(&headers, &row, "cell_vol_vox_3D")?, 3.0);
+        assert_eq!(
+            csv_f64(
+                &headers,
+                &row,
+                "phase_concentration_autoBkgr_from_vol_vox_3D"
+            )?,
+            -4.0
+        );
+        Ok(())
+    }
+
     fn write_test_stack(path: &Path, frame_values: &[u16]) -> Result<()> {
         let file = File::create(path)?;
         let mut encoder = TiffEncoder::new(file)?;
@@ -1770,5 +2289,63 @@ mod tests {
             encoder.write_image::<colortype::Gray16>(4, 4, &data)?;
         }
         Ok(())
+    }
+
+    fn write_test_volume_npz(
+        path: &Path,
+        values: &[f32],
+        size_t: usize,
+        size_z: usize,
+        height: usize,
+        width: usize,
+    ) -> Result<()> {
+        let file = File::create(path)?;
+        let mut writer = NpzWriter::new(file);
+        let array = Array4::from_shape_vec((size_t, size_z, height, width), values.to_vec())?;
+        writer.add_array("arr_0", &array)?;
+        writer.finish()?;
+        Ok(())
+    }
+
+    fn write_test_mask_volume_npz(
+        path: &Path,
+        values: &[u32],
+        size_t: usize,
+        size_z: usize,
+        height: usize,
+        width: usize,
+    ) -> Result<()> {
+        let file = File::create(path)?;
+        let mut writer = NpzWriter::new(file);
+        let array = Array4::from_shape_vec((size_t, size_z, height, width), values.to_vec())?;
+        writer.add_array("arr_0", &array)?;
+        writer.finish()?;
+        Ok(())
+    }
+
+    fn write_test_segm_info(
+        path: &Path,
+        filename: &str,
+        frame_i: usize,
+        z_slice: usize,
+    ) -> Result<()> {
+        fs::write(
+            path,
+            format!(
+                "filename,frame_i,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep,z_slice_used_gui,which_z_proj_gui,resegmented_in_gui\n{filename},{frame_i},{z_slice},single z-slice,1,{z_slice},single z-slice,0\n"
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn csv_f64(headers: &[String], row: &csv::StringRecord, name: &str) -> Result<f64> {
+        let idx = headers
+            .iter()
+            .position(|header| header == name)
+            .ok_or_else(|| anyhow::anyhow!("missing header {name}"))?;
+        row.get(idx)
+            .ok_or_else(|| anyhow::anyhow!("missing value for {name}"))?
+            .parse::<f64>()
+            .with_context(|| format!("failed to parse {name} as f64"))
     }
 }

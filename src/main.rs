@@ -4,13 +4,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use cellacdc_rs::{
-    add_lineage_tree, apply_tracking_from_table, combine_metrics, concat_acdc_outputs,
-    connect_3d_segm, count_objects, fill_holes, filter_segm_from_table,
-    generate_mother_bud_total, measure_experiment, measure_position, prepare_zstack_segm_info,
-    resolve_position, run_experiment, run_position, stack_2d_segm_to_3d, ApplyTrackingConfig,
+    add_lineage_tree, apply_tracking_from_table, build_lineage_state_file, combine_metrics,
+    concat_acdc_outputs, connect_3d_segm, count_objects, export_lineage_info_file, fill_holes,
+    filter_segm_from_table, generate_mother_bud_total, measure_experiment, measure_position,
+    prepare_zstack_segm_info, propagate_lineage_file, resolve_position, run_experiment,
+    run_position, stack_2d_segm_to_3d, update_lineage_frame_file, ApplyTrackingConfig,
     CombineMetricsConfig, ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig,
     CountObjectsConfig, ExperimentRunConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
-    LineageTreeConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
+    LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig, LineageTreeConfig,
+    LineageUpdateConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
     OverwritePolicy, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, SegmentationLayout,
     SegmentationParams, SegmentationRunConfig, Stack2DSegmTo3DConfig, TableFormat,
     TrackingColumnMap, TrackingConfig,
@@ -43,6 +45,14 @@ enum Command {
     FilterSegmFromTable(FilterSegmFromTableArgs),
     ApplyTrackingFromTable(ApplyTrackingFromTableArgs),
     AddLineageTree(AddLineageTreeArgs),
+    #[command(name = "build-lineage-state")]
+    BuildLineageState(BuildLineageStateArgs),
+    #[command(name = "update-lineage-frame")]
+    UpdateLineageFrame(UpdateLineageFrameArgs),
+    #[command(name = "propagate-lineage")]
+    PropagateLineage(PropagateLineageArgs),
+    #[command(name = "export-lineage-info")]
+    ExportLineageInfo(ExportLineageInfoArgs),
     GenerateMotherBudTotal(GenerateMotherBudTotalArgs),
 }
 
@@ -281,6 +291,50 @@ struct AddLineageTreeArgs {
 }
 
 #[derive(Debug, Args)]
+struct BuildLineageStateArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct UpdateLineageFrameArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    frame_i: i64,
+    #[arg(long, conflicts_with = "edits_json")]
+    edits_table: Option<PathBuf>,
+    #[arg(long, conflicts_with = "edits_table")]
+    edits_json: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct PropagateLineageArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    frame_i: i64,
+    #[arg(long = "cell-id")]
+    cell_ids: Vec<i64>,
+}
+
+#[derive(Debug, Args)]
+struct ExportLineageInfoArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    frame_i: i64,
+}
+
+#[derive(Debug, Args)]
 struct GenerateMotherBudTotalArgs {
     #[arg(long)]
     input: PathBuf,
@@ -313,6 +367,10 @@ fn main() -> Result<()> {
         Command::FilterSegmFromTable(args) => filter_segm_from_table_command(args),
         Command::ApplyTrackingFromTable(args) => apply_tracking_from_table_command(args),
         Command::AddLineageTree(args) => add_lineage_tree_command(args),
+        Command::BuildLineageState(args) => build_lineage_state_command(args),
+        Command::UpdateLineageFrame(args) => update_lineage_frame_command(args),
+        Command::PropagateLineage(args) => propagate_lineage_command(args),
+        Command::ExportLineageInfo(args) => export_lineage_info_command(args),
         Command::GenerateMotherBudTotal(args) => generate_mother_bud_total_command(args),
     }
 }
@@ -489,7 +547,10 @@ fn connect_3d_segm_command(args: Connect3DSegmArgs) -> Result<()> {
         output_path: args.output,
         resolution: Some(args.resolution.into()),
     })?;
-    println!("Wrote connected 3D mask to {}", result.primary_path.display());
+    println!(
+        "Wrote connected 3D mask to {}",
+        result.primary_path.display()
+    );
     Ok(())
 }
 
@@ -559,6 +620,60 @@ fn add_lineage_tree_command(args: AddLineageTreeArgs) -> Result<()> {
         output_path: args.output,
     })?;
     println!("Wrote lineage table to {}", result.primary_path.display());
+    Ok(())
+}
+
+fn build_lineage_state_command(args: BuildLineageStateArgs) -> Result<()> {
+    let result = build_lineage_state_file(LineageBuildConfig {
+        input_path: args.input,
+        output_path: args.output,
+    })?;
+    println!(
+        "Wrote normalized lineage state to {}",
+        result.primary_path.display()
+    );
+    Ok(())
+}
+
+fn update_lineage_frame_command(args: UpdateLineageFrameArgs) -> Result<()> {
+    let result = update_lineage_frame_file(LineageUpdateConfig {
+        input_path: args.input,
+        output_path: args.output,
+        frame_i: args.frame_i,
+        edits_table_path: args.edits_table,
+        edits_json_path: args.edits_json,
+    })?;
+    println!(
+        "Wrote updated lineage frame table to {}",
+        result.primary_path.display()
+    );
+    Ok(())
+}
+
+fn propagate_lineage_command(args: PropagateLineageArgs) -> Result<()> {
+    let result = propagate_lineage_file(LineagePropagateConfig {
+        input_path: args.input,
+        output_path: args.output,
+        frame_i: args.frame_i,
+        cell_ids: (!args.cell_ids.is_empty()).then_some(args.cell_ids),
+    })?;
+    println!(
+        "Wrote propagated lineage table to {}",
+        result.primary_path.display()
+    );
+    Ok(())
+}
+
+fn export_lineage_info_command(args: ExportLineageInfoArgs) -> Result<()> {
+    let result = export_lineage_info_file(LineageInfoConfig {
+        input_path: args.input,
+        output_path: args.output,
+        frame_i: args.frame_i,
+    })?;
+    println!(
+        "Wrote lineage frame info to {}",
+        result.primary_path.display()
+    );
     Ok(())
 }
 

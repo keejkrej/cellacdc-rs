@@ -1,3 +1,4 @@
+use crate::build_lineage_state;
 use crate::mask_io::{
     load_mask_data, save_mask_data, MaskData, MaskPathResolution, SegmentationLayout,
 };
@@ -16,13 +17,6 @@ const DEFAULT_INDEX_COLS: &[&str] = &[
     "Position_n",
     "frame_i",
     "Cell_ID",
-];
-const LINEAGE_TREE_COLS: &[&str] = &[
-    "Cell_ID_tree",
-    "generation_num_tree",
-    "parent_ID_tree",
-    "root_ID_tree",
-    "sister_ID_tree",
 ];
 const REQUIRED_LINEAGE_COLS: &[&str] = &[
     "frame_i",
@@ -454,8 +448,7 @@ pub fn connect_3d_segm(config: Connect3DSegmConfig) -> Result<UtilityOutputPaths
         SegmentationLayout::ZYX => {
             let shape = masks.values.shape();
             let values = masks.values.iter().copied().collect::<Vec<_>>();
-            let connected =
-                connect_3d_lab_z_boundaries(&values, shape[0], shape[1], shape[2]);
+            let connected = connect_3d_lab_z_boundaries(&values, shape[0], shape[1], shape[2]);
             MaskData {
                 values: ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(shape), connected)?,
                 layout: masks.layout,
@@ -634,16 +627,9 @@ pub fn apply_tracking_from_table(config: ApplyTrackingConfig) -> Result<UtilityO
 
 pub fn add_lineage_tree(config: LineageTreeConfig) -> Result<UtilityOutputPaths> {
     let table = read_table(&config.input_path)?;
-    let mut rows = table_to_rows(&table);
     ensure_required_columns(&table, REQUIRED_LINEAGE_COLS)?;
-    add_lineage_tree_columns(&mut rows)?;
-    let mut headers = table.headers.clone();
-    for column in LINEAGE_TREE_COLS {
-        if !headers.iter().any(|header| header == column) {
-            headers.push((*column).to_string());
-        }
-    }
-    write_table(&config.output_path, &rows_to_table(&headers, &rows))?;
+    let state = build_lineage_state(&table)?;
+    write_table(&config.output_path, &state.to_table())?;
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
@@ -1261,323 +1247,6 @@ fn apply_tracked_ids_mapper_to_table(
     Ok(table)
 }
 
-fn add_lineage_tree_columns(rows: &mut [Row]) -> Result<()> {
-    let indexed = rows
-        .iter()
-        .enumerate()
-        .map(|(idx, row)| Ok((row_key(row)?, idx)))
-        .collect::<Result<BTreeMap<_, _>>>()?;
-    let mut g1_indices = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| {
-            row.get("cell_cycle_stage")
-                .map(TableValue::as_string_lossy)
-                .as_deref()
-                == Some("G1")
-        })
-        .map(|(idx, _)| idx)
-        .collect::<Vec<_>>();
-    g1_indices.sort_by_key(|idx| row_key(&rows[*idx]).expect("sorted"));
-    if g1_indices.is_empty() {
-        bail!("Lineage tree generation requires at least one G1 row");
-    }
-
-    for idx in &g1_indices {
-        let cell_id = get_required_i64(&rows[*idx], "Cell_ID")? as i64;
-        let generation_num = get_required_i64(&rows[*idx], "generation_num")?;
-        rows[*idx].insert("Cell_ID_tree".into(), TableValue::Number(cell_id as f64));
-        rows[*idx].insert("parent_ID_tree".into(), TableValue::Number(-1.0));
-        rows[*idx].insert("root_ID_tree".into(), TableValue::Number(-1.0));
-        rows[*idx].insert("sister_ID_tree".into(), TableValue::Number(-1.0));
-        let mut generation_num_tree = generation_num;
-        if get_required_bool(&rows[*idx], "is_history_known")? == false && generation_num > 1 {
-            generation_num_tree -= 1;
-        }
-        rows[*idx].insert(
-            "generation_num_tree".into(),
-            TableValue::Number(generation_num_tree as f64),
-        );
-    }
-
-    let mut unique_id = rows
-        .iter()
-        .filter_map(|row| row.get("Cell_ID").and_then(TableValue::as_i64))
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let mut not_annotated_ids = g1_indices
-        .iter()
-        .filter_map(|idx| rows[*idx].get("Cell_ID").and_then(TableValue::as_i64))
-        .collect::<BTreeSet<_>>();
-    let mut branch_start_gen_num = BTreeMap::<i64, i64>::new();
-    let mut root_ids_trees = BTreeMap::<i64, i64>::new();
-    let mut gen_groups = BTreeMap::<(i64, i64), Vec<usize>>::new();
-    for idx in &g1_indices {
-        let cell_id = get_required_i64(&rows[*idx], "Cell_ID")?;
-        let generation_num = get_required_i64(&rows[*idx], "generation_num")?;
-        gen_groups
-            .entry((cell_id, generation_num))
-            .or_default()
-            .push(*idx);
-    }
-    for group in gen_groups.values_mut() {
-        group.sort_by_key(|idx| row_key(&rows[*idx]).expect("valid"));
-    }
-    let mut gen_groups_by_tree = BTreeMap::<i64, Vec<usize>>::new();
-    let frame_order = g1_indices
-        .iter()
-        .map(|idx| get_required_i64(&rows[*idx], "frame_i").expect("frame"))
-        .collect::<BTreeSet<_>>();
-    let mut built_groups = BTreeMap::<(i64, i64), Vec<usize>>::new();
-
-    for frame_i in frame_order {
-        let ids = g1_indices
-            .iter()
-            .filter(|idx| get_required_i64(&rows[**idx], "frame_i").ok() == Some(frame_i))
-            .filter_map(|idx| rows[*idx].get("Cell_ID").and_then(TableValue::as_i64))
-            .collect::<BTreeSet<_>>();
-        for id in ids {
-            if !not_annotated_ids.contains(&id) {
-                continue;
-            }
-            let mut is_new_tree = true;
-            let groups = gen_groups
-                .iter()
-                .filter(|((cell_id, _), _)| *cell_id == id)
-                .map(|(key, value)| (*key, value.clone()))
-                .collect::<Vec<_>>();
-            for ((_, _generation_num), group_indices) in groups {
-                let rel_id = get_required_i64(&rows[group_indices[0]], "relative_ID")?;
-                let start_frame = get_required_i64(&rows[group_indices[0]], "frame_i")?;
-                let gen_num_tree_base =
-                    get_required_i64(&rows[group_indices[0]], "generation_num_tree")?;
-                let gen_num_rel_id_tree = if is_new_tree {
-                    indexed
-                        .get(&(start_frame, rel_id))
-                        .and_then(|idx| {
-                            rows[*idx]
-                                .get("generation_num_tree")
-                                .and_then(TableValue::as_i64)
-                        })
-                        .map(|value| value - 1)
-                        .unwrap_or(0)
-                } else {
-                    *branch_start_gen_num.get(&id).unwrap_or(&0)
-                };
-                branch_start_gen_num.insert(id, gen_num_rel_id_tree);
-                let gen_num_tree = gen_num_tree_base + gen_num_rel_id_tree;
-                for idx in &group_indices {
-                    rows[*idx].insert(
-                        "generation_num_tree".into(),
-                        TableValue::Number(gen_num_tree as f64),
-                    );
-                }
-
-                let mut cell_id_tree = if is_new_tree { id } else { unique_id };
-                if !is_new_tree {
-                    unique_id += 1;
-                }
-                let mut parent_id = -1i64;
-                let mut prev_gen_exists = false;
-                if gen_num_tree > 1 {
-                    let prev_gen_num_tree = gen_num_tree - 1;
-                    let prev_group = built_groups
-                        .get(&(id, prev_gen_num_tree))
-                        .or_else(|| built_groups.get(&(rel_id, prev_gen_num_tree)));
-                    if let Some(prev_group) = prev_group {
-                        prev_gen_exists = true;
-                        let parent_row = prev_group
-                            .iter()
-                            .find(|idx| {
-                                get_required_i64(&rows[**idx], "Cell_ID").ok() == Some(rel_id)
-                            })
-                            .or_else(|| prev_group.first())
-                            .copied()
-                            .ok_or_else(|| anyhow!("Missing parent lineage group"))?;
-                        parent_id = get_required_i64(&rows[parent_row], "Cell_ID_tree")?;
-                    } else {
-                        let prior_row = indexed.get(&(start_frame - 1, id)).copied();
-                        let was_bud = prior_row
-                            .map(|idx| {
-                                rows[idx]
-                                    .get("relationship")
-                                    .map(TableValue::as_string_lossy)
-                                    .unwrap_or_default()
-                                    == "bud"
-                            })
-                            .unwrap_or(false);
-                        if was_bud {
-                            parent_id = prior_row
-                                .and_then(|idx| {
-                                    rows[idx].get("relative_ID").and_then(TableValue::as_i64)
-                                })
-                                .unwrap_or(id);
-                            let branch_base = branch_start_gen_num
-                                .get(&parent_id)
-                                .copied()
-                                .map(|value| value + 2)
-                                .unwrap_or(2);
-                            branch_start_gen_num.insert(id, branch_base);
-                        } else {
-                            parent_id = id;
-                        }
-                        cell_id_tree = unique_id;
-                        unique_id += 1;
-                    }
-                }
-                let root_id = if is_new_tree {
-                    if gen_num_tree == 2 && prev_gen_exists && parent_id > 0 {
-                        parent_id
-                    } else if parent_id > 0 {
-                        gen_groups_by_tree
-                            .get(&parent_id)
-                            .and_then(|indices| indices.first())
-                            .and_then(|idx| {
-                                rows[*idx].get("root_ID_tree").and_then(TableValue::as_i64)
-                            })
-                            .filter(|value| *value > 0)
-                            .unwrap_or(parent_id)
-                    } else {
-                        id
-                    }
-                } else {
-                    *root_ids_trees.get(&id).unwrap_or(&id)
-                };
-                root_ids_trees.insert(id, root_id);
-                for idx in &group_indices {
-                    rows[*idx].insert(
-                        "Cell_ID_tree".into(),
-                        TableValue::Number(cell_id_tree as f64),
-                    );
-                    rows[*idx].insert(
-                        "parent_ID_tree".into(),
-                        TableValue::Number(parent_id as f64),
-                    );
-                    rows[*idx].insert("root_ID_tree".into(), TableValue::Number(root_id as f64));
-                }
-                built_groups.insert((id, gen_num_tree), group_indices.clone());
-                gen_groups_by_tree.insert(cell_id_tree, group_indices.clone());
-                is_new_tree = false;
-            }
-            not_annotated_ids.remove(&id);
-        }
-    }
-
-    let grouped_by_tree =
-        g1_indices
-            .iter()
-            .fold(BTreeMap::<i64, Vec<usize>>::new(), |mut acc, idx| {
-                if let Some(tree_id) = rows[*idx].get("Cell_ID_tree").and_then(TableValue::as_i64) {
-                    acc.entry(tree_id).or_default().push(*idx);
-                }
-                acc
-            });
-    for indices in grouped_by_tree.values() {
-        let relative_id = get_required_i64(&rows[indices[0]], "relative_ID")?;
-        if relative_id == -1 {
-            continue;
-        }
-        let start_frame = get_required_i64(&rows[indices[0]], "frame_i")?;
-        let sister_idx = indexed
-            .get(&(start_frame, relative_id))
-            .copied()
-            .ok_or_else(|| anyhow!("Failed to resolve sister lineage row for relative_ID {relative_id} at frame {start_frame}"))?;
-        let sister_tree_id = get_required_i64(&rows[sister_idx], "Cell_ID_tree")?;
-        for idx in indices {
-            rows[*idx].insert(
-                "sister_ID_tree".into(),
-                TableValue::Number(sister_tree_id as f64),
-            );
-        }
-    }
-
-    let g1_lookup = g1_indices
-        .iter()
-        .map(|idx| {
-            let row = &rows[*idx];
-            (
-                (
-                    get_required_i64(row, "Cell_ID").expect("cell"),
-                    get_required_i64(row, "generation_num").expect("generation"),
-                ),
-                *idx,
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    let s_indices = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| {
-            row.get("cell_cycle_stage")
-                .map(TableValue::as_string_lossy)
-                .as_deref()
-                == Some("S")
-        })
-        .map(|(idx, _)| idx)
-        .collect::<Vec<_>>();
-    for idx in s_indices {
-        let frame_i = get_required_i64(&rows[idx], "frame_i")?;
-        let relationship = rows[idx]
-            .get("relationship")
-            .map(TableValue::as_string_lossy)
-            .unwrap_or_default();
-        let idx_id = if relationship == "mother" {
-            get_required_i64(&rows[idx], "Cell_ID")?
-        } else {
-            get_required_i64(&rows[idx], "relative_ID")?
-        };
-        let idx_generation = if relationship == "mother" {
-            get_required_i64(&rows[idx], "generation_num")?
-        } else {
-            indexed
-                .get(&(frame_i, idx_id))
-                .and_then(|row_index| {
-                    rows[*row_index]
-                        .get("generation_num")
-                        .and_then(TableValue::as_i64)
-                })
-                .unwrap_or(1)
-        };
-        if let Some(g1_idx) = g1_lookup.get(&(idx_id, idx_generation)).copied() {
-            let values = LINEAGE_TREE_COLS
-                .iter()
-                .filter_map(|column| {
-                    rows[g1_idx]
-                        .get(*column)
-                        .cloned()
-                        .map(|value| ((*column).to_string(), value))
-                })
-                .collect::<Vec<_>>();
-            for (column, value) in values {
-                rows[idx].insert(column, value);
-            }
-        } else {
-            let sister_id = rows[idx]
-                .get("relative_ID")
-                .and_then(TableValue::as_i64)
-                .unwrap_or(-1);
-            rows[idx].insert("Cell_ID_tree".into(), TableValue::Number(idx_id as f64));
-            rows[idx].insert("parent_ID_tree".into(), TableValue::Number(-1.0));
-            rows[idx].insert("root_ID_tree".into(), TableValue::Number(idx_id as f64));
-            rows[idx].insert("generation_num_tree".into(), TableValue::Number(1.0));
-            rows[idx].insert(
-                "sister_ID_tree".into(),
-                TableValue::Number(sister_id as f64),
-            );
-        }
-    }
-
-    for row in rows.iter_mut() {
-        for column in LINEAGE_TREE_COLS {
-            row.entry((*column).to_string())
-                .or_insert(TableValue::Number(-1.0));
-        }
-    }
-    Ok(())
-}
-
 fn generate_mother_bud_total_rows(
     rows: &[Row],
     column_operation_mapper: &BTreeMap<String, String>,
@@ -2174,27 +1843,40 @@ mod tests {
 
     #[test]
     fn adds_lineage_tree_columns() -> Result<()> {
-        let mut rows = vec![
-            row(vec![
-                ("frame_i", 0.0.into()),
-                ("Cell_ID", 1.0.into()),
-                ("cell_cycle_stage", "G1".into()),
-                ("generation_num", 1.0.into()),
-                ("relative_ID", (-1.0).into()),
-                ("relationship", "mother".into()),
-                ("is_history_known", 1.0.into()),
-            ]),
-            row(vec![
-                ("frame_i", 1.0.into()),
-                ("Cell_ID", 1.0.into()),
-                ("cell_cycle_stage", "S".into()),
-                ("generation_num", 1.0.into()),
-                ("relative_ID", (-1.0).into()),
-                ("relationship", "mother".into()),
-                ("is_history_known", 1.0.into()),
-            ]),
-        ];
-        add_lineage_tree_columns(&mut rows)?;
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "generation_num".into(),
+                "relative_ID".into(),
+                "relationship".into(),
+                "is_history_known".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("generation_num", 1.0.into()),
+                    ("relative_ID", (-1.0).into()),
+                    ("relationship", "mother".into()),
+                    ("is_history_known", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 1.0.into()),
+                    ("relative_ID", (-1.0).into()),
+                    ("relationship", "mother".into()),
+                    ("is_history_known", 1.0.into()),
+                ]),
+            ],
+        );
+        let state = build_lineage_state(&table)?;
+        let exported = state.to_table();
+        let rows = table_to_rows(&exported);
         assert_eq!(
             rows[0].get("Cell_ID_tree").and_then(TableValue::as_i64),
             Some(1)

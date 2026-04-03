@@ -1,5 +1,6 @@
 mod image_io;
 mod layout;
+mod lineage;
 mod mask_io;
 mod measure;
 #[cfg(test)]
@@ -18,6 +19,13 @@ pub use layout::{
     resolve_position, ChannelSpec, ExperimentSpec, MeasurementExperimentSpec,
     MeasurementPositionSpec, PositionSpec,
 };
+pub use lineage::{
+    build_lineage_state, build_lineage_state_file, export_lineage_frame, export_lineage_info,
+    export_lineage_info_file, load_lineage_state, propagate_lineage, propagate_lineage_file,
+    update_lineage_frame, update_lineage_frame_file, LineageBuildConfig, LineageFrameInfo,
+    LineageInfoConfig, LineageOutputPaths, LineagePropagateConfig, LineageState,
+    LineageUpdateConfig,
+};
 pub use mask_io::{
     load_mask_data, save_mask_data, MaskData, MaskDimensionality, MaskPathResolution,
     SegmentationLayout,
@@ -32,8 +40,8 @@ pub use runner::{
     OverwritePolicy, RunOutputPaths, RunResult, SegmentationParams, SegmentationRunConfig,
 };
 pub use segm_info::{
-    load_segm_info, prepare_zstack_segm_info, PrepareSegmInfoTarget,
-    PrepareZStackSegmInfoConfig, SegmInfoRecord, SegmInfoTable, ZProjectionMode,
+    load_segm_info, prepare_zstack_segm_info, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig,
+    SegmInfoRecord, SegmInfoTable, ZProjectionMode,
 };
 pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
 pub use tracking::TrackingConfig;
