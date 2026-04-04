@@ -9,6 +9,7 @@ mod metadata;
 mod model;
 mod runner;
 mod segm_info;
+mod session;
 mod tabular;
 mod tracking;
 mod utilities;
@@ -43,12 +44,16 @@ pub use segm_info::{
     load_segm_info, prepare_zstack_segm_info, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig,
     SegmInfoRecord, SegmInfoTable, ZProjectionMode,
 };
+pub use session::{
+    open_experiment_session, open_position_session, ExperimentSession, FrameData, FrameProjection,
+    PositionSession, SegmentationAsset,
+};
 pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
 pub use tracking::TrackingConfig;
 pub use utilities::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
-    combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs,
-    connect_3d_segm, count_objects, fill_holes, filter_segm_from_table, generate_mother_bud_total,
+    combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
+    count_objects, fill_holes, filter_segm_from_table, generate_mother_bud_total,
     stack_2d_segm_to_3d, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
     CombineChannelsConfig, CombineChannelsResult, CombineMetricsConfig, CombineMetricsResult,
     ComputeMultiChannelConfig, ComputeMultiChannelResult, ConcatConfig, ConcatResult,

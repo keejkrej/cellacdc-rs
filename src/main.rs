@@ -1,3 +1,5 @@
+mod gui;
+
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
@@ -30,6 +32,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Gui,
     RunPosition(RunPositionArgs),
     RunExperiment(RunExperimentArgs),
     MeasurePosition(MeasurePositionArgs),
@@ -405,6 +408,7 @@ struct GenerateMotherBudTotalArgs {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Gui => gui::launch_gui(),
         Command::RunPosition(args) => run_position_command(args),
         Command::RunExperiment(args) => run_experiment_command(args),
         Command::MeasurePosition(args) => measure_position_command(args),
