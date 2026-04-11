@@ -1,4 +1,4 @@
-use super::state::{AppRoute, ProjectionMode, UtilityState};
+use super::state::{AnnotationTool, AppRoute, ProjectionMode, UtilityState};
 use eframe::Storage;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,8 @@ pub(crate) struct PersistedState {
     pub(crate) selected_segmentation_endname: Option<String>,
     pub(crate) projection_mode: ProjectionMode,
     pub(crate) z_index: usize,
+    pub(crate) annotation_tool: AnnotationTool,
+    pub(crate) annotation_brush_radius: usize,
     pub(crate) utility: UtilityState,
 }
 
@@ -57,6 +59,8 @@ impl Default for PersistedState {
             selected_segmentation_endname: None,
             projection_mode: ProjectionMode::Max,
             z_index: 0,
+            annotation_tool: AnnotationTool::Select,
+            annotation_brush_radius: 5,
             utility: UtilityState::default(),
         }
     }

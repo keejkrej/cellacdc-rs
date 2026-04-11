@@ -18,7 +18,10 @@ mod tracking;
 mod utilities;
 mod zstack;
 
-pub use edit::{MaskEditCommand, MaskEditResult, MaskEditSession, SelectionState, UndoStack};
+pub use edit::{
+    MaskDocumentPaths, MaskEditCommand, MaskEditResult, MaskEditSession, MaskRecoveryState,
+    MaskSaveMode, SelectionState, UndoStack,
+};
 pub use import::{
     detect_import_source_kind, discover_import_sources, import_experiment, ImportExperimentConfig,
     ImportSource, ImportSourceKind, ImportedExperiment,

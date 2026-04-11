@@ -184,6 +184,10 @@ pub(crate) fn draw_logs(ui: &mut egui::Ui, logs: &[String], max_height: f32) {
         });
 }
 
+pub(crate) fn draw_status_label(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    ui.colored_label(color, RichText::new(text).strong());
+}
+
 pub(crate) fn parse_optional_usize(value: &str) -> Result<Option<usize>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -194,6 +198,30 @@ pub(crate) fn parse_optional_usize(value: &str) -> Result<Option<usize>> {
             .map(Some)
             .map_err(|err| anyhow!("Failed to parse integer {trimmed:?}: {err}"))
     }
+}
+
+pub(crate) fn parse_label_input(value: &str, field_name: &str) -> Result<u32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{field_name} is required");
+    }
+    trimmed
+        .parse::<u32>()
+        .map_err(|err| anyhow!("{field_name} must be an integer label: {err}"))
+}
+
+pub(crate) fn validate_segm_endname(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Version endname is required");
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        anyhow::bail!("Version endname must use only letters, numbers, '_' or '-'");
+    }
+    Ok(trimmed.to_string())
 }
 
 pub(crate) fn suggested_output_path(tool: UtilityTool, input_path: &Path) -> PathBuf {

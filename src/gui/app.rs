@@ -1,11 +1,15 @@
 use super::jobs::JobHandle;
 use super::persist::{self, PersistedState};
-use super::state::{AppRoute, ProjectionMode, ViewKey};
+use super::state::{
+    AnnotationPendingAction, AnnotationWorkspaceState, AppRoute, LoadedMaskDocument,
+    ProjectionMode, ViewKey,
+};
 use super::workspaces;
 use anyhow::{anyhow, Result};
 use cellacdc_rs::{
-    open_experiment_session, ExperimentSession, FrameProjection, ImportSource, OverwritePolicy,
-    PositionSession, SegmentationParams,
+    open_experiment_session, ExperimentSession, FrameData, FrameProjection, ImportSource,
+    MaskData, MaskEditCommand, MaskEditSession, MaskPathResolution, MaskRecoveryState,
+    MaskSaveMode, OverwritePolicy, PositionSession, SegmentationLayout, SegmentationParams,
 };
 use eframe::egui::{self, TextureHandle};
 use rfd::FileDialog;
@@ -40,6 +44,8 @@ pub(crate) struct CellAcdcGui {
     pub(crate) data_structure_scan_path: String,
     pub(crate) data_structure_scan_results: Vec<ImportSource>,
     pub(crate) data_structure_scan_error: Option<String>,
+    pub(crate) annotation: AnnotationWorkspaceState,
+    pub(crate) annotation_document: Option<LoadedMaskDocument>,
 }
 
 impl CellAcdcGui {
@@ -50,6 +56,11 @@ impl CellAcdcGui {
             route => route,
         };
         let mut app = Self {
+            annotation: AnnotationWorkspaceState {
+                tool: persisted.annotation_tool,
+                brush_radius: persisted.annotation_brush_radius,
+                ..Default::default()
+            },
             persisted,
             last_non_launcher_route,
             experiment: None,
@@ -63,6 +74,7 @@ impl CellAcdcGui {
             data_structure_scan_path: String::new(),
             data_structure_scan_results: Vec::new(),
             data_structure_scan_error: None,
+            annotation_document: None,
         };
         if let Some(path) = app.persisted.last_opened_path.clone() {
             let path = PathBuf::from(path);
@@ -88,6 +100,9 @@ impl CellAcdcGui {
             self.last_non_launcher_route = route;
         }
         self.persisted.route = route;
+        if route == AppRoute::Annotation {
+            self.ensure_annotation_document_loaded();
+        }
     }
 
     pub(crate) fn restore_current_session_route(&mut self) {
@@ -104,6 +119,8 @@ impl CellAcdcGui {
         self.experiment = Some(experiment);
         self.selected_position_idx = 0;
         self.selected_frame_idx = 0;
+        self.annotation_document = None;
+        self.annotation.pending_action = None;
         self.persisted.last_opened_path = Some(path.display().to_string());
         self.set_route(AppRoute::Segmentation);
         self.push_recent_path(path);
@@ -122,6 +139,7 @@ impl CellAcdcGui {
             Ok(experiment) => {
                 self.experiment = Some(experiment);
                 self.sync_selection_with_position();
+                self.ensure_annotation_document_loaded();
                 self.invalidate_texture();
                 self.append_log("Reloaded experiment session".to_string());
                 self.last_error = None;
@@ -158,14 +176,13 @@ impl CellAcdcGui {
     pub(crate) fn selected_segmentation_path(&self) -> Option<PathBuf> {
         let position = self.selected_position()?;
         position
-            .segmentations
-            .iter()
-            .find(|asset| asset.endname == self.persisted.selected_segmentation_endname)
+            .segmentation_asset(self.persisted.selected_segmentation_endname.as_deref())
             .map(|asset| asset.path.clone())
     }
 
     pub(crate) fn sync_selection_with_position(&mut self) {
         let Some(position) = self.selected_position().cloned() else {
+            self.annotation_document = None;
             return;
         };
         let channel_names = position.channel_names();
@@ -222,6 +239,11 @@ impl CellAcdcGui {
         } else {
             self.persisted.z_index = self.persisted.z_index.min(size_z - 1);
         }
+        self.annotation.save_as_endname = self
+            .persisted
+            .selected_segmentation_endname
+            .clone()
+            .unwrap_or_else(|| "edited".to_string());
     }
 
     pub(crate) fn current_projection(&self) -> FrameProjection {
@@ -291,10 +313,468 @@ impl CellAcdcGui {
             }
         }
     }
+
+    pub(crate) fn clear_annotation_document(&mut self) {
+        self.annotation_document = None;
+    }
+
+    pub(crate) fn current_annotation_document(&self) -> Option<&LoadedMaskDocument> {
+        self.annotation_document.as_ref().filter(|document| {
+            self.selected_position()
+                .map(|position| {
+                    document.position_dir == position.spec.position_dir
+                        && document.segmentation_endname
+                            == self.persisted.selected_segmentation_endname
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    pub(crate) fn current_annotation_document_mut(&mut self) -> Option<&mut LoadedMaskDocument> {
+        let position_dir = self.selected_position()?.spec.position_dir.clone();
+        let selected_endname = self.persisted.selected_segmentation_endname.clone();
+        self.annotation_document.as_mut().filter(|document| {
+            document.position_dir == position_dir && document.segmentation_endname == selected_endname
+        })
+    }
+
+    pub(crate) fn current_annotation_label(&self) -> Option<u32> {
+        self.current_annotation_document()
+            .and_then(|document| document.session.selection.selected_label)
+    }
+
+    pub(crate) fn annotation_document_dirty(&self) -> bool {
+        self.current_annotation_document()
+            .map(|document| document.session.dirty)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn annotation_recovery_state(&self) -> MaskRecoveryState {
+        self.current_annotation_document()
+            .map(|document| document.session.recovery_state())
+            .unwrap_or(MaskRecoveryState::None)
+    }
+
+    pub(crate) fn annotation_edits_allowed(&self) -> bool {
+        if self.annotation_recovery_state() == MaskRecoveryState::RecoveryAvailable {
+            return false;
+        }
+        let Some(document) = self.current_annotation_document() else {
+            return false;
+        };
+        !matches!(
+            (document.session.data.layout, self.current_projection()),
+            (SegmentationLayout::ZYX | SegmentationLayout::TZYX, FrameProjection::Max)
+        )
+    }
+
+    pub(crate) fn request_position_selection(&mut self, idx: usize) {
+        if idx == self.selected_position_idx {
+            return;
+        }
+        if self.persisted.route == AppRoute::Annotation && self.annotation_document_dirty() {
+            self.annotation.pending_action = Some(AnnotationPendingAction::ChangePosition(idx));
+            return;
+        }
+        self.apply_position_selection(idx);
+    }
+
+    pub(crate) fn apply_position_selection(&mut self, idx: usize) {
+        self.selected_position_idx = idx;
+        self.selected_frame_idx = 0;
+        self.sync_selection_with_position();
+        self.clear_annotation_document();
+        self.ensure_annotation_document_loaded();
+        self.invalidate_texture();
+    }
+
+    pub(crate) fn request_segmentation_selection(&mut self, endname: Option<String>) {
+        if endname == self.persisted.selected_segmentation_endname {
+            return;
+        }
+        if self.persisted.route == AppRoute::Annotation && self.annotation_document_dirty() {
+            self.annotation.pending_action =
+                Some(AnnotationPendingAction::ChangeSegmentation(endname));
+            return;
+        }
+        self.apply_segmentation_selection(endname);
+    }
+
+    pub(crate) fn apply_segmentation_selection(&mut self, endname: Option<String>) {
+        self.persisted.selected_segmentation_endname = endname.clone();
+        self.annotation.save_as_endname = endname.unwrap_or_else(|| "edited".to_string());
+        self.clear_annotation_document();
+        self.ensure_annotation_document_loaded();
+        self.invalidate_texture();
+    }
+
+    pub(crate) fn apply_pending_annotation_action(&mut self) {
+        let Some(action) = self.annotation.pending_action.take() else {
+            return;
+        };
+        match action {
+            AnnotationPendingAction::ChangePosition(idx) => self.apply_position_selection(idx),
+            AnnotationPendingAction::ChangeSegmentation(endname) => {
+                self.apply_segmentation_selection(endname)
+            }
+        }
+    }
+
+    pub(crate) fn cancel_pending_annotation_action(&mut self) {
+        self.annotation.pending_action = None;
+    }
+
+    pub(crate) fn discard_annotation_changes_and_continue(&mut self) {
+        self.clear_annotation_document();
+        self.apply_pending_annotation_action();
+    }
+
+    pub(crate) fn save_annotation_changes_and_continue(&mut self) {
+        if let Err(err) = self.save_current_annotation_overwrite() {
+            self.last_error = Some(err.to_string());
+            return;
+        }
+        self.apply_pending_annotation_action();
+    }
+
+    pub(crate) fn ensure_annotation_document_loaded(&mut self) {
+        if self.persisted.route != AppRoute::Annotation {
+            return;
+        }
+        let Some(position) = self.selected_position().cloned() else {
+            self.annotation_document = None;
+            return;
+        };
+        let Some(asset) = position
+            .segmentation_asset(self.persisted.selected_segmentation_endname.as_deref())
+            .cloned()
+        else {
+            self.annotation_document = None;
+            return;
+        };
+        if self.current_annotation_document().is_some() {
+            return;
+        }
+        let resolution = self.annotation_resolution_for_position(&position, &asset.name);
+        match MaskEditSession::from_source_path(&asset.path, Some(&resolution)) {
+            Ok(mut session) => {
+                session.selection.frame_index = self.selected_frame_idx;
+                session.selection.z_index = match self.current_projection() {
+                    FrameProjection::Max => None,
+                    FrameProjection::ZSlice(z_index) => Some(z_index),
+                };
+                self.annotation_document = Some(LoadedMaskDocument {
+                    position_dir: position.spec.position_dir.clone(),
+                    segmentation_endname: asset.endname.clone(),
+                    session,
+                    revision: 0,
+                });
+                self.last_error = None;
+                self.invalidate_texture();
+            }
+            Err(err) => {
+                self.annotation_document = None;
+                self.last_error = Some(err.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn annotation_resolution_for_position(
+        &self,
+        position: &PositionSession,
+        asset_name: &str,
+    ) -> MaskPathResolution {
+        let is_segm_3d = position
+            .spec
+            .segm_is_3d
+            .get(asset_name)
+            .copied()
+            .unwrap_or(false);
+        MaskPathResolution {
+            size_t: Some(position.spec.size_t),
+            size_z: Some(if is_segm_3d { position.spec.size_z } else { 1 }),
+            layout: None,
+        }
+    }
+
+    pub(crate) fn restore_annotation_recovery(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position().cloned() else {
+            return Ok(());
+        };
+        let Some(asset) = position
+            .segmentation_asset(self.persisted.selected_segmentation_endname.as_deref())
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let resolution = self.annotation_resolution_for_position(&position, &asset.name);
+        let session = MaskEditSession::load_with_recovery(&asset.path, Some(&resolution), true)?;
+        self.annotation_document = Some(LoadedMaskDocument {
+            position_dir: position.spec.position_dir.clone(),
+            segmentation_endname: asset.endname,
+            session,
+            revision: self
+                .annotation_document
+                .as_ref()
+                .map(|document| document.revision + 1)
+                .unwrap_or(1),
+        });
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn discard_annotation_recovery(&mut self) -> Result<()> {
+        let Some(document) = self.current_annotation_document_mut() else {
+            return Ok(());
+        };
+        document.session.discard_recovery()?;
+        document.revision += 1;
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn annotation_save_as_path(&self, endname: &str) -> Result<PathBuf> {
+        let position = self
+            .selected_position()
+            .ok_or_else(|| anyhow!("No position selected"))?;
+        let trimmed = endname.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("Save-as endname is required");
+        }
+        let file_name = if position.spec.basename.ends_with('_') {
+            format!("{}segm_{}.npz", position.spec.basename, trimmed)
+        } else {
+            format!("{}_segm_{}.npz", position.spec.basename, trimmed)
+        };
+        Ok(position.spec.images_dir.join(file_name))
+    }
+
+    pub(crate) fn save_current_annotation_overwrite(&mut self) -> Result<()> {
+        let document = self
+            .current_annotation_document_mut()
+            .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
+        let saved = document.session.save_with_mode(MaskSaveMode::Overwrite)?;
+        document.revision += 1;
+        self.append_log(format!("Saved GUI edits -> {}", saved.display()));
+        self.reload_experiment();
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn save_current_annotation_as_version(&mut self) -> Result<()> {
+        let endname = self.annotation.save_as_endname.trim().to_string();
+        let target_path = self.annotation_save_as_path(&endname)?;
+        if target_path.exists() {
+            anyhow::bail!("Segmentation version already exists: {}", target_path.display());
+        }
+        let document = self
+            .current_annotation_document_mut()
+            .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
+        let saved = document
+            .session
+            .save_with_mode(MaskSaveMode::SaveAs(target_path.clone()))?;
+        document.revision += 1;
+        self.persisted.selected_segmentation_endname = Some(endname.clone());
+        self.append_log(format!("Saved GUI version -> {}", saved.display()));
+        self.reload_experiment();
+        self.clear_annotation_document();
+        self.ensure_annotation_document_loaded();
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn run_annotation_command(&mut self, command: MaskEditCommand) -> Result<()> {
+        let document = self
+            .current_annotation_document_mut()
+            .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
+        let result = document.session.apply_command(command)?;
+        if result.changed_pixels > 0 {
+            document.session.save_autosave()?;
+            document.revision += 1;
+        } else {
+            document.revision += 1;
+        }
+        self.last_error = None;
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn annotation_undo(&mut self) {
+        let mut autosave_error = None;
+        let mut changed = false;
+        if let Some(document) = self.current_annotation_document_mut() {
+            if document.session.undo() {
+                autosave_error = document.session.save_autosave().err();
+                document.revision += 1;
+                changed = true;
+            }
+        }
+        if let Some(err) = autosave_error {
+            self.last_error = Some(err.to_string());
+        }
+        if changed {
+            self.invalidate_texture();
+        }
+    }
+
+    pub(crate) fn annotation_redo(&mut self) {
+        let mut autosave_error = None;
+        let mut changed = false;
+        if let Some(document) = self.current_annotation_document_mut() {
+            if document.session.redo() {
+                autosave_error = document.session.save_autosave().err();
+                document.revision += 1;
+                changed = true;
+            }
+        }
+        if let Some(err) = autosave_error {
+            self.last_error = Some(err.to_string());
+        }
+        if changed {
+            self.invalidate_texture();
+        }
+    }
+
+    pub(crate) fn annotation_select_label(&mut self, label: Option<u32>) -> Result<()> {
+        self.run_annotation_command(MaskEditCommand::SelectLabel { label })
+    }
+
+    pub(crate) fn current_segmentation_frame_data(&self) -> Result<Option<FrameData<u32>>> {
+        let Some(position) = self.selected_position() else {
+            return Ok(None);
+        };
+        if self.persisted.route == AppRoute::Annotation {
+            if let Some(document) = self.current_annotation_document() {
+                return Ok(Some(mask_frame_for_projection(
+                    &document.session.data,
+                    self.selected_frame_idx,
+                    self.current_projection(),
+                )?));
+            }
+        }
+        position.load_segmentation_frame(
+            self.persisted.selected_segmentation_endname.as_deref(),
+            self.selected_frame_idx,
+            self.current_projection(),
+        )
+    }
+}
+
+pub(crate) fn mask_frame_for_projection(
+    data: &MaskData,
+    frame_index: usize,
+    projection: FrameProjection,
+) -> Result<FrameData<u32>> {
+    let shape = data.values.shape().to_vec();
+    let values = data
+        .values
+        .as_slice_memory_order()
+        .ok_or_else(|| anyhow!("Mask data is not contiguous: {}", data.source_path.display()))?;
+    match data.layout {
+        SegmentationLayout::YX => {
+            if frame_index > 0 {
+                anyhow::bail!(
+                    "Requested frame {} from a single-frame segmentation {}",
+                    frame_index,
+                    data.source_path.display()
+                );
+            }
+            Ok(FrameData {
+                width: shape[1],
+                height: shape[0],
+                pixels: values.to_vec(),
+            })
+        }
+        SegmentationLayout::TYX => {
+            let height = shape[1];
+            let width = shape[2];
+            if frame_index >= shape[0] {
+                anyhow::bail!(
+                    "Frame {} is out of bounds for {} frame(s)",
+                    frame_index,
+                    shape[0]
+                );
+            }
+            let plane_len = height * width;
+            let offset = frame_index * plane_len;
+            Ok(FrameData {
+                width,
+                height,
+                pixels: values[offset..offset + plane_len].to_vec(),
+            })
+        }
+        SegmentationLayout::ZYX => {
+            if frame_index > 0 {
+                anyhow::bail!(
+                    "Requested frame {} from a single-frame z-stack segmentation {}",
+                    frame_index,
+                    data.source_path.display()
+                );
+            }
+            project_mask_volume(values, shape[0], shape[1], shape[2], projection)
+        }
+        SegmentationLayout::TZYX => {
+            let size_t = shape[0];
+            let size_z = shape[1];
+            let height = shape[2];
+            let width = shape[3];
+            if frame_index >= size_t {
+                anyhow::bail!("Frame {} is out of bounds for {} frame(s)", frame_index, size_t);
+            }
+            let plane_len = height * width;
+            let frame_offset = frame_index * size_z * plane_len;
+            project_mask_volume(
+                &values[frame_offset..frame_offset + size_z * plane_len],
+                size_z,
+                height,
+                width,
+                projection,
+            )
+        }
+    }
+}
+
+fn project_mask_volume(
+    values: &[u32],
+    size_z: usize,
+    height: usize,
+    width: usize,
+    projection: FrameProjection,
+) -> Result<FrameData<u32>> {
+    let plane_len = height * width;
+    match projection {
+        FrameProjection::Max => {
+            let mut pixels = vec![0u32; plane_len];
+            for z in 0..size_z {
+                let start = z * plane_len;
+                for (index, value) in values[start..start + plane_len].iter().enumerate() {
+                    pixels[index] = pixels[index].max(*value);
+                }
+            }
+            Ok(FrameData {
+                width,
+                height,
+                pixels,
+            })
+        }
+        FrameProjection::ZSlice(z_index) => {
+            if z_index >= size_z {
+                anyhow::bail!("Z {} is out of bounds for {} plane(s)", z_index, size_z);
+            }
+            let start = z_index * plane_len;
+            Ok(FrameData {
+                width,
+                height,
+                pixels: values[start..start + plane_len].to_vec(),
+            })
+        }
+    }
 }
 
 impl eframe::App for CellAcdcGui {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.persisted.annotation_tool = self.annotation.tool;
+        self.persisted.annotation_brush_radius = self.annotation.brush_radius;
         persist::save(storage, &self.persisted);
     }
 

@@ -7,7 +7,7 @@ use crate::layout::{
     discover_measurement_experiment, resolve_measurement_position, MeasurementExperimentSpec,
     MeasurementPositionSpec,
 };
-use crate::mask_io::{load_mask_data, MaskPathResolution, SegmentationLayout};
+use crate::mask_io::{load_mask_data, MaskData, MaskPathResolution, SegmentationLayout};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameProjection {
@@ -169,30 +169,12 @@ impl PositionSession {
         frame_index: usize,
         projection: FrameProjection,
     ) -> Result<Option<FrameData<u32>>> {
-        let Some(asset) = self.segmentation_asset(endname) else {
+        let Some(mask) = self.load_segmentation_mask(endname)? else {
             return Ok(None);
         };
-
-        let is_segm_3d = self
-            .spec
-            .segm_is_3d
-            .get(&asset.name)
-            .copied()
-            .unwrap_or(false);
-        let resolution = MaskPathResolution {
-            size_t: Some(self.spec.size_t),
-            size_z: Some(if is_segm_3d { self.spec.size_z } else { 1 }),
-            layout: None,
-        };
-        let mask = load_mask_data(&asset.path, Some(&resolution)).with_context(|| {
-            format!(
-                "Failed to load segmentation masks from {}",
-                asset.path.display()
-            )
-        })?;
         let shape = mask.values.shape().to_vec();
         let values = mask.values.as_slice_memory_order().ok_or_else(|| {
-            anyhow::anyhow!("Mask data is not contiguous: {}", asset.path.display())
+            anyhow::anyhow!("Mask data is not contiguous: {}", mask.source_path.display())
         })?;
 
         let frame = match mask.layout {
@@ -201,7 +183,7 @@ impl PositionSession {
                     bail!(
                         "Requested frame {} from a single-frame segmentation {}",
                         frame_index,
-                        asset.path.display()
+                        mask.source_path.display()
                     );
                 }
                 FrameData {
@@ -218,7 +200,7 @@ impl PositionSession {
                     bail!(
                         "Requested frame {} from a single-frame z-stack segmentation {}",
                         frame_index,
-                        asset.path.display()
+                        mask.source_path.display()
                     );
                 }
                 extract_projected_volume_frame_u32(
@@ -237,6 +219,30 @@ impl PositionSession {
         };
 
         Ok(Some(frame))
+    }
+
+    pub fn load_segmentation_mask(&self, endname: Option<&str>) -> Result<Option<MaskData>> {
+        let Some(asset) = self.segmentation_asset(endname) else {
+            return Ok(None);
+        };
+        let is_segm_3d = self
+            .spec
+            .segm_is_3d
+            .get(&asset.name)
+            .copied()
+            .unwrap_or(false);
+        let resolution = MaskPathResolution {
+            size_t: Some(self.spec.size_t),
+            size_z: Some(if is_segm_3d { self.spec.size_z } else { 1 }),
+            layout: None,
+        };
+        let mask = load_mask_data(&asset.path, Some(&resolution)).with_context(|| {
+            format!(
+                "Failed to load segmentation masks from {}",
+                asset.path.display()
+            )
+        })?;
+        Ok(Some(mask))
     }
 
     pub fn segmentation_asset(&self, endname: Option<&str>) -> Option<&SegmentationAsset> {
@@ -540,6 +546,34 @@ mod tests {
             .load_segmentation_frame(None, 1, FrameProjection::Max)?
             .expect("expected segmentation frame");
         assert_eq!(segm.pixels, vec![6]);
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_new_segmentation_versions_after_save_as() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_3");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+
+        write_stack(&images.join("demo_phase.tif"), &[7, 9])?;
+        write_stack(&images.join("demo_fluo.tif"), &[11, 13])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
+        write_mask(
+            &images.join("demo_segm.npz"),
+            Array3::from_shape_vec((2, 1, 1), vec![4u32, 6u32])?,
+        )?;
+        write_mask(
+            &images.join("demo_segm_corrected.npz"),
+            Array3::from_shape_vec((2, 1, 1), vec![8u32, 9u32])?,
+        )?;
+
+        let session = open_position_session(&position)?;
+        assert_eq!(session.segmentations.len(), 2);
+        assert_eq!(session.segmentations[1].endname.as_deref(), Some("corrected"));
         Ok(())
     }
 

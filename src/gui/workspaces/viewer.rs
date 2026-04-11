@@ -1,7 +1,7 @@
 use crate::gui::app::CellAcdcGui;
 use anyhow::{anyhow, bail, Result};
-use cellacdc_rs::FrameData;
-use eframe::egui::{self, Color32, ColorImage, TextureOptions};
+use cellacdc_rs::{FrameData, MaskEditCommand, SegmentationLayout};
+use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureOptions};
 
 use super::selected_segm_label;
 
@@ -45,15 +45,16 @@ impl CellAcdcGui {
             self.current_projection(),
         )?;
         let segm = if self.persisted.show_segmentation_overlay {
-            position.load_segmentation_frame(
-                self.persisted.selected_segmentation_endname.as_deref(),
-                self.selected_frame_idx,
-                self.current_projection(),
-            )?
+            self.current_segmentation_frame_data()?
         } else {
             None
         };
-        compose_color_image(&frame, segm.as_ref(), self.persisted.overlay_alpha)
+        compose_color_image(
+            &frame,
+            segm.as_ref(),
+            self.persisted.overlay_alpha,
+            self.current_annotation_label(),
+        )
     }
 
     pub(crate) fn draw_left_panel(&mut self, ctx: &egui::Context) {
@@ -104,10 +105,7 @@ impl CellAcdcGui {
                                 .selectable_label(self.selected_position_idx == idx, name)
                                 .clicked()
                             {
-                                self.selected_position_idx = idx;
-                                self.selected_frame_idx = 0;
-                                self.sync_selection_with_position();
-                                self.invalidate_texture();
+                                self.request_position_selection(idx);
                             }
                         }
                     });
@@ -152,7 +150,7 @@ impl CellAcdcGui {
                                 .selectable_label(position.segmentations.is_empty(), "<none>")
                                 .clicked()
                             {
-                                self.persisted.selected_segmentation_endname = None;
+                                self.request_segmentation_selection(None);
                                 self.persisted.show_segmentation_overlay = false;
                                 self.invalidate_texture();
                             }
@@ -166,8 +164,7 @@ impl CellAcdcGui {
                                     )
                                     .clicked()
                                 {
-                                    self.persisted.selected_segmentation_endname =
-                                        asset.endname.clone();
+                                    self.request_segmentation_selection(asset.endname.clone());
                                     self.persisted.show_segmentation_overlay = true;
                                     self.invalidate_texture();
                                 }
@@ -259,6 +256,16 @@ impl CellAcdcGui {
                 }
             });
 
+            let frame_index = self.selected_frame_idx;
+            let projection = self.current_projection();
+            if let Some(document) = self.current_annotation_document_mut() {
+                document.session.selection.frame_index = frame_index;
+                document.session.selection.z_index = match projection {
+                    cellacdc_rs::FrameProjection::Max => None,
+                    cellacdc_rs::FrameProjection::ZSlice(z_index) => Some(z_index),
+                };
+            }
+
             self.refresh_texture_if_needed(ctx);
             ui.separator();
 
@@ -269,7 +276,18 @@ impl CellAcdcGui {
                     .min(available.y / image_size.y)
                     .max(0.1);
                 let desired = image_size * scale;
-                ui.image((texture.id(), desired));
+                let sense = if self.persisted.route == crate::gui::state::AppRoute::Annotation {
+                    egui::Sense::click_and_drag()
+                } else {
+                    egui::Sense::hover()
+                };
+                let response = ui.add(egui::Image::new((texture.id(), desired)).sense(sense));
+                if self.persisted.route == crate::gui::state::AppRoute::Annotation {
+                    self.handle_annotation_canvas_interaction(
+                        &response,
+                        [texture.size()[0], texture.size()[1]],
+                    );
+                }
             } else if let Some(error) = self.last_error.clone() {
                 ui.colored_label(Color32::from_rgb(200, 60, 60), error);
             } else {
@@ -277,12 +295,143 @@ impl CellAcdcGui {
             }
         });
     }
+
+    fn handle_annotation_canvas_interaction(
+        &mut self,
+        response: &egui::Response,
+        image_size: [usize; 2],
+    ) {
+        let Some(pointer) = response.interact_pointer_pos() else {
+            return;
+        };
+        let Some((x, y)) = image_pixel_from_pointer(response.rect, pointer, image_size) else {
+            return;
+        };
+        match self.annotation.tool {
+            crate::gui::state::AnnotationTool::Select if response.clicked() => {
+                if let Err(err) = self.select_annotation_label_at(x, y) {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            crate::gui::state::AnnotationTool::Brush
+                if response.clicked() || response.dragged() =>
+            {
+                if let Err(err) = self.paint_annotation_at(x, y) {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            crate::gui::state::AnnotationTool::Eraser
+                if response.clicked() || response.dragged() =>
+            {
+                if let Err(err) = self.erase_annotation_at(x, y) {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn select_annotation_label_at(&mut self, x: usize, y: usize) -> Result<()> {
+        let Some(segmentation) = self.current_segmentation_frame_data()? else {
+            return Ok(());
+        };
+        if x >= segmentation.width || y >= segmentation.height {
+            return Ok(());
+        }
+        let label = segmentation.pixels[y * segmentation.width + x];
+        self.annotation_select_label((label != 0).then_some(label))
+    }
+
+    fn paint_annotation_at(&mut self, x: usize, y: usize) -> Result<()> {
+        if !self.annotation_edits_allowed() {
+            bail!("GUI edits require a writable 2D view. Switch to a single z-slice first.");
+        }
+        let label = self
+            .current_annotation_label()
+            .ok_or_else(|| anyhow!("Select an object ID before painting"))?;
+        let flat_indices = self.annotation_disk_indices(x, y)?;
+        self.run_annotation_command(MaskEditCommand::Paint { flat_indices, label })
+    }
+
+    fn erase_annotation_at(&mut self, x: usize, y: usize) -> Result<()> {
+        if !self.annotation_edits_allowed() {
+            bail!("GUI edits require a writable 2D view. Switch to a single z-slice first.");
+        }
+        let flat_indices = self.annotation_disk_indices(x, y)?;
+        self.run_annotation_command(MaskEditCommand::Erase { flat_indices })
+    }
+
+    pub(crate) fn annotation_disk_indices(&self, x: usize, y: usize) -> Result<Vec<usize>> {
+        let document = self
+            .current_annotation_document()
+            .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
+        let shape = document.session.data.values.shape().to_vec();
+        let (width, height, plane_offset) = match document.session.data.layout {
+            SegmentationLayout::YX => (shape[1], shape[0], 0),
+            SegmentationLayout::TYX => {
+                let height = shape[1];
+                let width = shape[2];
+                (width, height, self.selected_frame_idx * width * height)
+            }
+            SegmentationLayout::ZYX => {
+                let z_index = match self.current_projection() {
+                    cellacdc_rs::FrameProjection::ZSlice(z_index) => z_index,
+                    cellacdc_rs::FrameProjection::Max => {
+                        bail!("GUI edits require a single z-slice for 3D segmentations")
+                    }
+                };
+                let height = shape[1];
+                let width = shape[2];
+                (width, height, z_index * width * height)
+            }
+            SegmentationLayout::TZYX => {
+                let z_index = match self.current_projection() {
+                    cellacdc_rs::FrameProjection::ZSlice(z_index) => z_index,
+                    cellacdc_rs::FrameProjection::Max => {
+                        bail!("GUI edits require a single z-slice for 3D segmentations")
+                    }
+                };
+                let height = shape[2];
+                let width = shape[3];
+                let plane_len = width * height;
+                (
+                    width,
+                    height,
+                    (self.selected_frame_idx * shape[1] + z_index) * plane_len,
+                )
+            }
+        };
+
+        let radius = self.annotation.brush_radius.max(1) as isize;
+        let mut flat_indices = Vec::new();
+        for y_offset in -radius..=radius {
+            for x_offset in -radius..=radius {
+                if x_offset * x_offset + y_offset * y_offset > radius * radius {
+                    continue;
+                }
+                let pixel_x = x as isize + x_offset;
+                let pixel_y = y as isize + y_offset;
+                if pixel_x < 0
+                    || pixel_y < 0
+                    || pixel_x >= width as isize
+                    || pixel_y >= height as isize
+                {
+                    continue;
+                }
+                flat_indices.push(
+                    plane_offset + pixel_y as usize * width + pixel_x as usize,
+                );
+            }
+        }
+        Ok(flat_indices)
+    }
 }
 
 fn compose_color_image(
     frame: &FrameData<f32>,
     segmentation: Option<&FrameData<u32>>,
     overlay_alpha: f32,
+    selected_label: Option<u32>,
 ) -> Result<ColorImage> {
     if let Some(segm) = segmentation {
         if segm.width != frame.width || segm.height != frame.height {
@@ -308,10 +457,20 @@ fn compose_color_image(
         if let Some(segm) = segmentation {
             let label = segm.pixels[index];
             if label != 0 {
-                let overlay = label_color(label);
-                color[0] = blend_channel(color[0], overlay.r(), alpha);
-                color[1] = blend_channel(color[1], overlay.g(), alpha);
-                color[2] = blend_channel(color[2], overlay.b(), alpha);
+                let is_selected = selected_label == Some(label);
+                let overlay = if is_selected {
+                    Color32::from_rgb(255, 240, 120)
+                } else {
+                    label_color(label)
+                };
+                let overlay_alpha = if is_selected {
+                    alpha.max(0.8)
+                } else {
+                    alpha
+                };
+                color[0] = blend_channel(color[0], overlay.r(), overlay_alpha);
+                color[1] = blend_channel(color[1], overlay.g(), overlay_alpha);
+                color[2] = blend_channel(color[2], overlay.b(), overlay_alpha);
             }
         }
         pixels.extend_from_slice(&[color[0], color[1], color[2], 255]);
@@ -332,4 +491,16 @@ fn label_color(label: u32) -> Color32 {
     let g = (((hash >> 8) & 0xFF) as u8).max(60);
     let b = (((hash >> 16) & 0xFF) as u8).max(60);
     Color32::from_rgb(r, g, b)
+}
+
+fn image_pixel_from_pointer(rect: Rect, pointer: Pos2, image_size: [usize; 2]) -> Option<(usize, usize)> {
+    if !rect.contains(pointer) || image_size[0] == 0 || image_size[1] == 0 {
+        return None;
+    }
+    let uv_x = ((pointer.x - rect.min.x) / rect.width()).clamp(0.0, 0.999_999);
+    let uv_y = ((pointer.y - rect.min.y) / rect.height()).clamp(0.0, 0.999_999);
+    Some((
+        (uv_x * image_size[0] as f32).floor() as usize,
+        (uv_y * image_size[1] as f32).floor() as usize,
+    ))
 }

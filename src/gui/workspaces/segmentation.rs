@@ -208,6 +208,11 @@ impl CellAcdcGui {
                     "Current workspace: {}",
                     workspace_display_name(AppRoute::Segmentation)
                 ));
+                if has_position_segmentations
+                    && ui.button("Open Current Segmentation in GUI").clicked()
+                {
+                    self.set_route(AppRoute::Annotation);
+                }
                 draw_logs(ui, &self.logs, 280.0);
             });
     }

@@ -1,4 +1,4 @@
-use cellacdc_rs::FrameProjection;
+use cellacdc_rs::{FrameProjection, MaskEditSession};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -18,6 +18,59 @@ pub(crate) enum AppRoute {
     Annotation,
     Utilities,
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AnnotationTool {
+    Select,
+    Brush,
+    Eraser,
+    Relabel,
+    Merge,
+    Delete,
+}
+
+impl Default for AnnotationTool {
+    fn default() -> Self {
+        Self::Select
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AnnotationPendingAction {
+    ChangePosition(usize),
+    ChangeSegmentation(Option<String>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AnnotationWorkspaceState {
+    pub(crate) tool: AnnotationTool,
+    pub(crate) brush_radius: usize,
+    pub(crate) relabel_target: String,
+    pub(crate) merge_target: String,
+    pub(crate) save_as_endname: String,
+    pub(crate) pending_action: Option<AnnotationPendingAction>,
+}
+
+impl Default for AnnotationWorkspaceState {
+    fn default() -> Self {
+        Self {
+            tool: AnnotationTool::Select,
+            brush_radius: 5,
+            relabel_target: String::new(),
+            merge_target: String::new(),
+            save_as_endname: "edited".to_string(),
+            pending_action: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedMaskDocument {
+    pub(crate) position_dir: PathBuf,
+    pub(crate) segmentation_endname: Option<String>,
+    pub(crate) session: MaskEditSession,
+    pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
