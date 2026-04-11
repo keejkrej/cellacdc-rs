@@ -151,11 +151,8 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
 
     let channels = discover_channels(&images_dir, &files, &basename)?;
 
-    let first_shape = inspect_image_volume(
-        &channels[0].image_path,
-        metadata.size_t,
-        metadata.size_z,
-    )?;
+    let first_shape =
+        inspect_image_volume(&channels[0].image_path, metadata.size_t, metadata.size_z)?;
     if let Some(size_t) = metadata.size_t {
         if size_t != first_shape.size_t {
             bail!(

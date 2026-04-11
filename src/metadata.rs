@@ -215,20 +215,7 @@ mod tests {
         let temp = tempdir()?;
         let images_dir = temp.path();
         let path = ensure_position_metadata(
-            None,
-            images_dir,
-            "demo_",
-            "phase",
-            "fluo",
-            4,
-            3,
-            32,
-            24,
-            15.0,
-            1.5,
-            0.5,
-            0.25,
-            "segm",
+            None, images_dir, "demo_", "phase", "fluo", 4, 3, 32, 24, 15.0, 1.5, 0.5, 0.25, "segm",
             true,
         )?;
 

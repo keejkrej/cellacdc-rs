@@ -485,14 +485,10 @@ pub fn compute_multi_channel(
         }
 
         let basename = infer_table_basename(&source_paths[0], &config.source_endnames[0])?;
-        let output_path = images_dir.join(format!(
-            "{basename}acdc_output_{}.csv",
-            config.append_name
-        ));
-        let equations_path = images_dir.join(format!(
-            "{basename}equations_{}.ini",
-            config.append_name
-        ));
+        let output_path =
+            images_dir.join(format!("{basename}acdc_output_{}.csv", config.append_name));
+        let equations_path =
+            images_dir.join(format!("{basename}equations_{}.ini", config.append_name));
         outputs.push(combine_metrics(CombineMetricsConfig {
             source_paths,
             formulas: config.formulas.clone(),
@@ -693,19 +689,20 @@ pub fn apply_tracking_from_trackmate_xml(
     config: ApplyTrackingFromTrackMateXmlConfig,
 ) -> Result<UtilityOutputPaths> {
     let images_dir = normalize_images_dir(&config.position_dir)?;
-    let segmentation_path = find_file_by_endname(&images_dir, &config.segm_endname, &["npz", "tif", "tiff", "h5"])?
-        .ok_or_else(|| {
-            anyhow!(
-                "No segmentation ending with {:?} found in {}",
-                config.segm_endname,
-                images_dir.display()
-            )
-        })?;
+    let segmentation_path = find_file_by_endname(
+        &images_dir,
+        &config.segm_endname,
+        &["npz", "tif", "tiff", "h5"],
+    )?
+    .ok_or_else(|| {
+        anyhow!(
+            "No segmentation ending with {:?} found in {}",
+            config.segm_endname,
+            images_dir.display()
+        )
+    })?;
     let masks = load_mask_data(&segmentation_path, None).or_else(|err| {
-        if err
-            .to_string()
-            .contains("Ambiguous 3D segmentation layout")
-        {
+        if err.to_string().contains("Ambiguous 3D segmentation layout") {
             load_mask_data(
                 &segmentation_path,
                 Some(&MaskPathResolution {
@@ -723,9 +720,10 @@ pub fn apply_tracking_from_trackmate_xml(
         .output_segmentation_path
         .clone()
         .unwrap_or_else(|| append_to_file_stem(&segmentation_path, "_tracked"));
-    let source_acdc_output_path = config.source_acdc_output_path.clone().or_else(|| {
-        infer_tracking_source_acdc_output(&images_dir, &config.segm_endname)
-    });
+    let source_acdc_output_path = config
+        .source_acdc_output_path
+        .clone()
+        .or_else(|| infer_tracking_source_acdc_output(&images_dir, &config.segm_endname));
 
     apply_tracking_with_loaded_table(
         masks,
@@ -923,7 +921,12 @@ fn combine_channels_for_position(
     let mut first_output = None;
 
     for (step, loaded) in loaded_steps {
-        let mut values = align_channel_to_target_layout(loaded.values, loaded.layout, output_layout, &output_shape)?;
+        let mut values = align_channel_to_target_layout(
+            loaded.values,
+            loaded.layout,
+            output_layout,
+            &output_shape,
+        )?;
         apply_binarize(&mut values, &step.binarize)?;
         if !(step.min_val == 0.0 && step.max_val == 1.0) {
             values = rescale_array(&values, step.min_val, step.max_val);
@@ -1058,18 +1061,25 @@ fn load_recipe_channel(
     position: &crate::layout::MeasurementPositionSpec,
     channel_name: &str,
 ) -> Result<LoadedChannelArray> {
-    if let Some(channel) = position.channels.iter().find(|channel| channel.name == channel_name) {
-        let (pixels, shape) =
-            crate::image_io::load_image_volume_as_f32(&channel.image_path, Some(position.size_t), Some(position.size_z))
-                .with_context(|| {
-                    format!(
-                        "Failed to load channel {:?} from {}",
-                        channel_name,
-                        channel.image_path.display()
-                    )
-                })?;
+    if let Some(channel) = position
+        .channels
+        .iter()
+        .find(|channel| channel.name == channel_name)
+    {
+        let (pixels, shape) = crate::image_io::load_image_volume_as_f32(
+            &channel.image_path,
+            Some(position.size_t),
+            Some(position.size_z),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to load channel {:?} from {}",
+                channel_name,
+                channel.image_path.display()
+            )
+        })?;
         let scalar_type = detect_image_scalar_type(&channel.image_path)?;
-        let values = normalize_image_array(shape_volume_pixels(pixels, shape)? , scalar_type)?;
+        let values = normalize_image_array(shape_volume_pixels(pixels, shape)?, scalar_type)?;
         let layout = volume_shape_layout(shape);
         return Ok(LoadedChannelArray {
             values,
@@ -1078,14 +1088,18 @@ fn load_recipe_channel(
         });
     }
 
-    let path = find_file_by_endname(&position.images_dir, channel_name, &["npz", "tif", "tiff", "h5"])?
-        .ok_or_else(|| {
-            anyhow!(
-                "No raw or segmentation channel ending with {:?} found in {}",
-                channel_name,
-                position.images_dir.display()
-            )
-        })?;
+    let path = find_file_by_endname(
+        &position.images_dir,
+        channel_name,
+        &["npz", "tif", "tiff", "h5"],
+    )?
+    .ok_or_else(|| {
+        anyhow!(
+            "No raw or segmentation channel ending with {:?} found in {}",
+            channel_name,
+            position.images_dir.display()
+        )
+    })?;
     let masks = load_mask_data(&path, None)
         .with_context(|| format!("Failed to load segmentation {}", path.display()))?;
     Ok(LoadedChannelArray {
@@ -1095,7 +1109,10 @@ fn load_recipe_channel(
     })
 }
 
-fn normalize_image_array(mut values: ArrayD<f32>, scalar_type: ImageScalarType) -> Result<ArrayD<f32>> {
+fn normalize_image_array(
+    mut values: ArrayD<f32>,
+    scalar_type: ImageScalarType,
+) -> Result<ArrayD<f32>> {
     let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     match scalar_type {
         ImageScalarType::U8 => values.mapv_inplace(|value| value / u8::MAX as f32),
@@ -1310,15 +1327,27 @@ fn save_image_tiff(path: &Path, values: &ArrayD<f32>, scalar_type: ImageScalarTy
         match scalar_type {
             ImageScalarType::U8 => {
                 let pixels = convert_plane_to_u8(&plane.pixels);
-                encoder.write_image::<colortype::Gray8>(plane.width as u32, plane.height as u32, &pixels)?;
+                encoder.write_image::<colortype::Gray8>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &pixels,
+                )?;
             }
             ImageScalarType::U16 => {
                 let pixels = convert_plane_to_u16(&plane.pixels);
-                encoder.write_image::<colortype::Gray16>(plane.width as u32, plane.height as u32, &pixels)?;
+                encoder.write_image::<colortype::Gray16>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &pixels,
+                )?;
             }
             ImageScalarType::U32 => {
                 let pixels = convert_plane_to_u32(&plane.pixels);
-                encoder.write_image::<colortype::Gray32>(plane.width as u32, plane.height as u32, &pixels)?;
+                encoder.write_image::<colortype::Gray32>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &pixels,
+                )?;
             }
             ImageScalarType::F32 => {
                 encoder.write_image::<colortype::Gray32Float>(
@@ -1416,7 +1445,11 @@ fn convert_plane_to_integer(values: &[f32], dtype_max: f32) -> Vec<u32> {
     } else {
         values
             .iter()
-            .map(|value| (((*value - min) / (max - min)) * dtype_max).round().clamp(0.0, dtype_max) as u32)
+            .map(|value| {
+                (((*value - min) / (max - min)) * dtype_max)
+                    .round()
+                    .clamp(0.0, dtype_max) as u32
+            })
             .collect::<Vec<_>>()
     };
     scaled
@@ -1429,11 +1462,7 @@ fn trackmate_xml_to_table(path: &Path) -> Result<Table> {
         .with_context(|| format!("Failed to parse TrackMate XML {}", path.display()))?;
     let root = doc.root_element();
     let mut rows = Vec::new();
-    for (particle_idx, particle) in root
-        .children()
-        .filter(|node| node.is_element())
-        .enumerate()
-    {
+    for (particle_idx, particle) in root.children().filter(|node| node.is_element()).enumerate() {
         let id = (particle_idx + 1) as f64;
         for detection in particle.children().filter(|node| node.is_element()) {
             let frame_i = detection
@@ -1466,7 +1495,13 @@ fn trackmate_xml_to_table(path: &Path) -> Result<Table> {
         }
     }
     Ok(rows_to_table(
-        &["frame_i".into(), "ID".into(), "x".into(), "y".into(), "z".into()],
+        &[
+            "frame_i".into(),
+            "ID".into(),
+            "x".into(),
+            "y".into(),
+            "z".into(),
+        ],
         &rows,
     ))
 }
@@ -2215,7 +2250,9 @@ fn collect_measurement_positions_from_scope(
 ) -> Result<Vec<crate::layout::MeasurementPositionSpec>> {
     match (position_dir, experiment_dir) {
         (Some(position_dir), None) => Ok(vec![resolve_measurement_position(position_dir)?]),
-        (None, Some(experiment_dir)) => Ok(discover_measurement_experiment(experiment_dir)?.positions),
+        (None, Some(experiment_dir)) => {
+            Ok(discover_measurement_experiment(experiment_dir)?.positions)
+        }
         _ => bail!("Provide exactly one of position_dir or experiment_dir"),
     }
 }
@@ -2283,7 +2320,9 @@ fn find_file_by_endname(
                 || stem.map(|name| name.ends_with(endname)).unwrap_or(false)
                 || filename
                     .map(|name| {
-                        extensions.iter().any(|ext| name.ends_with(&format!("{endname}.{ext}")))
+                        extensions
+                            .iter()
+                            .any(|ext| name.ends_with(&format!("{endname}.{ext}")))
                     })
                     .unwrap_or(false)
         })
@@ -2803,7 +2842,9 @@ fn apply_array_binary(
     let left = left.eval_value(variables)?;
     let right = right.eval_value(variables)?;
     Ok(match (left, right) {
-        (ArrayValue::Scalar(left), ArrayValue::Scalar(right)) => ArrayValue::Scalar(op(left, right)),
+        (ArrayValue::Scalar(left), ArrayValue::Scalar(right)) => {
+            ArrayValue::Scalar(op(left, right))
+        }
         (ArrayValue::Array(left), ArrayValue::Scalar(right)) => {
             ArrayValue::Array(left.mapv(|value| op(value, right)))
         }
@@ -3385,11 +3426,7 @@ mod tests {
         write_table(
             &images.join("demo_acdc_output.csv"),
             &Table {
-                headers: vec![
-                    "frame_i".into(),
-                    "Cell_ID".into(),
-                    "relative_ID".into(),
-                ],
+                headers: vec!["frame_i".into(), "Cell_ID".into(), "relative_ID".into()],
                 rows: vec![vec![
                     TableValue::Number(1.0),
                     TableValue::Number(2.0),

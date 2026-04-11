@@ -76,14 +76,7 @@ fn track_frame(
         curr_ids.iter().copied().max().unwrap_or(0),
     ) + 1;
 
-    index_assignment(
-        &old_ids,
-        &tracked_ids,
-        &curr_ids,
-        frame,
-        unique_id,
-        true,
-    )
+    index_assignment(&old_ids, &tracked_ids, &curr_ids, frame, unique_id, true)
 }
 
 fn calc_ioa_matrix(
@@ -268,12 +261,7 @@ mod tests {
             0, 0, 0, 0, //
         ]];
 
-        let tracked = track_sequence(
-            &frames,
-            4,
-            4,
-            &TrackingConfig { ioa_threshold: 0.4 },
-        );
+        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
 
         assert_eq!(tracked.frames[0], frames[0]);
         assert_eq!(tracked.labels_found, 2);
@@ -296,12 +284,7 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(
-            &frames,
-            4,
-            4,
-            &TrackingConfig { ioa_threshold: 0.4 },
-        );
+        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
 
         assert_eq!(
             tracked.frames[1],
@@ -332,12 +315,7 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(
-            &frames,
-            4,
-            4,
-            &TrackingConfig { ioa_threshold: 0.4 },
-        );
+        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
 
         assert_eq!(
             tracked.frames[1],
@@ -368,12 +346,7 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(
-            &frames,
-            4,
-            4,
-            &TrackingConfig { ioa_threshold: 0.4 },
-        );
+        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
 
         assert_eq!(
             tracked.frames[1],
@@ -403,12 +376,7 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(
-            &frames,
-            4,
-            4,
-            &TrackingConfig { ioa_threshold: 0.4 },
-        );
+        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
 
         assert_eq!(tracked.disappeared, vec![(0, 2)]);
         assert_eq!(tracked.frames[1][0], 1);
@@ -426,12 +394,7 @@ mod tests {
             vec![0; 16],
         ];
 
-        let tracked = track_sequence(
-            &frames,
-            4,
-            4,
-            &TrackingConfig { ioa_threshold: 0.4 },
-        );
+        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
 
         assert_eq!(tracked.frames[1], vec![0; 16]);
         assert_eq!(tracked.disappeared, vec![(0, 1)]);

@@ -3,7 +3,9 @@ use csv::{ReaderBuilder, Writer};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::layout::{discover_measurement_experiment, resolve_measurement_position, MeasurementPositionSpec};
+use crate::layout::{
+    discover_measurement_experiment, resolve_measurement_position, MeasurementPositionSpec,
+};
 use crate::runner::OverwritePolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,10 +155,10 @@ pub fn prepare_position_zstack_segm_info(
             spec.position_dir.display()
         );
     }
-    let path = spec
-        .segm_info_path
-        .clone()
-        .unwrap_or_else(|| spec.images_dir.join(format!("{}segmInfo.csv", spec.basename)));
+    let path = spec.segm_info_path.clone().unwrap_or_else(|| {
+        spec.images_dir
+            .join(format!("{}segmInfo.csv", spec.basename))
+    });
     if overwrite_policy == OverwritePolicy::Refuse && path.exists() {
         bail!(
             "Refusing to overwrite existing output {}. Re-run with --overwrite to replace it.",
@@ -182,7 +184,12 @@ pub fn prepare_position_zstack_segm_info(
             .image_path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid channel filename in {}", channel.image_path.display()))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Invalid channel filename in {}",
+                    channel.image_path.display()
+                )
+            })?;
         for frame_i in 0..spec.size_t {
             writer.write_record([
                 filename,

@@ -142,30 +142,28 @@ pub fn run_position_with_segmenter(
     guard_outputs(&outputs, config.overwrite_policy)?;
     let mut raw_frame_masks = Vec::with_capacity(config.position.size_t);
     let (frame_height, frame_width) = if config.position.size_z > 1 {
-        let (phase, phase_shape) =
-            load_image_volume_as_f32(
-                &config.position.phase_image,
-                Some(config.position.size_t),
-                Some(config.position.size_z),
+        let (phase, phase_shape) = load_image_volume_as_f32(
+            &config.position.phase_image,
+            Some(config.position.size_t),
+            Some(config.position.size_z),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to load phase image {}",
+                config.position.phase_image.display()
             )
-            .with_context(|| {
-                format!(
-                    "Failed to load phase image {}",
-                    config.position.phase_image.display()
-                )
-            })?;
-        let (fluo, fluo_shape) =
-            load_image_volume_as_f32(
-                &config.position.fluo_image,
-                Some(config.position.size_t),
-                Some(config.position.size_z),
+        })?;
+        let (fluo, fluo_shape) = load_image_volume_as_f32(
+            &config.position.fluo_image,
+            Some(config.position.size_t),
+            Some(config.position.size_z),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to load fluorescence image {}",
+                config.position.fluo_image.display()
             )
-            .with_context(|| {
-                format!(
-                    "Failed to load fluorescence image {}",
-                    config.position.fluo_image.display()
-                )
-            })?;
+        })?;
         if phase_shape != fluo_shape {
             bail!(
                 "Input z-stack mismatch: phase is {}x{}x{}x{}, fluorescence is {}x{}x{}x{}",
@@ -237,15 +235,15 @@ pub fn run_position_with_segmenter(
         }
         (phase_shape.height, phase_shape.width)
     } else {
-        let (phase, phase_shape) =
-            load_image_stack_as_f32(&config.position.phase_image).with_context(|| {
+        let (phase, phase_shape) = load_image_stack_as_f32(&config.position.phase_image)
+            .with_context(|| {
                 format!(
                     "Failed to load phase image {}",
                     config.position.phase_image.display()
                 )
             })?;
-        let (fluo, fluo_shape) =
-            load_image_stack_as_f32(&config.position.fluo_image).with_context(|| {
+        let (fluo, fluo_shape) = load_image_stack_as_f32(&config.position.fluo_image)
+            .with_context(|| {
                 format!(
                     "Failed to load fluorescence image {}",
                     config.position.fluo_image.display()
@@ -290,12 +288,7 @@ pub fn run_position_with_segmenter(
     };
 
     let (tracked_frames, labels_found) = if let Some(tracking) = &config.tracking {
-        let tracked = track_sequence(
-            &raw_frame_masks,
-            frame_height,
-            frame_width,
-            tracking,
-        );
+        let tracked = track_sequence(&raw_frame_masks, frame_height, frame_width, tracking);
         (tracked.frames, tracked.labels_found)
     } else {
         let labels_found = raw_frame_masks
@@ -837,9 +830,7 @@ mod tests {
             SegmentationParams::default(),
         )?;
         let config = SegmentationRunConfig {
-            tracking: Some(TrackingConfig {
-                ioa_threshold: 0.4,
-            }),
+            tracking: Some(TrackingConfig { ioa_threshold: 0.4 }),
             ..base
         };
 
@@ -989,7 +980,9 @@ mod tests {
             &SegmentationParams::default(),
             true,
             Some("tracked"),
-            Some(&TrackingConfig { ioa_threshold: 0.55 }),
+            Some(&TrackingConfig {
+                ioa_threshold: 0.55,
+            }),
             Path::new("/tmp/demo_segm_tracked.npz"),
         )?;
 
@@ -1014,7 +1007,12 @@ mod tests {
         Ok(())
     }
 
-    fn write_test_volume_npz(path: &Path, frame_values: &[f32], size_t: usize, size_z: usize) -> Result<()> {
+    fn write_test_volume_npz(
+        path: &Path,
+        frame_values: &[f32],
+        size_t: usize,
+        size_z: usize,
+    ) -> Result<()> {
         let file = File::create(path)?;
         let mut writer = NpzWriter::new(file);
         let mut values = Vec::new();

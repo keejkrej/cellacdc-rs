@@ -1,4 +1,6 @@
+mod edit;
 mod image_io;
+mod import;
 mod layout;
 mod lineage;
 mod mask_io;
@@ -7,6 +9,7 @@ mod measure;
 mod measurements;
 mod metadata;
 mod model;
+mod prep;
 mod runner;
 mod segm_info;
 mod session;
@@ -15,6 +18,11 @@ mod tracking;
 mod utilities;
 mod zstack;
 
+pub use edit::{MaskEditCommand, MaskEditResult, MaskEditSession, SelectionState, UndoStack};
+pub use import::{
+    detect_import_source_kind, discover_import_sources, import_experiment, ImportExperimentConfig,
+    ImportSource, ImportSourceKind, ImportedExperiment,
+};
 pub use layout::{
     discover_experiment, discover_measurement_experiment, resolve_measurement_position,
     resolve_position, ChannelSpec, ExperimentSpec, MeasurementExperimentSpec,
@@ -36,6 +44,11 @@ pub use measure::{
     MeasurementRunConfig, MeasurementRunResult,
 };
 pub use model::{CellposeModel, Segmenter};
+pub use prep::{
+    read_background_roi_json, read_background_roi_npz, write_background_roi_json,
+    write_background_roi_npz, AlignmentConfig, BackgroundRoiArchive, BackgroundRoiRect,
+    BackgroundRoiSet, CropConfig, PrepOutputPaths, TimeCropConfig, ZCropConfig,
+};
 pub use runner::{
     resolve_position_run_config, run_experiment, run_position, ExperimentRunConfig,
     OverwritePolicy, RunOutputPaths, RunResult, SegmentationParams, SegmentationRunConfig,
