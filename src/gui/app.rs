@@ -7,9 +7,9 @@ use super::state::{
 use super::workspaces;
 use anyhow::{anyhow, Result};
 use cellacdc_rs::{
-    open_experiment_session, ExperimentSession, FrameData, FrameProjection, ImportSource,
-    MaskData, MaskEditCommand, MaskEditSession, MaskPathResolution, MaskRecoveryState,
-    MaskSaveMode, OverwritePolicy, PositionSession, SegmentationLayout, SegmentationParams,
+    open_experiment_session, ExperimentSession, FrameData, FrameProjection, ImportSource, MaskData,
+    MaskEditCommand, MaskEditSession, MaskPathResolution, MaskRecoveryState, MaskSaveMode,
+    OverwritePolicy, PositionSession, SegmentationLayout, SegmentationParams,
 };
 use eframe::egui::{self, TextureHandle};
 use rfd::FileDialog;
@@ -334,7 +334,8 @@ impl CellAcdcGui {
         let position_dir = self.selected_position()?.spec.position_dir.clone();
         let selected_endname = self.persisted.selected_segmentation_endname.clone();
         self.annotation_document.as_mut().filter(|document| {
-            document.position_dir == position_dir && document.segmentation_endname == selected_endname
+            document.position_dir == position_dir
+                && document.segmentation_endname == selected_endname
         })
     }
 
@@ -364,7 +365,10 @@ impl CellAcdcGui {
         };
         !matches!(
             (document.session.data.layout, self.current_projection()),
-            (SegmentationLayout::ZYX | SegmentationLayout::TZYX, FrameProjection::Max)
+            (
+                SegmentationLayout::ZYX | SegmentationLayout::TZYX,
+                FrameProjection::Max
+            )
         )
     }
 
@@ -565,7 +569,10 @@ impl CellAcdcGui {
         let endname = self.annotation.save_as_endname.trim().to_string();
         let target_path = self.annotation_save_as_path(&endname)?;
         if target_path.exists() {
-            anyhow::bail!("Segmentation version already exists: {}", target_path.display());
+            anyhow::bail!(
+                "Segmentation version already exists: {}",
+                target_path.display()
+            );
         }
         let document = self
             .current_annotation_document_mut()
@@ -666,10 +673,12 @@ pub(crate) fn mask_frame_for_projection(
     projection: FrameProjection,
 ) -> Result<FrameData<u32>> {
     let shape = data.values.shape().to_vec();
-    let values = data
-        .values
-        .as_slice_memory_order()
-        .ok_or_else(|| anyhow!("Mask data is not contiguous: {}", data.source_path.display()))?;
+    let values = data.values.as_slice_memory_order().ok_or_else(|| {
+        anyhow!(
+            "Mask data is not contiguous: {}",
+            data.source_path.display()
+        )
+    })?;
     match data.layout {
         SegmentationLayout::YX => {
             if frame_index > 0 {
@@ -719,7 +728,11 @@ pub(crate) fn mask_frame_for_projection(
             let height = shape[2];
             let width = shape[3];
             if frame_index >= size_t {
-                anyhow::bail!("Frame {} is out of bounds for {} frame(s)", frame_index, size_t);
+                anyhow::bail!(
+                    "Frame {} is out of bounds for {} frame(s)",
+                    frame_index,
+                    size_t
+                );
             }
             let plane_len = height * width;
             let frame_offset = frame_index * size_z * plane_len;

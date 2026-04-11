@@ -23,6 +23,7 @@ pub struct MeasurementRunConfig {
     pub position_path: PathBuf,
     pub segm_endname: Option<String>,
     pub overwrite_policy: OverwritePolicy,
+    pub stop_frame: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +31,7 @@ pub struct MeasurementExperimentConfig {
     pub experiment_dir: PathBuf,
     pub segm_endname: Option<String>,
     pub overwrite_policy: OverwritePolicy,
+    pub stop_frame: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,7 @@ pub(crate) struct LoadedMeasurementPosition {
     pub mask_data: MaskData,
     pub segm_info: Option<SegmInfoTable>,
     pub is_segm_3d: bool,
+    pub stop_frame: Option<usize>,
 }
 
 pub(crate) fn measurement_position_from_position(
@@ -273,7 +276,7 @@ const DEFAULT_RELATIVE_ID: i32 = -1;
 
 pub fn measure_position(config: MeasurementRunConfig) -> Result<MeasurementRunResult> {
     let spec = resolve_measurement_position(&config.position_path)?;
-    let loaded = load_measurement_inputs(spec, config.segm_endname.as_deref())?;
+    let loaded = load_measurement_inputs(spec, config.segm_endname.as_deref(), config.stop_frame)?;
     if config.overwrite_policy == OverwritePolicy::Refuse
         && loaded.outputs.acdc_output_csv_path.exists()
     {
@@ -298,7 +301,8 @@ pub(crate) fn measure_experiment_from_spec(
 ) -> Result<Vec<MeasurementRunResult>> {
     let mut results = Vec::with_capacity(experiment.positions.len());
     for position in experiment.positions {
-        let loaded = load_measurement_inputs(position, config.segm_endname.as_deref())?;
+        let loaded =
+            load_measurement_inputs(position, config.segm_endname.as_deref(), config.stop_frame)?;
         if config.overwrite_policy == OverwritePolicy::Refuse
             && loaded.outputs.acdc_output_csv_path.exists()
         {
@@ -315,6 +319,7 @@ pub(crate) fn measure_experiment_from_spec(
 pub(crate) fn load_measurement_inputs(
     spec: MeasurementPositionSpec,
     segm_endname: Option<&str>,
+    stop_frame: Option<usize>,
 ) -> Result<LoadedMeasurementPosition> {
     let outputs = measurement_output_paths(&spec.images_dir, &spec.basename, segm_endname);
     let segm_name = measurement_segmentation_name(segm_endname);
@@ -362,13 +367,22 @@ pub(crate) fn load_measurement_inputs(
         mask_data,
         segm_info,
         is_segm_3d,
+        stop_frame,
     })
 }
 
 pub(crate) fn write_measurements(
     loaded: &LoadedMeasurementPosition,
 ) -> Result<MeasurementRunResult> {
-    let mask_context = measurement_mask_context(&loaded.mask_data);
+    let mut mask_context = measurement_mask_context(&loaded.mask_data);
+    let frame_limit = resolve_measurement_stop_frame(loaded.spec.size_t, loaded.stop_frame)?;
+    mask_context.projected_frames.truncate(frame_limit);
+    if let Some(counts) = &mut mask_context.voxel_counts_per_frame {
+        counts.truncate(frame_limit);
+    }
+    if let Some(volumes) = &mut mask_context.volume_frames {
+        volumes.truncate(frame_limit);
+    }
     let channels = load_channels(
         &loaded.spec,
         mask_context.frame_height,
@@ -588,8 +602,20 @@ pub(crate) fn write_measurements(
         images_dir: loaded.spec.images_dir.clone(),
         outputs: loaded.outputs.clone(),
         labels_found: loaded.mask_data.values.iter().copied().max().unwrap_or(0),
-        frames_processed: mask_context.projected_frames.len(),
+        frames_processed: frame_limit,
     })
+}
+
+fn resolve_measurement_stop_frame(total_frames: usize, stop_frame: Option<usize>) -> Result<usize> {
+    match stop_frame {
+        Some(limit) if limit > total_frames => bail!(
+            "Requested stop_frame {} exceeds available frame count {}",
+            limit,
+            total_frames
+        ),
+        Some(limit) => Ok(limit),
+        None => Ok(total_frames),
+    }
 }
 
 fn measurement_output_paths(
@@ -1987,6 +2013,7 @@ mod tests {
             position_path: temp.path().join("Position_1"),
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
         })?;
         let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
         let headers = reader
@@ -2066,6 +2093,7 @@ mod tests {
             position_path: temp.path().join("Position_1"),
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
         })?;
         let lineage_output = images.join("demo_acdc_output_lineage.csv");
         add_lineage_tree(LineageTreeConfig {
@@ -2176,6 +2204,7 @@ mod tests {
             position_path: temp.path().join("Position_1"),
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
         })?;
         let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
         let headers = reader
@@ -2243,6 +2272,7 @@ mod tests {
             position_path: temp.path().join("Position_1"),
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
         })?;
         let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
         let headers = reader

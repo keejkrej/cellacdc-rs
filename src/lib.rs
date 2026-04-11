@@ -16,6 +16,7 @@ mod session;
 mod tabular;
 mod tracking;
 mod utilities;
+mod workflow;
 mod zstack;
 
 pub use edit::{
@@ -76,4 +77,8 @@ pub use utilities::{
     Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, CountObjectsResult,
     FillHolesConfig, GenerateMotherBudTotalConfig, LineageTreeConfig, ObjectsCountSummary,
     Stack2DSegmTo3DConfig, TrackingColumnMap, UtilityOutputPaths,
+};
+pub use workflow::{
+    parse_workflow_file, run_workflow_file, MeasurementWorkflowConfig, SegmentationWorkflowConfig,
+    WorkflowFile, WorkflowKind, WorkflowRunOptions, WorkflowRunReport, WorkflowTarget,
 };

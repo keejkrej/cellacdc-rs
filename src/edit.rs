@@ -494,7 +494,10 @@ mod tests {
         save_mask_data(&paths.autosave_path, &sample_mask())?;
 
         let session = MaskEditSession::from_source_path(&source_path, None)?;
-        assert_eq!(session.recovery_state(), MaskRecoveryState::RecoveryAvailable);
+        assert_eq!(
+            session.recovery_state(),
+            MaskRecoveryState::RecoveryAvailable
+        );
         Ok(())
     }
 }

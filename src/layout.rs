@@ -292,6 +292,38 @@ pub fn discover_measurement_experiment(
     })
 }
 
+pub fn resolve_workflow_targets(
+    path: impl AsRef<Path>,
+    phase_channel: impl Into<String>,
+    fluo_channel: impl Into<String>,
+) -> Result<Vec<PositionSpec>> {
+    let path = path.as_ref();
+    let phase_channel = phase_channel.into();
+    let fluo_channel = fluo_channel.into();
+
+    if path.is_file() {
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Workflow target file has no parent directory: {}",
+                path.display()
+            )
+        })?;
+        return Ok(vec![resolve_position(parent, phase_channel, fluo_channel)?]);
+    }
+
+    if !path.is_dir() {
+        bail!("Workflow target does not exist: {}", path.display());
+    }
+
+    if path.file_name().and_then(|name| name.to_str()) == Some("Images")
+        || path.join("Images").is_dir()
+    {
+        return Ok(vec![resolve_position(path, phase_channel, fluo_channel)?]);
+    }
+
+    Ok(discover_experiment(path, phase_channel, fluo_channel)?.positions)
+}
+
 fn normalize_position_path(path: &Path) -> Result<(PathBuf, PathBuf)> {
     if !path.exists() {
         bail!("Path does not exist: {}", path.display());

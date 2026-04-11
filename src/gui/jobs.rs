@@ -205,6 +205,7 @@ impl CellAcdcGui {
                 position_path,
                 segm_endname,
                 overwrite_policy,
+                stop_frame: None,
             })?;
             Ok(JobSummary {
                 summary: format!(
@@ -241,6 +242,7 @@ impl CellAcdcGui {
                 experiment_dir,
                 segm_endname,
                 overwrite_policy,
+                stop_frame: None,
             })?;
             Ok(JobSummary {
                 summary: format!("Measured {} position(s)", results.len()),
@@ -284,6 +286,7 @@ impl CellAcdcGui {
                 cpu,
                 params,
                 tracking,
+                stop_frame: None,
             })?;
             Ok(JobSummary {
                 summary: format!(
@@ -335,6 +338,7 @@ impl CellAcdcGui {
                 cpu,
                 params,
                 tracking,
+                stop_frame: None,
             })?;
             Ok(JobSummary {
                 summary: format!("Segmented {} position(s)", results.len()),

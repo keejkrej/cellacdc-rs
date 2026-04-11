@@ -174,7 +174,10 @@ impl PositionSession {
         };
         let shape = mask.values.shape().to_vec();
         let values = mask.values.as_slice_memory_order().ok_or_else(|| {
-            anyhow::anyhow!("Mask data is not contiguous: {}", mask.source_path.display())
+            anyhow::anyhow!(
+                "Mask data is not contiguous: {}",
+                mask.source_path.display()
+            )
         })?;
 
         let frame = match mask.layout {
@@ -573,7 +576,10 @@ mod tests {
 
         let session = open_position_session(&position)?;
         assert_eq!(session.segmentations.len(), 2);
-        assert_eq!(session.segmentations[1].endname.as_deref(), Some("corrected"));
+        assert_eq!(
+            session.segmentations[1].endname.as_deref(),
+            Some("corrected")
+        );
         Ok(())
     }
 

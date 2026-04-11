@@ -17,7 +17,9 @@ impl CellAcdcGui {
                     ui,
                     AppRoute::Annotation,
                     Some("Review segmentation masks, make native corrections, and save safely."),
-                    self.experiment.as_ref().map(|experiment| experiment.root_path.as_path()),
+                    self.experiment
+                        .as_ref()
+                        .map(|experiment| experiment.root_path.as_path()),
                     self.experiment.is_none(),
                 )
             })
@@ -258,7 +260,9 @@ impl CellAcdcGui {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label("The current GUI document has unsaved edits.");
-                ui.label("Save the current segmentation before switching, discard the edits, or cancel.");
+                ui.label(
+                    "Save the current segmentation before switching, discard the edits, or cancel.",
+                );
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Save and Continue").clicked() {

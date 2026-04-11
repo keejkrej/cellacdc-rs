@@ -63,6 +63,7 @@ pub struct SegmentationRunConfig {
     pub cpu: bool,
     pub params: SegmentationParams,
     pub tracking: Option<TrackingConfig>,
+    pub stop_frame: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +77,7 @@ pub struct ExperimentRunConfig {
     pub cpu: bool,
     pub params: SegmentationParams,
     pub tracking: Option<TrackingConfig>,
+    pub stop_frame: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +126,7 @@ pub fn run_experiment_with_segmenter(
             cpu: config.cpu,
             params: config.params.clone(),
             tracking: config.tracking.clone(),
+            stop_frame: config.stop_frame,
         };
         results.push(run_position_with_segmenter(run_config, segmenter)?);
     }
@@ -140,6 +143,7 @@ pub fn run_position_with_segmenter(
         config.segm_endname.as_deref(),
     );
     guard_outputs(&outputs, config.overwrite_policy)?;
+    let frames_to_process = resolve_stop_frame_count(config.position.size_t, config.stop_frame)?;
     let mut raw_frame_masks = Vec::with_capacity(config.position.size_t);
     let (frame_height, frame_width) = if config.position.size_z > 1 {
         let (phase, phase_shape) = load_image_volume_as_f32(
@@ -196,7 +200,7 @@ pub fn run_position_with_segmenter(
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow::anyhow!("Invalid fluorescence filename"))?;
-        for frame_i in 0..phase_shape.size_t {
+        for frame_i in 0..frames_to_process {
             let phase_record = segm_info.get(phase_filename, frame_i).ok_or_else(|| {
                 anyhow::anyhow!(
                     "Missing _segmInfo entry for {:?} frame {}",
@@ -232,6 +236,9 @@ pub fn run_position_with_segmenter(
                 phase_shape.width,
                 &config.params,
             )?);
+        }
+        for _ in frames_to_process..phase_shape.size_t {
+            raw_frame_masks.push(vec![0; phase_shape.height * phase_shape.width]);
         }
         (phase_shape.height, phase_shape.width)
     } else {
@@ -272,7 +279,7 @@ pub fn run_position_with_segmenter(
         }
 
         let frame_len = phase_shape.height * phase_shape.width;
-        for frame_i in 0..phase_shape.frames {
+        for frame_i in 0..frames_to_process {
             let start = frame_i * frame_len;
             let end = start + frame_len;
             let mask = segmenter.segment_pair(
@@ -283,6 +290,9 @@ pub fn run_position_with_segmenter(
                 &config.params,
             )?;
             raw_frame_masks.push(mask);
+        }
+        for _ in frames_to_process..phase_shape.frames {
+            raw_frame_masks.push(vec![0; frame_len]);
         }
         (phase_shape.height, phase_shape.width)
     };
@@ -339,6 +349,7 @@ pub fn run_position_with_segmenter(
     let measurement_result = write_measurements(&load_measurement_inputs(
         measurement_position_from_position(&config.position),
         config.segm_endname.as_deref(),
+        config.stop_frame,
     )?)?;
 
     Ok(RunResult {
@@ -346,7 +357,7 @@ pub fn run_position_with_segmenter(
         images_dir: config.position.images_dir,
         outputs,
         labels_found: measurement_result.labels_found.max(labels_found),
-        frames_processed: measurement_result.frames_processed,
+        frames_processed: frames_to_process.min(measurement_result.frames_processed),
     })
 }
 
@@ -369,7 +380,20 @@ pub fn resolve_position_run_config(
         cpu,
         params,
         tracking: None,
+        stop_frame: None,
     })
+}
+
+fn resolve_stop_frame_count(total_frames: usize, stop_frame: Option<usize>) -> Result<usize> {
+    match stop_frame {
+        Some(limit) if limit > total_frames => bail!(
+            "Requested stop_frame {} exceeds available frame count {}",
+            limit,
+            total_frames
+        ),
+        Some(limit) => Ok(limit),
+        None => Ok(total_frames),
+    }
 }
 
 fn segmentation_name(endname: Option<&str>) -> String {
@@ -609,6 +633,7 @@ mod tests {
                 cpu: true,
                 params: SegmentationParams::default(),
                 tracking: None,
+                stop_frame: None,
             },
             discover_experiment(temp.path(), "phase", "fluo")?,
             &mut segmenter,

@@ -350,7 +350,10 @@ impl CellAcdcGui {
             .current_annotation_label()
             .ok_or_else(|| anyhow!("Select an object ID before painting"))?;
         let flat_indices = self.annotation_disk_indices(x, y)?;
-        self.run_annotation_command(MaskEditCommand::Paint { flat_indices, label })
+        self.run_annotation_command(MaskEditCommand::Paint {
+            flat_indices,
+            label,
+        })
     }
 
     fn erase_annotation_at(&mut self, x: usize, y: usize) -> Result<()> {
@@ -418,9 +421,7 @@ impl CellAcdcGui {
                 {
                     continue;
                 }
-                flat_indices.push(
-                    plane_offset + pixel_y as usize * width + pixel_x as usize,
-                );
+                flat_indices.push(plane_offset + pixel_y as usize * width + pixel_x as usize);
             }
         }
         Ok(flat_indices)
@@ -463,11 +464,7 @@ fn compose_color_image(
                 } else {
                     label_color(label)
                 };
-                let overlay_alpha = if is_selected {
-                    alpha.max(0.8)
-                } else {
-                    alpha
-                };
+                let overlay_alpha = if is_selected { alpha.max(0.8) } else { alpha };
                 color[0] = blend_channel(color[0], overlay.r(), overlay_alpha);
                 color[1] = blend_channel(color[1], overlay.g(), overlay_alpha);
                 color[2] = blend_channel(color[2], overlay.b(), overlay_alpha);
@@ -493,7 +490,11 @@ fn label_color(label: u32) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-fn image_pixel_from_pointer(rect: Rect, pointer: Pos2, image_size: [usize; 2]) -> Option<(usize, usize)> {
+fn image_pixel_from_pointer(
+    rect: Rect,
+    pointer: Pos2,
+    image_size: [usize; 2],
+) -> Option<(usize, usize)> {
     if !rect.contains(pointer) || image_size[0] == 0 || image_size[1] == 0 {
         return None;
     }
