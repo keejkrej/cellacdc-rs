@@ -1,16 +1,26 @@
 use crate::gui::app::CellAcdcGui;
-use crate::gui::state::{ResolutionLayoutChoice, UtilityTool};
+use crate::gui::state::{AppRoute, ResolutionLayoutChoice, UtilityTool};
 use eframe::egui::{self, RichText};
 
-use super::{path_edit_row, suggested_output_path, utility_tool_label, PathEditKind};
+use super::{
+    draw_workspace_header, path_edit_row, suggested_output_path, utility_tool_label, PathEditKind,
+};
 
 impl CellAcdcGui {
     pub(crate) fn draw_utility_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Utilities");
-            ui.label(
-                "Rust-native utility center for file-based Cell-ACDC workflows. The current UI covers the utilities already hardened in this desktop shell.",
+            let (back_to_launcher, _) = draw_workspace_header(
+                ui,
+                AppRoute::Utilities,
+                Some(
+                    "Rust-native utility center for file-based Cell-ACDC workflows. The current UI covers the utilities already hardened in this desktop shell.",
+                ),
+                self.experiment.as_ref().map(|experiment| experiment.root_path.as_path()),
+                false,
             );
+            if back_to_launcher {
+                self.set_route(AppRoute::Launcher);
+            }
 
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {

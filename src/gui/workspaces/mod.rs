@@ -10,7 +10,7 @@ mod viewer;
 use crate::gui::state::UtilityTool;
 use anyhow::{anyhow, Result};
 use cellacdc_rs::{PositionSession, UtilityOutputPaths};
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Button, RichText};
 use rfd::FileDialog;
 use std::path::{Path, PathBuf};
 
@@ -21,40 +21,108 @@ pub(crate) enum PathEditKind {
     SaveFile,
 }
 
-pub(crate) fn route_label(route: crate::gui::state::AppRoute) -> &'static str {
+#[derive(Clone, Copy)]
+pub(crate) struct LauncherModuleSpec {
+    pub(crate) title: &'static str,
+    pub(crate) subtitle: &'static str,
+    pub(crate) route: crate::gui::state::AppRoute,
+    pub(crate) enabled_when_session_required: bool,
+    pub(crate) is_primary_module: bool,
+}
+
+pub(crate) fn workspace_display_name(route: crate::gui::state::AppRoute) -> &'static str {
     match route {
         crate::gui::state::AppRoute::Launcher => "Launcher",
         crate::gui::state::AppRoute::DataStructure => "Data Structure",
         crate::gui::state::AppRoute::DataPrep => "Data Prep",
         crate::gui::state::AppRoute::Segmentation => "Segmentation",
-        crate::gui::state::AppRoute::Annotation => "Annotation",
+        crate::gui::state::AppRoute::Annotation => "GUI",
         crate::gui::state::AppRoute::Utilities => "Utilities",
         crate::gui::state::AppRoute::Help => "Help",
     }
 }
 
-pub(crate) fn launcher_placeholder_card(
+pub(crate) fn workspace_title(route: crate::gui::state::AppRoute) -> &'static str {
+    match route {
+        crate::gui::state::AppRoute::Launcher => "Launcher",
+        crate::gui::state::AppRoute::DataStructure => "Create Data Structure",
+        crate::gui::state::AppRoute::DataPrep => "Data Prep",
+        crate::gui::state::AppRoute::Segmentation => "Segmentation",
+        crate::gui::state::AppRoute::Annotation => "GUI",
+        crate::gui::state::AppRoute::Utilities => "Utilities",
+        crate::gui::state::AppRoute::Help => "Help",
+    }
+}
+
+pub(crate) fn draw_workspace_header(
     ui: &mut egui::Ui,
-    title: &str,
-    body: &str,
-    action: Option<&str>,
-) {
+    route: crate::gui::state::AppRoute,
+    description: Option<&str>,
+    session_path: Option<&Path>,
+    show_open_session: bool,
+) -> (bool, bool) {
+    let mut back_to_launcher = false;
+    let mut open_session = false;
     ui.group(|ui| {
-        ui.label(RichText::new(title).strong());
-        ui.label(body);
-        let text = action.unwrap_or("Planned");
-        ui.add_enabled(false, egui::Button::new(text));
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(workspace_title(route)).heading().strong());
+                if let Some(description) = description {
+                    ui.label(description);
+                }
+                if let Some(path) = session_path {
+                    ui.monospace(path.display().to_string());
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                if ui.button("Back to Launcher").clicked() {
+                    back_to_launcher = true;
+                }
+                if show_open_session && ui.button("Open Session").clicked() {
+                    open_session = true;
+                }
+            });
+        });
     });
+    (back_to_launcher, open_session)
+}
+
+pub(crate) fn draw_launcher_module_button(ui: &mut egui::Ui, spec: LauncherModuleSpec) -> bool {
+    let mut clicked = false;
+    ui.group(|ui| {
+        let width = ui.available_width();
+        let title = if spec.is_primary_module {
+            RichText::new(spec.title).strong().size(16.0)
+        } else {
+            RichText::new(spec.title).strong()
+        };
+        if ui.add_sized([width, 34.0], Button::new(title)).clicked() {
+            clicked = true;
+        }
+        ui.label(spec.subtitle);
+        if spec.enabled_when_session_required {
+            ui.small("If no session is open, this will ask for one first.");
+        }
+    });
+    clicked
 }
 
 pub(crate) fn render_planned_workspace(
     ctx: &egui::Context,
-    title: &str,
+    route: crate::gui::state::AppRoute,
     body: &str,
     milestones: &[&str],
-) {
+    session_path: Option<&Path>,
+    show_open_session: bool,
+) -> (bool, bool) {
+    let mut back_to_launcher = false;
+    let mut open_session = false;
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.heading(title);
+        let (back_requested, open_requested) =
+            draw_workspace_header(ui, route, None, session_path, show_open_session);
+        back_to_launcher = back_requested;
+        open_session = open_requested;
+        ui.add_space(8.0);
         ui.label(body);
         ui.add_space(8.0);
         ui.group(|ui| {
@@ -64,6 +132,7 @@ pub(crate) fn render_planned_workspace(
             }
         });
     });
+    (back_to_launcher, open_session)
 }
 
 pub(crate) fn path_edit_row(

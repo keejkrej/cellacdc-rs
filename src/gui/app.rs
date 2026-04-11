@@ -28,6 +28,7 @@ pub fn launch_gui() -> Result<()> {
 
 pub(crate) struct CellAcdcGui {
     pub(crate) persisted: PersistedState,
+    pub(crate) last_non_launcher_route: AppRoute,
     pub(crate) experiment: Option<ExperimentSession>,
     pub(crate) selected_position_idx: usize,
     pub(crate) selected_frame_idx: usize,
@@ -44,8 +45,13 @@ pub(crate) struct CellAcdcGui {
 impl CellAcdcGui {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let persisted = persist::load(cc.storage);
+        let last_non_launcher_route = match persisted.route {
+            AppRoute::Launcher => AppRoute::Segmentation,
+            route => route,
+        };
         let mut app = Self {
             persisted,
+            last_non_launcher_route,
             experiment: None,
             selected_position_idx: 0,
             selected_frame_idx: 0,
@@ -77,13 +83,29 @@ impl CellAcdcGui {
         }
     }
 
+    pub(crate) fn set_route(&mut self, route: AppRoute) {
+        if route != AppRoute::Launcher {
+            self.last_non_launcher_route = route;
+        }
+        self.persisted.route = route;
+    }
+
+    pub(crate) fn restore_current_session_route(&mut self) {
+        let route = match self.last_non_launcher_route {
+            AppRoute::Annotation => AppRoute::Annotation,
+            AppRoute::Segmentation => AppRoute::Segmentation,
+            _ => AppRoute::Segmentation,
+        };
+        self.set_route(route);
+    }
+
     pub(crate) fn open_path(&mut self, path: PathBuf) -> Result<()> {
         let experiment = open_experiment_session(&path)?;
         self.experiment = Some(experiment);
         self.selected_position_idx = 0;
         self.selected_frame_idx = 0;
         self.persisted.last_opened_path = Some(path.display().to_string());
-        self.persisted.route = AppRoute::Segmentation;
+        self.set_route(AppRoute::Segmentation);
         self.push_recent_path(path);
         self.sync_selection_with_position();
         self.invalidate_texture();
@@ -280,7 +302,7 @@ impl eframe::App for CellAcdcGui {
         self.poll_active_job();
         self.request_repaint_for_active_job(ctx);
 
-        self.draw_navigation(ctx);
+        self.draw_shell_bar(ctx);
         match self.persisted.route {
             AppRoute::Launcher => self.draw_launcher_panel(ctx),
             AppRoute::DataStructure => self.draw_data_structure_panel(ctx),

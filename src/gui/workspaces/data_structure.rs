@@ -1,16 +1,26 @@
 use crate::gui::app::CellAcdcGui;
+use crate::gui::state::AppRoute;
 use cellacdc_rs::{discover_import_sources, ImportSourceKind};
 use eframe::egui::{self, RichText};
 
-use super::{path_edit_row, PathEditKind};
+use super::{draw_workspace_header, path_edit_row, PathEditKind};
 
 impl CellAcdcGui {
     pub(crate) fn draw_data_structure_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Data Structure");
-            ui.label(
-                "Native source discovery for supported image stack formats. This is the first Rust-native step toward replacing the Python data-structure builder.",
+            let (back_to_launcher, _) = draw_workspace_header(
+                ui,
+                AppRoute::DataStructure,
+                Some(
+                    "Native source discovery for supported image stack formats. This is the first Rust-native step toward replacing the Python data-structure builder.",
+                ),
+                self.experiment.as_ref().map(|experiment| experiment.root_path.as_path()),
+                false,
             );
+            if back_to_launcher {
+                self.set_route(AppRoute::Launcher);
+            }
+            ui.add_space(8.0);
             path_edit_row(
                 ui,
                 "Source folder",

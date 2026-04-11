@@ -1,4 +1,5 @@
 use crate::gui::app::CellAcdcGui;
+use crate::gui::state::AppRoute;
 use cellacdc_rs::{MaskEditCommand, SelectionState};
 
 use super::render_planned_workspace;
@@ -14,9 +15,9 @@ impl CellAcdcGui {
             "Annotation foundations are in place: selection state, undo stack, autosave helpers, and native mask edit commands. Current default selected label preview: {preview}, frame {}.",
             selection.frame_index
         );
-        render_planned_workspace(
+        let (back_to_launcher, open_session) = render_planned_workspace(
             ctx,
-            "Annotation",
+            AppRoute::Annotation,
             &body,
             &[
                 "Embed a session-backed mask document model",
@@ -24,6 +25,16 @@ impl CellAcdcGui {
                 "Add save, save-as-version, autosave, and crash recovery controls",
                 "Layer tracking and lineage workflows on top of editable masks",
             ],
+            self.experiment
+                .as_ref()
+                .map(|experiment| experiment.root_path.as_path()),
+            false,
         );
+        if back_to_launcher {
+            self.set_route(AppRoute::Launcher);
+        }
+        if open_session {
+            self.pick_and_open_session();
+        }
     }
 }

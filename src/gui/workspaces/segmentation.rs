@@ -4,23 +4,16 @@ use eframe::egui::{self, Color32, RichText};
 use std::time::Duration;
 
 use super::{
-    combo_for_channel, draw_logs, path_edit_row, route_label, selected_segm_label, PathEditKind,
+    combo_for_channel, draw_logs, draw_workspace_header, path_edit_row, selected_segm_label,
+    workspace_display_name, PathEditKind,
 };
 
 impl CellAcdcGui {
-    pub(crate) fn draw_navigation(&mut self, ctx: &egui::Context) {
+    pub(crate) fn draw_shell_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                for route in [
-                    AppRoute::Launcher,
-                    AppRoute::DataStructure,
-                    AppRoute::DataPrep,
-                    AppRoute::Segmentation,
-                    AppRoute::Annotation,
-                    AppRoute::Utilities,
-                    AppRoute::Help,
-                ] {
-                    ui.selectable_value(&mut self.persisted.route, route, route_label(route));
+                if ui.button("Home").clicked() {
+                    self.set_route(AppRoute::Launcher);
                 }
                 ui.separator();
 
@@ -32,16 +25,6 @@ impl CellAcdcGui {
                     .clicked()
                 {
                     self.reload_experiment();
-                }
-                let cancel_request = self
-                    .active_job
-                    .as_ref()
-                    .map(|job| (ui.button("Cancel Job").clicked(), job.label.clone()));
-                if let Some((true, label)) = cancel_request {
-                    if let Some(job) = self.active_job.as_ref() {
-                        job.cancel();
-                    }
-                    self.append_log(format!("Cancellation requested: {label}"));
                 }
 
                 if !self.persisted.recent_paths.is_empty() {
@@ -60,15 +43,46 @@ impl CellAcdcGui {
                         });
                 }
 
-                if let Some(job) = self.active_job.as_ref() {
+                let cancel_request = if let Some(job) = self.active_job.as_ref() {
                     ui.separator();
                     ui.label(RichText::new(format!("Running: {}", job.label)).strong());
+                    ui.button("Cancel Job")
+                        .clicked()
+                        .then_some(job.label.clone())
+                } else {
+                    None
+                };
+                if let Some(label) = cancel_request {
+                    if let Some(job) = self.active_job.as_ref() {
+                        job.cancel();
+                    }
+                    self.append_log(format!("Cancellation requested: {label}"));
                 }
             });
         });
     }
 
     pub(crate) fn render_segmentation_workspace(&mut self, ctx: &egui::Context) {
+        let (back_to_launcher, open_session) =
+            egui::TopBottomPanel::top("segmentation_header")
+                .show(ctx, |ui| {
+                    draw_workspace_header(
+                    ui,
+                    AppRoute::Segmentation,
+                    Some(
+                        "Browse channels and overlays, then run segmentation and measurement jobs.",
+                    ),
+                    self.experiment.as_ref().map(|experiment| experiment.root_path.as_path()),
+                    self.experiment.is_none(),
+                )
+                })
+                .inner;
+        if back_to_launcher {
+            self.set_route(AppRoute::Launcher);
+        }
+        if open_session {
+            self.pick_and_open_session();
+        }
         self.draw_left_panel(ctx);
         self.draw_jobs_panel(ctx);
         self.draw_viewer_panel(ctx);
@@ -190,9 +204,10 @@ impl CellAcdcGui {
 
                 ui.separator();
                 ui.label(RichText::new("Workspace").strong());
-                ui.label(
-                    "This module is the Rust-native replacement for the Qt segmentation launcher and image review shell.",
-                );
+                ui.label(format!(
+                    "Current workspace: {}",
+                    workspace_display_name(AppRoute::Segmentation)
+                ));
                 draw_logs(ui, &self.logs, 280.0);
             });
     }
