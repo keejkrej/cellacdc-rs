@@ -1,4 +1,7 @@
-use super::state::{AnnotationTool, AppRoute, ProjectionMode, UtilityState};
+use super::state::{
+    AnnotationTool, AppRoute, DisplaySettingsState, GuiDockLayoutState, ProjectionMode,
+    ShortcutOverrides, UtilityState,
+};
 use eframe::Storage;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +34,9 @@ pub(crate) struct PersistedState {
     pub(crate) z_index: usize,
     pub(crate) annotation_tool: AnnotationTool,
     pub(crate) annotation_brush_radius: usize,
+    pub(crate) dock_layout: GuiDockLayoutState,
+    pub(crate) shortcut_overrides: ShortcutOverrides,
+    pub(crate) display: DisplaySettingsState,
     pub(crate) utility: UtilityState,
 }
 
@@ -61,6 +67,9 @@ impl Default for PersistedState {
             z_index: 0,
             annotation_tool: AnnotationTool::Select,
             annotation_brush_radius: 5,
+            dock_layout: GuiDockLayoutState::default(),
+            shortcut_overrides: ShortcutOverrides::default(),
+            display: DisplaySettingsState::default(),
             utility: UtilityState::default(),
         }
     }

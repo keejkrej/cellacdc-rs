@@ -36,6 +36,261 @@ impl Default for AnnotationTool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) enum GuiActionId {
+    OpenSession,
+    LoadDifferentPosition,
+    RevealCurrentPosition,
+    Save,
+    QuickSave,
+    SaveAsVersion,
+    LoadOlderVersions,
+    ExportImage,
+    ExportVideo,
+    Undo,
+    Redo,
+    CustomizeKeyboardShortcuts,
+    OverlayLabelsAppearance,
+    ToggleObjectsDock,
+    ToggleLogDock,
+    FindId,
+    HighlightSelectedId,
+    ToggleOverlayLabels,
+    ToggleSegmentationOverlay,
+    ToggleSingleChannelOverlay,
+    ToggleTrueTransparency,
+    ToggleScaleBar,
+    ToggleTimestamp,
+    RunSegmentationCurrentPosition,
+    OpenSegmentationWorkspace,
+    MeasureCurrentPosition,
+    AutosaveInterval,
+    OpenLogs,
+    AboutRustPort,
+    CurrentLimitations,
+    ToolSelect,
+    ToolBrush,
+    ToolEraser,
+    ToolRelabel,
+    ToolMerge,
+    ToolDelete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GuiActionState {
+    pub(crate) enabled: bool,
+    pub(crate) checked: bool,
+    pub(crate) visible: bool,
+}
+
+impl Default for GuiActionState {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            checked: false,
+            visible: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ShortcutBinding {
+    pub(crate) key: String,
+    pub(crate) command: bool,
+    pub(crate) shift: bool,
+    pub(crate) alt: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ShortcutOverride {
+    pub(crate) action: GuiActionId,
+    pub(crate) binding: ShortcutBinding,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ShortcutOverrides {
+    pub(crate) bindings: Vec<ShortcutOverride>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum GuiDockId {
+    Objects,
+    Log,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct GuiDockLayoutState {
+    pub(crate) object_dock_width: f32,
+    pub(crate) log_dock_height: f32,
+}
+
+impl Default for GuiDockLayoutState {
+    fn default() -> Self {
+        Self {
+            object_dock_width: 300.0,
+            log_dock_height: 180.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AutosaveUnit {
+    Seconds,
+    Minutes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct AutosaveSettings {
+    pub(crate) value: u32,
+    pub(crate) unit: AutosaveUnit,
+}
+
+impl AutosaveSettings {
+    pub(crate) fn as_seconds(&self) -> u64 {
+        match self.unit {
+            AutosaveUnit::Seconds => self.value.max(1) as u64,
+            AutosaveUnit::Minutes => (self.value.max(1) as u64) * 60,
+        }
+    }
+}
+
+impl Default for AutosaveSettings {
+    fn default() -> Self {
+        Self {
+            value: 5,
+            unit: AutosaveUnit::Seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct DisplaySettingsState {
+    pub(crate) show_overlay_labels: bool,
+    pub(crate) overlay_label_color: [u8; 4],
+    pub(crate) overlay_label_scale: u32,
+    pub(crate) highlight_on_hover: bool,
+    pub(crate) highlight_searched_object: bool,
+    pub(crate) overlay_single_channel_mode: bool,
+    pub(crate) true_transparency: bool,
+    pub(crate) add_scale_bar: bool,
+    pub(crate) add_timestamp: bool,
+    pub(crate) show_file_toolbar: bool,
+    pub(crate) show_navigation_toolbar: bool,
+    pub(crate) show_edit_toolbar: bool,
+    pub(crate) show_overlay_toolbar: bool,
+    pub(crate) show_highlight_toolbar: bool,
+    pub(crate) show_objects_dock: bool,
+    pub(crate) show_log_dock: bool,
+    pub(crate) autosave: AutosaveSettings,
+}
+
+impl Default for DisplaySettingsState {
+    fn default() -> Self {
+        Self {
+            show_overlay_labels: false,
+            overlay_label_color: [255, 255, 255, 255],
+            overlay_label_scale: 2,
+            highlight_on_hover: true,
+            highlight_searched_object: true,
+            overlay_single_channel_mode: false,
+            true_transparency: false,
+            add_scale_bar: false,
+            add_timestamp: false,
+            show_file_toolbar: true,
+            show_navigation_toolbar: true,
+            show_edit_toolbar: true,
+            show_overlay_toolbar: true,
+            show_highlight_toolbar: true,
+            show_objects_dock: true,
+            show_log_dock: true,
+            autosave: AutosaveSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GuiDialogState {
+    pub(crate) shortcut_editor_open: bool,
+    pub(crate) version_browser_open: bool,
+    pub(crate) find_id_open: bool,
+    pub(crate) export_image_open: bool,
+    pub(crate) export_video_open: bool,
+    pub(crate) autosave_interval_open: bool,
+    pub(crate) overlay_labels_open: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ObjectDockState {
+    pub(crate) selected_tab: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HighlightState {
+    pub(crate) hovered_label: Option<u32>,
+    pub(crate) searched_label: Option<u32>,
+    pub(crate) highlighted_input: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExportImageDialogState {
+    pub(crate) path: String,
+    pub(crate) include_overlay: bool,
+    pub(crate) include_labels: bool,
+    pub(crate) include_scale_bar: bool,
+    pub(crate) include_timestamp: bool,
+}
+
+impl Default for ExportImageDialogState {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            include_overlay: true,
+            include_labels: false,
+            include_scale_bar: false,
+            include_timestamp: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExportVideoDialogState {
+    pub(crate) output_path: String,
+    pub(crate) start_frame: usize,
+    pub(crate) end_frame: usize,
+    pub(crate) include_overlay: bool,
+    pub(crate) include_labels: bool,
+    pub(crate) include_scale_bar: bool,
+    pub(crate) include_timestamp: bool,
+}
+
+impl Default for ExportVideoDialogState {
+    fn default() -> Self {
+        Self {
+            output_path: String::new(),
+            start_frame: 0,
+            end_frame: 0,
+            include_overlay: true,
+            include_labels: false,
+            include_scale_bar: false,
+            include_timestamp: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VersionBrowserState {
+    pub(crate) selected_endname: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ShortcutEditorState {
+    pub(crate) capturing: Option<GuiActionId>,
+    pub(crate) error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnnotationPendingAction {
     ChangePosition(usize),
@@ -50,6 +305,13 @@ pub(crate) struct AnnotationWorkspaceState {
     pub(crate) merge_target: String,
     pub(crate) save_as_endname: String,
     pub(crate) pending_action: Option<AnnotationPendingAction>,
+    pub(crate) dialogs: GuiDialogState,
+    pub(crate) object_dock: ObjectDockState,
+    pub(crate) highlight: HighlightState,
+    pub(crate) export_image: ExportImageDialogState,
+    pub(crate) export_video: ExportVideoDialogState,
+    pub(crate) version_browser: VersionBrowserState,
+    pub(crate) shortcut_editor: ShortcutEditorState,
 }
 
 impl Default for AnnotationWorkspaceState {
@@ -61,6 +323,13 @@ impl Default for AnnotationWorkspaceState {
             merge_target: String::new(),
             save_as_endname: "edited".to_string(),
             pending_action: None,
+            dialogs: GuiDialogState::default(),
+            object_dock: ObjectDockState::default(),
+            highlight: HighlightState::default(),
+            export_image: ExportImageDialogState::default(),
+            export_video: ExportVideoDialogState::default(),
+            version_browser: VersionBrowserState::default(),
+            shortcut_editor: ShortcutEditorState::default(),
         }
     }
 }
@@ -70,6 +339,16 @@ pub(crate) struct LoadedMaskDocument {
     pub(crate) position_dir: PathBuf,
     pub(crate) segmentation_endname: Option<String>,
     pub(crate) session: MaskEditSession,
+    pub(crate) revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InspectionKey {
+    pub(crate) position_dir: PathBuf,
+    pub(crate) segmentation_endname: Option<String>,
+    pub(crate) frame_index: usize,
+    pub(crate) projection: FrameProjection,
+    pub(crate) selected_label: Option<u32>,
     pub(crate) revision: u64,
 }
 
@@ -141,4 +420,11 @@ pub(crate) struct ViewKey {
     pub(crate) segmentation_endname: Option<String>,
     pub(crate) overlay_alpha_bits: u32,
     pub(crate) show_overlay: bool,
+    pub(crate) show_overlay_labels: bool,
+    pub(crate) overlay_single_channel_mode: bool,
+    pub(crate) true_transparency: bool,
+    pub(crate) add_scale_bar: bool,
+    pub(crate) add_timestamp: bool,
+    pub(crate) highlighted_label: Option<u32>,
+    pub(crate) selected_label: Option<u32>,
 }

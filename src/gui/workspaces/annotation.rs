@@ -1,45 +1,27 @@
+use crate::gui::actions::action_label;
 use crate::gui::app::CellAcdcGui;
-use crate::gui::state::{AnnotationTool, AppRoute};
+use crate::gui::state::{AnnotationTool, GuiActionId};
 use cellacdc_rs::{MaskEditCommand, MaskRecoveryState};
 use eframe::egui::{self, Color32, RichText};
 
-use super::{
-    draw_status_label, draw_workspace_header, parse_label_input, selected_segm_label,
-    validate_segm_endname,
-};
+use super::{draw_status_label, parse_label_input, validate_segm_endname};
 
 impl CellAcdcGui {
     pub(crate) fn draw_annotation_panel(&mut self, ctx: &eframe::egui::Context) {
         self.ensure_annotation_document_loaded();
-        let (back_to_launcher, open_session) = egui::TopBottomPanel::top("annotation_header")
-            .show(ctx, |ui| {
-                draw_workspace_header(
-                    ui,
-                    AppRoute::Annotation,
-                    Some("Review segmentation masks, make native corrections, and save safely."),
-                    self.experiment
-                        .as_ref()
-                        .map(|experiment| experiment.root_path.as_path()),
-                    self.experiment.is_none(),
-                )
-            })
-            .inner;
-        if back_to_launcher {
-            self.set_route(AppRoute::Launcher);
-        }
-        if open_session {
-            self.pick_and_open_session();
-        }
-        self.draw_left_panel(ctx);
-        self.draw_annotation_tools_panel(ctx);
-        self.draw_viewer_panel(ctx);
+        self.draw_gui_chrome(ctx);
+        self.draw_log_dock(ctx);
+        self.draw_objects_dock(ctx);
+        self.draw_gui_tools_panel(ctx);
+        self.draw_canvas_panel_only(ctx);
         self.draw_annotation_pending_dialog(ctx);
+        self.draw_gui_dialogs(ctx);
     }
 
-    fn draw_annotation_tools_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("annotation_tools_panel")
+    fn draw_gui_tools_panel(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::right("gui_tools_panel")
             .resizable(true)
-            .default_width(360.0)
+            .default_width(280.0)
             .show(ctx, |ui| {
                 ui.heading("GUI Tools");
 
@@ -49,32 +31,20 @@ impl CellAcdcGui {
                 }
 
                 let Some(position) = self.selected_position().cloned() else {
-                    ui.label("Open a Cell-ACDC session to review and correct segmentation masks.");
+                    ui.label("Open a Cell-ACDC session to use the GUI window.");
                     return;
                 };
                 if position.segmentations.is_empty() {
                     ui.label("No segmentation asset is available for this position.");
-                    ui.small("Run segmentation first, then come back to GUI for correction.");
+                    ui.small("Run segmentation first, then return to GUI for correction.");
                     return;
                 }
 
-                let selected_segm = selected_segm_label(
-                    &position,
-                    &self.persisted.selected_segmentation_endname,
-                );
                 let selected_label = self.current_annotation_label();
                 let recovery_state = self.annotation_recovery_state();
                 let is_dirty = self.annotation_document_dirty();
-                let doc_path = self
-                    .current_annotation_document()
-                    .and_then(|document| document.session.path())
-                    .map(|path| path.display().to_string());
 
                 ui.label(RichText::new("Document").strong());
-                ui.label(format!("Editing: {selected_segm}"));
-                if let Some(path) = doc_path {
-                    ui.monospace(path);
-                }
                 if is_dirty {
                     draw_status_label(ui, "Unsaved edits", Color32::from_rgb(220, 160, 70));
                 } else {
@@ -102,8 +72,6 @@ impl CellAcdcGui {
                                 }
                             }
                         });
-                        ui.separator();
-                        ui.label("Editing is locked until the recovery decision is resolved.");
                         return;
                     }
                     MaskRecoveryState::Recovered => {
@@ -116,43 +84,34 @@ impl CellAcdcGui {
                     MaskRecoveryState::None => {}
                 }
 
-                if self.current_annotation_document().is_none() {
-                    ui.separator();
-                    ui.label("Failed to load the current segmentation as an editable mask document.");
-                    return;
-                }
-
-                if !self.annotation_edits_allowed() {
-                    ui.separator();
-                    draw_status_label(
-                        ui,
-                        "3D masks are editable only in Z slice mode.",
-                        Color32::from_rgb(200, 120, 60),
-                    );
-                }
-
                 ui.separator();
-                ui.label(RichText::new("Selection").strong());
-                match selected_label {
-                    Some(label) => ui.monospace(format!("Selected ID: {label}")),
-                    None => ui.monospace("Selected ID: <none>"),
-                };
-
-                ui.add_space(6.0);
-                ui.label(RichText::new("Tools").strong());
+                ui.label(RichText::new("Selected object").strong());
+                ui.monospace(
+                    selected_label
+                        .map(|label| label.to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                );
                 ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut self.annotation.tool, AnnotationTool::Select, "Select");
-                    ui.selectable_value(&mut self.annotation.tool, AnnotationTool::Brush, "Brush");
-                    ui.selectable_value(&mut self.annotation.tool, AnnotationTool::Eraser, "Eraser");
-                    ui.selectable_value(
-                        &mut self.annotation.tool,
-                        AnnotationTool::Relabel,
-                        "Relabel",
-                    );
-                    ui.selectable_value(&mut self.annotation.tool, AnnotationTool::Merge, "Merge");
-                    ui.selectable_value(&mut self.annotation.tool, AnnotationTool::Delete, "Delete");
+                    for action in [
+                        GuiActionId::ToolSelect,
+                        GuiActionId::ToolBrush,
+                        GuiActionId::ToolEraser,
+                        GuiActionId::ToolRelabel,
+                        GuiActionId::ToolMerge,
+                        GuiActionId::ToolDelete,
+                    ] {
+                        let state = self.gui_action_state(action);
+                        if ui
+                            .add_enabled(
+                                state.enabled,
+                                egui::Button::new(action_label(action)).selected(state.checked),
+                            )
+                            .clicked()
+                        {
+                            self.dispatch_gui_action(action);
+                        }
+                    }
                 });
-
                 if matches!(self.annotation.tool, AnnotationTool::Brush | AnnotationTool::Eraser) {
                     ui.add(
                         egui::Slider::new(&mut self.annotation.brush_radius, 1..=20)
@@ -161,7 +120,7 @@ impl CellAcdcGui {
                 }
 
                 ui.separator();
-                ui.label(RichText::new("ID Actions").strong());
+                ui.label(RichText::new("ID actions").strong());
                 ui.horizontal(|ui| {
                     ui.label("Relabel target");
                     ui.text_edit_singleline(&mut self.annotation.relabel_target);
@@ -181,7 +140,6 @@ impl CellAcdcGui {
                         self.last_error = Some(err.to_string());
                     }
                 }
-
                 ui.horizontal(|ui| {
                     ui.label("Merge target");
                     ui.text_edit_singleline(&mut self.annotation.merge_target);
@@ -201,7 +159,6 @@ impl CellAcdcGui {
                         self.last_error = Some(err.to_string());
                     }
                 }
-
                 if ui
                     .add_enabled(selected_label.is_some(), egui::Button::new("Delete Selected ID"))
                     .clicked()
@@ -218,7 +175,7 @@ impl CellAcdcGui {
                 }
 
                 ui.separator();
-                ui.label(RichText::new("Document Actions").strong());
+                ui.label(RichText::new("Document actions").strong());
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Undo").clicked() {
                         self.annotation_undo();
@@ -226,14 +183,13 @@ impl CellAcdcGui {
                     if ui.button("Redo").clicked() {
                         self.annotation_redo();
                     }
-                });
-
-                ui.horizontal_wrapped(|ui| {
                     if ui.button("Save").clicked() {
                         if let Err(err) = self.save_current_annotation_overwrite() {
                             self.last_error = Some(err.to_string());
                         }
                     }
+                });
+                ui.horizontal_wrapped(|ui| {
                     ui.text_edit_singleline(&mut self.annotation.save_as_endname);
                     if ui.button("Save As Version").clicked() {
                         let action = (|| -> anyhow::Result<()> {
@@ -246,7 +202,18 @@ impl CellAcdcGui {
                         }
                     }
                 });
-                ui.small("Save As Version writes a new `segm_<endname>.npz` file inside the current position.");
+
+                ui.separator();
+                ui.label(RichText::new("Jobs").strong());
+                if ui.button("Run segmentation on current position").clicked() {
+                    self.start_run_position_job();
+                }
+                if ui.button("Measure current position").clicked() {
+                    self.start_measure_position_job();
+                }
+                if ui.button("Open segmentation workspace").clicked() {
+                    self.set_route(crate::gui::state::AppRoute::Segmentation);
+                }
             });
     }
 

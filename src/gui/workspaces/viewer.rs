@@ -1,6 +1,6 @@
 use crate::gui::app::CellAcdcGui;
 use anyhow::{anyhow, bail, Result};
-use cellacdc_rs::{FrameData, MaskEditCommand, SegmentationLayout};
+use cellacdc_rs::{MaskEditCommand, SegmentationLayout};
 use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureOptions};
 
 use super::selected_segm_label;
@@ -36,25 +36,14 @@ impl CellAcdcGui {
     }
 
     pub(crate) fn render_current_view(&self) -> Result<ColorImage> {
-        let position = self
-            .selected_position()
+        let request = self
+            .current_render_request()?
             .ok_or_else(|| anyhow!("No position selected"))?;
-        let frame = position.load_channel_frame(
-            &self.persisted.selected_channel,
-            self.selected_frame_idx,
-            self.current_projection(),
-        )?;
-        let segm = if self.persisted.show_segmentation_overlay {
-            self.current_segmentation_frame_data()?
-        } else {
-            None
-        };
-        compose_color_image(
-            &frame,
-            segm.as_ref(),
-            self.persisted.overlay_alpha,
-            self.current_annotation_label(),
-        )
+        let rendered = cellacdc_rs::render_frame(&request)?;
+        Ok(ColorImage::from_rgba_unmultiplied(
+            [rendered.width, rendered.height],
+            &rendered.rgba,
+        ))
     }
 
     pub(crate) fn draw_left_panel(&mut self, ctx: &egui::Context) {
@@ -296,6 +285,45 @@ impl CellAcdcGui {
         });
     }
 
+    pub(crate) fn draw_canvas_panel_only(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let Some(_position) = self.selected_position().cloned() else {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Open an experiment or position to start.");
+                });
+                return;
+            };
+            let frame_index = self.selected_frame_idx;
+            let projection = self.current_projection();
+            if let Some(document) = self.current_annotation_document_mut() {
+                document.session.selection.frame_index = frame_index;
+                document.session.selection.z_index = match projection {
+                    cellacdc_rs::FrameProjection::Max => None,
+                    cellacdc_rs::FrameProjection::ZSlice(z_index) => Some(z_index),
+                };
+            }
+            self.refresh_texture_if_needed(ctx);
+            if let Some(texture) = &self.texture {
+                let available = ui.available_size();
+                let image_size = texture.size_vec2();
+                let scale = (available.x / image_size.x)
+                    .min(available.y / image_size.y)
+                    .max(0.1);
+                let desired = image_size * scale;
+                let response =
+                    ui.add(egui::Image::new((texture.id(), desired)).sense(egui::Sense::click_and_drag()));
+                self.handle_annotation_canvas_interaction(
+                    &response,
+                    [texture.size()[0], texture.size()[1]],
+                );
+            } else if let Some(error) = self.last_error.clone() {
+                ui.colored_label(Color32::from_rgb(200, 60, 60), error);
+            } else {
+                ui.label("No image available for the current selection.");
+            }
+        });
+    }
+
     fn handle_annotation_canvas_interaction(
         &mut self,
         response: &egui::Response,
@@ -307,6 +335,7 @@ impl CellAcdcGui {
         let Some((x, y)) = image_pixel_from_pointer(response.rect, pointer, image_size) else {
             return;
         };
+        self.update_canvas_status(x, y);
         match self.annotation.tool {
             crate::gui::state::AnnotationTool::Select if response.clicked() => {
                 if let Err(err) = self.select_annotation_label_at(x, y) {
@@ -329,6 +358,53 @@ impl CellAcdcGui {
             }
             _ => {}
         }
+        if response.hovered() && self.persisted.display.highlight_on_hover {
+            self.annotation.highlight.hovered_label = self
+                .current_segmentation_frame_data()
+                .ok()
+                .flatten()
+                .and_then(|segmentation| {
+                    if x < segmentation.width && y < segmentation.height {
+                        let label = segmentation.pixels[y * segmentation.width + x];
+                        (label != 0).then_some(label)
+                    } else {
+                        None
+                    }
+                });
+            self.invalidate_texture();
+        }
+    }
+
+    pub(crate) fn update_canvas_status(&mut self, x: usize, y: usize) {
+        let label = self
+            .current_segmentation_frame_data()
+            .ok()
+            .flatten()
+            .and_then(|segmentation| {
+                if x < segmentation.width && y < segmentation.height {
+                    let label = segmentation.pixels[y * segmentation.width + x];
+                    (label != 0).then_some(label)
+                } else {
+                    None
+                }
+            });
+        self.status_text = match label {
+            Some(label) => format!(
+                "Frame {}  x={} y={}  ID={}  {}",
+                self.selected_frame_idx,
+                x,
+                y,
+                label,
+                self.persisted.selected_channel
+            ),
+            None => format!(
+                "Frame {}  x={} y={}  {}",
+                self.selected_frame_idx,
+                x,
+                y,
+                self.persisted.selected_channel
+            ),
+        };
     }
 
     fn select_annotation_label_at(&mut self, x: usize, y: usize) -> Result<()> {
@@ -426,68 +502,6 @@ impl CellAcdcGui {
         }
         Ok(flat_indices)
     }
-}
-
-fn compose_color_image(
-    frame: &FrameData<f32>,
-    segmentation: Option<&FrameData<u32>>,
-    overlay_alpha: f32,
-    selected_label: Option<u32>,
-) -> Result<ColorImage> {
-    if let Some(segm) = segmentation {
-        if segm.width != frame.width || segm.height != frame.height {
-            bail!(
-                "Segmentation size {}x{} does not match image size {}x{}",
-                segm.width,
-                segm.height,
-                frame.width,
-                frame.height
-            );
-        }
-    }
-    let (min_value, max_value) = frame.pixels.iter().fold(
-        (f32::INFINITY, f32::NEG_INFINITY),
-        |(min_v, max_v), value| (min_v.min(*value), max_v.max(*value)),
-    );
-    let denom = (max_value - min_value).max(f32::EPSILON);
-    let alpha = overlay_alpha.clamp(0.0, 1.0);
-    let mut pixels = Vec::with_capacity(frame.pixels.len() * 4);
-    for (index, value) in frame.pixels.iter().enumerate() {
-        let normalized = (((*value - min_value) / denom).clamp(0.0, 1.0) * 255.0) as u8;
-        let mut color = [normalized, normalized, normalized];
-        if let Some(segm) = segmentation {
-            let label = segm.pixels[index];
-            if label != 0 {
-                let is_selected = selected_label == Some(label);
-                let overlay = if is_selected {
-                    Color32::from_rgb(255, 240, 120)
-                } else {
-                    label_color(label)
-                };
-                let overlay_alpha = if is_selected { alpha.max(0.8) } else { alpha };
-                color[0] = blend_channel(color[0], overlay.r(), overlay_alpha);
-                color[1] = blend_channel(color[1], overlay.g(), overlay_alpha);
-                color[2] = blend_channel(color[2], overlay.b(), overlay_alpha);
-            }
-        }
-        pixels.extend_from_slice(&[color[0], color[1], color[2], 255]);
-    }
-    Ok(ColorImage::from_rgba_unmultiplied(
-        [frame.width, frame.height],
-        &pixels,
-    ))
-}
-
-fn blend_channel(base: u8, overlay: u8, alpha: f32) -> u8 {
-    ((base as f32) * (1.0 - alpha) + (overlay as f32) * alpha).round() as u8
-}
-
-fn label_color(label: u32) -> Color32 {
-    let hash = label.wrapping_mul(0x9E37_79B9);
-    let r = ((hash & 0xFF) as u8).max(60);
-    let g = (((hash >> 8) & 0xFF) as u8).max(60);
-    let b = (((hash >> 16) & 0xFF) as u8).max(60);
-    Color32::from_rgb(r, g, b)
 }
 
 fn image_pixel_from_pointer(

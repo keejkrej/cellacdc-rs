@@ -1,19 +1,24 @@
 use super::jobs::JobHandle;
 use super::persist::{self, PersistedState};
 use super::state::{
-    AnnotationPendingAction, AnnotationWorkspaceState, AppRoute, LoadedMaskDocument,
-    ProjectionMode, ViewKey,
+    AnnotationPendingAction, AnnotationWorkspaceState, AppRoute, InspectionKey,
+    LoadedMaskDocument, ProjectionMode, ViewKey,
 };
 use super::workspaces;
 use anyhow::{anyhow, Result};
 use cellacdc_rs::{
-    open_experiment_session, ExperimentSession, FrameData, FrameProjection, ImportSource, MaskData,
-    MaskEditCommand, MaskEditSession, MaskPathResolution, MaskRecoveryState, MaskSaveMode,
-    OverwritePolicy, PositionSession, SegmentationLayout, SegmentationParams,
+    inspect_position_frame, open_experiment_session, export_frame_image, export_frame_sequence,
+    ExperimentSession, FrameData, FrameInspection, FrameInspectionConfig, FrameProjection,
+    ImageExportFormat, ImportSource, MaskData, MaskEditCommand, MaskEditSession,
+    MaskPathResolution, MaskRecoveryState, MaskSaveMode, OverlayRenderStyle, OverwritePolicy,
+    PositionSession, RenderFrameRequest, ScaleBarStyle, SegmentationLayout,
+    SegmentationParams, TimestampStyle,
 };
 use eframe::egui::{self, TextureHandle};
 use rfd::FileDialog;
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::Instant;
 
 const MAX_LOG_LINES: usize = 200;
 
@@ -46,6 +51,11 @@ pub(crate) struct CellAcdcGui {
     pub(crate) data_structure_scan_error: Option<String>,
     pub(crate) annotation: AnnotationWorkspaceState,
     pub(crate) annotation_document: Option<LoadedMaskDocument>,
+    pub(crate) inspection_key: Option<InspectionKey>,
+    pub(crate) frame_inspection: Option<FrameInspection>,
+    pub(crate) status_text: String,
+    pub(crate) pending_annotation_autosave: bool,
+    pub(crate) last_annotation_change_at: Option<Instant>,
 }
 
 impl CellAcdcGui {
@@ -75,6 +85,11 @@ impl CellAcdcGui {
             data_structure_scan_results: Vec::new(),
             data_structure_scan_error: None,
             annotation_document: None,
+            inspection_key: None,
+            frame_inspection: None,
+            status_text: String::new(),
+            pending_annotation_autosave: false,
+            last_annotation_change_at: None,
         };
         if let Some(path) = app.persisted.last_opened_path.clone() {
             let path = PathBuf::from(path);
@@ -165,6 +180,7 @@ impl CellAcdcGui {
 
     pub(crate) fn invalidate_texture(&mut self) {
         self.texture_key = None;
+        self.inspection_key = None;
     }
 
     pub(crate) fn selected_position(&self) -> Option<&PositionSession> {
@@ -263,6 +279,13 @@ impl CellAcdcGui {
             segmentation_endname: self.persisted.selected_segmentation_endname.clone(),
             overlay_alpha_bits: self.persisted.overlay_alpha.to_bits(),
             show_overlay: self.persisted.show_segmentation_overlay,
+            show_overlay_labels: self.persisted.display.show_overlay_labels,
+            overlay_single_channel_mode: self.persisted.display.overlay_single_channel_mode,
+            true_transparency: self.persisted.display.true_transparency,
+            add_scale_bar: self.persisted.display.add_scale_bar,
+            add_timestamp: self.persisted.display.add_timestamp,
+            highlighted_label: self.active_highlighted_label(),
+            selected_label: self.current_annotation_label(),
         })
     }
 
@@ -316,6 +339,9 @@ impl CellAcdcGui {
 
     pub(crate) fn clear_annotation_document(&mut self) {
         self.annotation_document = None;
+        self.frame_inspection = None;
+        self.inspection_key = None;
+        self.pending_annotation_autosave = false;
     }
 
     pub(crate) fn current_annotation_document(&self) -> Option<&LoadedMaskDocument> {
@@ -559,6 +585,7 @@ impl CellAcdcGui {
             .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
         let saved = document.session.save_with_mode(MaskSaveMode::Overwrite)?;
         document.revision += 1;
+        self.pending_annotation_autosave = false;
         self.append_log(format!("Saved GUI edits -> {}", saved.display()));
         self.reload_experiment();
         self.invalidate_texture();
@@ -581,6 +608,7 @@ impl CellAcdcGui {
             .session
             .save_with_mode(MaskSaveMode::SaveAs(target_path.clone()))?;
         document.revision += 1;
+        self.pending_annotation_autosave = false;
         self.persisted.selected_segmentation_endname = Some(endname.clone());
         self.append_log(format!("Saved GUI version -> {}", saved.display()));
         self.reload_experiment();
@@ -596,8 +624,9 @@ impl CellAcdcGui {
             .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
         let result = document.session.apply_command(command)?;
         if result.changed_pixels > 0 {
-            document.session.save_autosave()?;
             document.revision += 1;
+            self.pending_annotation_autosave = true;
+            self.last_annotation_change_at = Some(Instant::now());
         } else {
             document.revision += 1;
         }
@@ -607,17 +636,14 @@ impl CellAcdcGui {
     }
 
     pub(crate) fn annotation_undo(&mut self) {
-        let mut autosave_error = None;
         let mut changed = false;
         if let Some(document) = self.current_annotation_document_mut() {
             if document.session.undo() {
-                autosave_error = document.session.save_autosave().err();
                 document.revision += 1;
                 changed = true;
+                self.pending_annotation_autosave = true;
+                self.last_annotation_change_at = Some(Instant::now());
             }
-        }
-        if let Some(err) = autosave_error {
-            self.last_error = Some(err.to_string());
         }
         if changed {
             self.invalidate_texture();
@@ -625,17 +651,14 @@ impl CellAcdcGui {
     }
 
     pub(crate) fn annotation_redo(&mut self) {
-        let mut autosave_error = None;
         let mut changed = false;
         if let Some(document) = self.current_annotation_document_mut() {
             if document.session.redo() {
-                autosave_error = document.session.save_autosave().err();
                 document.revision += 1;
                 changed = true;
+                self.pending_annotation_autosave = true;
+                self.last_annotation_change_at = Some(Instant::now());
             }
-        }
-        if let Some(err) = autosave_error {
-            self.last_error = Some(err.to_string());
         }
         if changed {
             self.invalidate_texture();
@@ -664,6 +687,288 @@ impl CellAcdcGui {
             self.selected_frame_idx,
             self.current_projection(),
         )
+    }
+
+    pub(crate) fn current_render_request(&self) -> Result<Option<RenderFrameRequest>> {
+        let Some(position) = self.selected_position() else {
+            return Ok(None);
+        };
+        let frame = position.load_channel_frame(
+            &self.persisted.selected_channel,
+            self.selected_frame_idx,
+            self.current_projection(),
+        )?;
+        let segmentation = if self.persisted.show_segmentation_overlay {
+            self.current_segmentation_frame_data()?
+        } else {
+            None
+        };
+        Ok(Some(RenderFrameRequest {
+            frame,
+            segmentation,
+            overlay: OverlayRenderStyle {
+                enabled: self.persisted.show_segmentation_overlay,
+                alpha: self.persisted.overlay_alpha,
+                selected_label: self.current_annotation_label(),
+                highlighted_label: self.active_highlighted_label(),
+                show_labels: self.persisted.display.show_overlay_labels,
+                single_channel_mode: self.persisted.display.overlay_single_channel_mode,
+                true_transparency: self.persisted.display.true_transparency,
+                label_color: self.persisted.display.overlay_label_color,
+                label_scale: self.persisted.display.overlay_label_scale,
+            },
+            scale_bar: ScaleBarStyle {
+                enabled: self.persisted.display.add_scale_bar,
+                ..Default::default()
+            },
+            timestamp: TimestampStyle {
+                enabled: self.persisted.display.add_timestamp,
+                ..Default::default()
+            },
+            frame_index: self.selected_frame_idx,
+            time_seconds: Some(position.spec.time_increment * self.selected_frame_idx as f64),
+            physical_size_x: Some(position.spec.physical_size_x),
+        }))
+    }
+
+    pub(crate) fn active_highlighted_label(&self) -> Option<u32> {
+        if self.persisted.display.highlight_searched_object {
+            self.annotation
+                .highlight
+                .searched_label
+                .or(self.annotation.highlight.hovered_label)
+        } else {
+            self.annotation.highlight.hovered_label
+        }
+    }
+
+    pub(crate) fn flush_annotation_autosave_if_due(&mut self) {
+        if !self.pending_annotation_autosave {
+            return;
+        }
+        let due_after = self.persisted.display.autosave.as_seconds();
+        let elapsed = self
+            .last_annotation_change_at
+            .map(|at| at.elapsed().as_secs())
+            .unwrap_or(due_after);
+        if elapsed < due_after {
+            return;
+        }
+        if let Some(document) = self.current_annotation_document_mut() {
+            match document.session.save_autosave() {
+                Ok(path) => {
+                    self.append_log(format!("Autosaved GUI recovery -> {}", path.display()));
+                    self.pending_annotation_autosave = false;
+                }
+                Err(err) => {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn current_inspection(&mut self) -> Result<Option<&FrameInspection>> {
+        let Some(position) = self.selected_position() else {
+            self.frame_inspection = None;
+            self.inspection_key = None;
+            return Ok(None);
+        };
+        let key = InspectionKey {
+            position_dir: position.spec.position_dir.clone(),
+            segmentation_endname: self.persisted.selected_segmentation_endname.clone(),
+            frame_index: self.selected_frame_idx,
+            projection: self.current_projection(),
+            selected_label: self.current_annotation_label(),
+            revision: self
+                .current_annotation_document()
+                .map(|document| document.revision)
+                .unwrap_or(0),
+        };
+        if self.inspection_key.as_ref() != Some(&key) {
+            if key.segmentation_endname.is_some() || self.selected_segmentation_path().is_some() {
+                let inspection = inspect_position_frame(FrameInspectionConfig {
+                    position_path: position.spec.position_dir.clone(),
+                    segm_endname: self.persisted.selected_segmentation_endname.clone(),
+                    frame_index: self.selected_frame_idx,
+                    projection: self.current_projection(),
+                    selected_label: self.current_annotation_label(),
+                })?;
+                self.frame_inspection = Some(inspection);
+            } else {
+                self.frame_inspection = None;
+            }
+            self.inspection_key = Some(key);
+        }
+        Ok(self.frame_inspection.as_ref())
+    }
+
+    pub(crate) fn reveal_current_position(&self) -> Result<()> {
+        let path = self
+            .selected_position()
+            .map(|position| position.spec.position_dir.clone())
+            .or_else(|| {
+                self.experiment
+                    .as_ref()
+                    .map(|experiment| experiment.root_path.clone())
+            })
+            .ok_or_else(|| anyhow!("No session is open"))?;
+        let status = if cfg!(target_os = "macos") {
+            Command::new("open").arg("-R").arg(&path).status()?
+        } else if cfg!(target_os = "windows") {
+            Command::new("explorer").arg(&path).status()?
+        } else {
+            Command::new("xdg-open").arg(&path).status()?
+        };
+        if !status.success() {
+            anyhow::bail!("Failed to reveal {}", path.display());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_export_defaults(&mut self) {
+        let Some(position) = self.selected_position().cloned() else {
+            return;
+        };
+        if self.annotation.export_image.path.trim().is_empty() {
+            self.annotation.export_image.path = position
+                .spec
+                .images_dir
+                .join(format!("{}_gui_frame_{:04}.png", position.spec.basename, self.selected_frame_idx))
+                .display()
+                .to_string();
+        }
+        if self.annotation.export_video.output_path.trim().is_empty() {
+            self.annotation.export_video.output_path = position
+                .spec
+                .images_dir
+                .join(format!("{}_gui_export", position.spec.basename))
+                .display()
+                .to_string();
+        }
+        self.annotation.export_video.start_frame = 0;
+        self.annotation.export_video.end_frame = position.spec.size_t.saturating_sub(1);
+    }
+
+    pub(crate) fn export_current_image(&mut self) -> Result<PathBuf> {
+        let path = PathBuf::from(self.annotation.export_image.path.trim());
+        let mut request = self
+            .current_render_request()?
+            .ok_or_else(|| anyhow!("Nothing is available to export"))?;
+        request.overlay.enabled = self.annotation.export_image.include_overlay;
+        request.overlay.show_labels = self.annotation.export_image.include_labels;
+        request.scale_bar.enabled = self.annotation.export_image.include_scale_bar;
+        request.timestamp.enabled = self.annotation.export_image.include_timestamp;
+        let exported = export_frame_image(&request, &path)?;
+        self.append_log(format!("Exported image -> {}", exported.display()));
+        Ok(exported)
+    }
+
+    pub(crate) fn export_current_video_or_sequence(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position().cloned() else {
+            anyhow::bail!("No session is open");
+        };
+        let start = self.annotation.export_video.start_frame.min(position.spec.size_t.saturating_sub(1));
+        let end = self.annotation.export_video.end_frame.min(position.spec.size_t.saturating_sub(1));
+        if end < start {
+            anyhow::bail!("Video export range is invalid");
+        }
+        let mut requests = Vec::new();
+        for frame_index in start..=end {
+            let frame = position.load_channel_frame(
+                &self.persisted.selected_channel,
+                frame_index,
+                self.current_projection(),
+            )?;
+            let segmentation = if self.annotation.export_video.include_overlay {
+                position.load_segmentation_frame(
+                    self.persisted.selected_segmentation_endname.as_deref(),
+                    frame_index,
+                    self.current_projection(),
+                )?
+            } else {
+                None
+            };
+            requests.push(RenderFrameRequest {
+                frame,
+                segmentation,
+                overlay: OverlayRenderStyle {
+                    enabled: self.annotation.export_video.include_overlay,
+                    alpha: self.persisted.overlay_alpha,
+                    selected_label: self.current_annotation_label(),
+                    highlighted_label: self.active_highlighted_label(),
+                    show_labels: self.annotation.export_video.include_labels,
+                    single_channel_mode: self.persisted.display.overlay_single_channel_mode,
+                    true_transparency: self.persisted.display.true_transparency,
+                    label_color: self.persisted.display.overlay_label_color,
+                    label_scale: self.persisted.display.overlay_label_scale,
+                },
+                scale_bar: ScaleBarStyle {
+                    enabled: self.annotation.export_video.include_scale_bar,
+                    ..Default::default()
+                },
+                timestamp: TimestampStyle {
+                    enabled: self.annotation.export_video.include_timestamp,
+                    ..Default::default()
+                },
+                frame_index,
+                time_seconds: Some(position.spec.time_increment * frame_index as f64),
+                physical_size_x: Some(position.spec.physical_size_x),
+            });
+        }
+
+        let output_path = PathBuf::from(self.annotation.export_video.output_path.trim());
+        let extension = output_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+        if extension.as_deref() == Some("mp4") {
+            let sequence_dir = output_path.with_extension("");
+            let frames = export_frame_sequence(
+                &requests,
+                &sequence_dir,
+                "frame",
+                ImageExportFormat::Png,
+            )?;
+            if !self.try_encode_mp4(&sequence_dir, &output_path)? {
+                self.append_log(format!(
+                    "ffmpeg was not available. Exported PNG sequence instead -> {} ({} frame(s))",
+                    sequence_dir.display(),
+                    frames.len()
+                ));
+            } else {
+                self.append_log(format!("Exported video -> {}", output_path.display()));
+            }
+        } else {
+            let frames = export_frame_sequence(
+                &requests,
+                &output_path,
+                "frame",
+                ImageExportFormat::Png,
+            )?;
+            self.append_log(format!(
+                "Exported image sequence -> {} ({} frame(s))",
+                output_path.display(),
+                frames.len()
+            ));
+        }
+        Ok(())
+    }
+
+    fn try_encode_mp4(&self, sequence_dir: &std::path::Path, output_path: &std::path::Path) -> Result<bool> {
+        let status = Command::new("ffmpeg")
+            .arg("-y")
+            .arg("-framerate")
+            .arg("4")
+            .arg("-i")
+            .arg(sequence_dir.join("frame_%04d.png"))
+            .arg("-pix_fmt")
+            .arg("yuv420p")
+            .arg(output_path)
+            .status();
+        match status {
+            Ok(status) => Ok(status.success()),
+            Err(_) => Ok(false),
+        }
     }
 }
 
@@ -788,12 +1093,21 @@ impl eframe::App for CellAcdcGui {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.persisted.annotation_tool = self.annotation.tool;
         self.persisted.annotation_brush_radius = self.annotation.brush_radius;
+        if self.pending_annotation_autosave {
+            if let Some(document) = self.current_annotation_document_mut() {
+                let _ = document.session.save_autosave();
+            }
+        }
         persist::save(storage, &self.persisted);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_active_job();
         self.request_repaint_for_active_job(ctx);
+        self.flush_annotation_autosave_if_due();
+        if self.persisted.route == AppRoute::Annotation {
+            self.handle_gui_shortcuts(ctx);
+        }
 
         self.draw_shell_bar(ctx);
         match self.persisted.route {
@@ -804,6 +1118,29 @@ impl eframe::App for CellAcdcGui {
             AppRoute::Annotation => self.draw_annotation_panel(ctx),
             AppRoute::Utilities => self.draw_utility_panel(ctx),
             AppRoute::Help => self.draw_help_panel(ctx),
+        }
+    }
+}
+
+impl CellAcdcGui {
+    fn handle_gui_shortcuts(&mut self, ctx: &egui::Context) {
+        let actions = [
+            super::state::GuiActionId::Save,
+            super::state::GuiActionId::SaveAsVersion,
+            super::state::GuiActionId::Undo,
+            super::state::GuiActionId::Redo,
+            super::state::GuiActionId::FindId,
+            super::state::GuiActionId::ToolSelect,
+            super::state::GuiActionId::ToolBrush,
+            super::state::GuiActionId::ToolEraser,
+            super::state::GuiActionId::HighlightSelectedId,
+        ];
+        if let Some(action) =
+            super::shortcuts::triggered_action(ctx, &self.persisted.shortcut_overrides, &actions)
+        {
+            if self.gui_action_state(action).enabled {
+                self.dispatch_gui_action(action);
+            }
         }
     }
 }

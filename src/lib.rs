@@ -1,6 +1,7 @@
 mod edit;
 mod image_io;
 mod import;
+mod inspect;
 mod layout;
 mod lineage;
 mod mask_io;
@@ -10,6 +11,7 @@ mod measurements;
 mod metadata;
 mod model;
 mod prep;
+mod render;
 mod runner;
 mod segm_info;
 mod session;
@@ -26,6 +28,9 @@ pub use edit::{
 pub use import::{
     detect_import_source_kind, discover_import_sources, import_experiment, ImportExperimentConfig,
     ImportSource, ImportSourceKind, ImportedExperiment,
+};
+pub use inspect::{
+    inspect_position_frame, FrameInspection, FrameInspectionConfig, ObjectMeasurementSummary,
 };
 pub use layout::{
     discover_experiment, discover_measurement_experiment, resolve_measurement_position,
@@ -52,6 +57,10 @@ pub use prep::{
     read_background_roi_json, read_background_roi_npz, write_background_roi_json,
     write_background_roi_npz, AlignmentConfig, BackgroundRoiArchive, BackgroundRoiRect,
     BackgroundRoiSet, CropConfig, PrepOutputPaths, TimeCropConfig, ZCropConfig,
+};
+pub use render::{
+    export_frame_image, export_frame_sequence, render_frame, ImageExportFormat,
+    OverlayRenderStyle, RenderFrameRequest, RenderedFrame, ScaleBarStyle, TimestampStyle,
 };
 pub use runner::{
     resolve_position_run_config, run_experiment, run_position, ExperimentRunConfig,
