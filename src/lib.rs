@@ -13,6 +13,8 @@ mod measurements;
 mod metadata;
 mod model;
 mod prep;
+#[cfg(feature = "bioformats-import")]
+mod raw_import;
 mod render;
 mod runner;
 mod segm_info;
@@ -87,6 +89,12 @@ pub use prep::{
     AlignmentRunResult, AlignmentShiftSet, BackgroundRoiArchive, BackgroundRoiRect,
     BackgroundRoiSet, CropConfig, CropPreview, CropRoiCoordsTable, CropRoiRect, CropSaveConfig,
     CropSaveResult, DataPrepState, FreehandRoiMask, PrepOutputPaths, TimeCropConfig, ZCropConfig,
+};
+#[cfg(feature = "bioformats-import")]
+pub use raw_import::{
+    import_raw_experiment, probe_raw_import_source, ImportedRawPosition, RawImportExperimentConfig,
+    RawImportOutputFormat, RawImportProbe, RawImportSelection, RawImportedExperiment,
+    RawSeriesSummary,
 };
 pub use render::{
     export_frame_image, export_frame_sequence, render_frame, ImageExportFormat, OverlayMarker,
