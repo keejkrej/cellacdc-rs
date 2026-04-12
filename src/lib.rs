@@ -72,9 +72,14 @@ pub use measure::{
 };
 pub use model::{CellposeModel, Segmenter};
 pub use prep::{
-    read_background_roi_json, read_background_roi_npz, write_background_roi_json,
-    write_background_roi_npz, AlignmentConfig, BackgroundRoiArchive, BackgroundRoiRect,
-    BackgroundRoiSet, CropConfig, PrepOutputPaths, TimeCropConfig, ZCropConfig,
+    apply_alignment, compute_alignment_shifts, compute_background_roi_archives, load_crop_roi_coords_csv,
+    load_data_prep_state, preview_crop, read_background_roi_json, read_background_roi_npz,
+    read_freehand_roi_npz, remove_freehand_roi_npz, save_crop_roi_coords_csv,
+    save_cropped_data, write_background_roi_json, write_background_roi_npz,
+    write_freehand_roi_npz, AlignmentConfig, AlignmentRunConfig, AlignmentRunResult,
+    AlignmentShiftSet, BackgroundRoiArchive, BackgroundRoiRect, BackgroundRoiSet, CropConfig,
+    CropPreview, CropRoiCoordsTable, CropRoiRect, CropSaveConfig, CropSaveResult, DataPrepState,
+    FreehandRoiMask, PrepOutputPaths, TimeCropConfig, ZCropConfig,
 };
 pub use render::{
     export_frame_image, export_frame_sequence, render_frame, ImageExportFormat, OverlayMarker,
@@ -85,8 +90,10 @@ pub use runner::{
     OverwritePolicy, RunOutputPaths, RunResult, SegmentationParams, SegmentationRunConfig,
 };
 pub use segm_info::{
-    load_segm_info, prepare_zstack_segm_info, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig,
-    SegmInfoRecord, SegmInfoTable, ZProjectionMode,
+    apply_segm_info_edit, load_segm_info, prepare_zstack_segm_info,
+    propagate_segm_info_selection, save_segm_info, PrepareSegmInfoTarget,
+    PrepareZStackSegmInfoConfig, SegmInfoEdit, SegmInfoInterpolationMode, SegmInfoRecord,
+    SegmInfoTable, ZProjectionMode,
 };
 pub use session::{
     open_experiment_session, open_position_session, ExperimentSession, FrameData, FrameProjection,

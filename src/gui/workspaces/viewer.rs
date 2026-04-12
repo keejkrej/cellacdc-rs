@@ -629,7 +629,7 @@ impl CellAcdcGui {
     }
 }
 
-fn image_pixel_from_pointer(
+pub(crate) fn image_pixel_from_pointer(
     rect: Rect,
     pointer: Pos2,
     image_size: [usize; 2],

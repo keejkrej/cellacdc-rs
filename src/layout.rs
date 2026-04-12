@@ -20,6 +20,8 @@ pub struct MeasurementPositionSpec {
     pub channels: Vec<ChannelSpec>,
     pub metadata_path: Option<PathBuf>,
     pub data_prep_background_rois_path: Option<PathBuf>,
+    pub data_prep_roi_coords_path: Option<PathBuf>,
+    pub data_prep_free_roi_path: Option<PathBuf>,
     pub segm_info_path: Option<PathBuf>,
     pub size_t: usize,
     pub size_z: usize,
@@ -42,6 +44,8 @@ pub struct PositionSpec {
     pub fluo_image: PathBuf,
     pub metadata_path: Option<PathBuf>,
     pub data_prep_background_rois_path: Option<PathBuf>,
+    pub data_prep_roi_coords_path: Option<PathBuf>,
+    pub data_prep_free_roi_path: Option<PathBuf>,
     pub segm_info_path: Option<PathBuf>,
     pub size_t: usize,
     pub size_z: usize,
@@ -88,6 +92,8 @@ pub fn resolve_position(
         fluo_image,
         metadata_path: base.metadata_path,
         data_prep_background_rois_path: base.data_prep_background_rois_path,
+        data_prep_roi_coords_path: base.data_prep_roi_coords_path,
+        data_prep_free_roi_path: base.data_prep_free_roi_path,
         segm_info_path: base.segm_info_path,
         size_t: base.size_t,
         size_z: base.size_z,
@@ -119,6 +125,24 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
             path.file_name()
                 .and_then(|name| name.to_str())
                 .map(|name| name.ends_with("dataPrep_bkgrROIs.json"))
+                .unwrap_or(false)
+        })
+        .cloned();
+    let data_prep_roi_coords_path = files
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with("dataPrepROIs_coords.csv"))
+                .unwrap_or(false)
+        })
+        .cloned();
+    let data_prep_free_roi_path = files
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with("dataPrepFreeRoi.npz"))
                 .unwrap_or(false)
         })
         .cloned();
@@ -179,6 +203,8 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
         channels,
         metadata_path,
         data_prep_background_rois_path,
+        data_prep_roi_coords_path,
+        data_prep_free_roi_path,
         segm_info_path,
         size_t: metadata.size_t.unwrap_or(first_shape.size_t),
         size_z: metadata.size_z.unwrap_or(first_shape.size_z),
@@ -427,9 +453,9 @@ fn discover_channels(
 
         let parsed = if let Some(channel) = suffix.strip_suffix("_aligned.h5") {
             Some((channel.to_string(), 0usize))
-        } else if let Some(channel) = suffix.strip_suffix(".h5") {
-            Some((channel.to_string(), 1usize))
         } else if let Some(channel) = suffix.strip_suffix("_aligned.npz") {
+            Some((channel.to_string(), 1usize))
+        } else if let Some(channel) = suffix.strip_suffix(".h5") {
             Some((channel.to_string(), 2usize))
         } else if let Some(channel) = suffix.strip_suffix(".tif") {
             Some((channel.to_string(), 3usize))
@@ -476,6 +502,8 @@ fn discover_channels(
 fn should_skip_channel_candidate(suffix: &str) -> bool {
     suffix.ends_with("metadata.csv")
         || suffix.ends_with("dataPrep_bkgrROIs.json")
+        || suffix.ends_with("dataPrepROIs_coords.csv")
+        || suffix.ends_with("dataPrepFreeRoi.npz")
         || suffix.ends_with("bkgrRoiData.npz")
         || suffix.starts_with("segm")
         || suffix.starts_with("acdc_output")

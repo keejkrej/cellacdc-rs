@@ -69,6 +69,8 @@ pub(crate) fn measurement_position_from_position(
         channels: position.channels.clone(),
         metadata_path: position.metadata_path.clone(),
         data_prep_background_rois_path: position.data_prep_background_rois_path.clone(),
+        data_prep_roi_coords_path: position.data_prep_roi_coords_path.clone(),
+        data_prep_free_roi_path: position.data_prep_free_roi_path.clone(),
         segm_info_path: position.segm_info_path.clone(),
         size_t: position.size_t,
         size_z: position.size_z,

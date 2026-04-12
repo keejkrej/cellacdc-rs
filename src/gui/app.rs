@@ -1,8 +1,8 @@
 use super::jobs::JobHandle;
 use super::persist::{self, PersistedState};
 use super::state::{
-    AnnotationPendingAction, AnnotationWorkspaceState, AppRoute, InspectionKey,
-    LoadedMaskDocument, ProjectionMode, ViewKey,
+    AnnotationPendingAction, AnnotationWorkspaceState, AppRoute, DataPrepWorkspaceState,
+    InspectionKey, LoadedMaskDocument, ProjectionMode, ViewKey,
 };
 use super::workspaces;
 use anyhow::{anyhow, bail, Context, Result};
@@ -21,6 +21,7 @@ use cellacdc_rs::{
     MaskRecoveryState, MaskSaveMode, OverlayMarker, OverlayRenderStyle, OverwritePolicy,
     PositionSession, RenderFrameRequest, ScaleBarStyle, SegmentationLayout,
     SegmentationParams, TimestampStyle, ViewPlane,
+    load_data_prep_state,
 };
 use eframe::egui::{self, TextureHandle};
 use rfd::FileDialog;
@@ -57,6 +58,7 @@ pub(crate) struct CellAcdcGui {
     pub(crate) data_structure_scan_path: String,
     pub(crate) data_structure_scan_results: Vec<ImportSource>,
     pub(crate) data_structure_scan_error: Option<String>,
+    pub(crate) data_prep: DataPrepWorkspaceState,
     pub(crate) annotation: AnnotationWorkspaceState,
     pub(crate) annotation_document: Option<LoadedMaskDocument>,
     pub(crate) inspection_key: Option<InspectionKey>,
@@ -69,6 +71,9 @@ pub(crate) struct CellAcdcGui {
 impl CellAcdcGui {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let persisted = persist::load(cc.storage);
+        let data_prep_active_channel = persisted.data_prep_active_channel.clone();
+        let data_prep_projection_mode = persisted.data_prep_projection_mode;
+        let data_prep_z_index = persisted.data_prep_z_index;
         let last_non_launcher_route = match persisted.route {
             AppRoute::Launcher => AppRoute::Segmentation,
             route => route,
@@ -101,6 +106,12 @@ impl CellAcdcGui {
             data_structure_scan_path: String::new(),
             data_structure_scan_results: Vec::new(),
             data_structure_scan_error: None,
+            data_prep: DataPrepWorkspaceState {
+                active_channel: data_prep_active_channel,
+                projection_mode: data_prep_projection_mode,
+                z_index: data_prep_z_index,
+                ..Default::default()
+            },
             annotation_document: None,
             inspection_key: None,
             frame_inspection: None,
@@ -134,6 +145,8 @@ impl CellAcdcGui {
         self.persisted.route = route;
         if route == AppRoute::Annotation {
             self.ensure_annotation_document_loaded();
+        } else if route == AppRoute::DataPrep {
+            self.reload_data_prep_state();
         }
     }
 
@@ -157,6 +170,7 @@ impl CellAcdcGui {
         self.set_route(AppRoute::Segmentation);
         self.push_recent_path(path);
         self.sync_selection_with_position();
+        self.reload_data_prep_state();
         self.reload_custom_annotation_store();
         self.invalidate_texture();
         self.last_error = None;
@@ -172,6 +186,7 @@ impl CellAcdcGui {
             Ok(experiment) => {
                 self.experiment = Some(experiment);
                 self.sync_selection_with_position();
+                self.reload_data_prep_state();
                 self.reload_custom_annotation_store();
                 self.ensure_annotation_document_loaded();
                 self.invalidate_texture();
@@ -289,6 +304,60 @@ impl CellAcdcGui {
             .selected_segmentation_endname
             .clone()
             .unwrap_or_else(|| "edited".to_string());
+    }
+
+    pub(crate) fn reload_data_prep_state(&mut self) {
+        let Some(position) = self.selected_position().cloned() else {
+            self.data_prep = DataPrepWorkspaceState {
+                active_channel: self.persisted.data_prep_active_channel.clone(),
+                projection_mode: self.persisted.data_prep_projection_mode,
+                z_index: self.persisted.data_prep_z_index,
+                ..Default::default()
+            };
+            return;
+        };
+        match load_data_prep_state(
+            &position.spec.position_dir,
+            Some(&self.persisted.data_prep_active_channel),
+        ) {
+            Ok(state) => {
+                self.data_prep.active_channel = if state.active_channel.is_empty() {
+                    position
+                        .default_channel_name()
+                        .unwrap_or_else(|| self.persisted.selected_channel.clone())
+                } else {
+                    state.active_channel
+                };
+                self.data_prep.segm_info = state.segm_info;
+                self.data_prep.crop_rois = state.crop_rois;
+                self.data_prep.background_rois = state.background_rois;
+                self.data_prep.free_roi = state.free_roi;
+                self.data_prep.pending_crop_preview = None;
+                self.data_prep.last_loaded_position = Some(position.spec.position_dir.clone());
+                if let Some(free_roi) = self.data_prep.free_roi.as_ref() {
+                    let (y0, x0, y1, x1) = free_roi.bbox_yxxy;
+                    self.data_prep.free_roi_points = vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+                } else {
+                    self.data_prep.free_roi_points.clear();
+                }
+                if !position
+                    .channel_names()
+                    .iter()
+                    .any(|name| name == &self.data_prep.active_channel)
+                {
+                    self.data_prep.active_channel =
+                        position.default_channel_name().unwrap_or_default();
+                }
+                self.data_prep.z_index = self
+                    .data_prep
+                    .z_index
+                    .min(position.spec.size_z.saturating_sub(1));
+                self.last_error = None;
+            }
+            Err(err) => {
+                self.last_error = Some(err.to_string());
+            }
+        }
     }
 
     pub(crate) fn current_projection(&self) -> FrameProjection {
@@ -651,6 +720,7 @@ impl CellAcdcGui {
         self.selected_position_idx = idx;
         self.selected_frame_idx = 0;
         self.sync_selection_with_position();
+        self.reload_data_prep_state();
         self.clear_annotation_document();
         self.reload_custom_annotation_store();
         self.ensure_annotation_document_loaded();
@@ -2025,6 +2095,9 @@ fn project_mask_volume(
 
 impl eframe::App for CellAcdcGui {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.persisted.data_prep_active_channel = self.data_prep.active_channel.clone();
+        self.persisted.data_prep_projection_mode = self.data_prep.projection_mode;
+        self.persisted.data_prep_z_index = self.data_prep.z_index;
         self.persisted.annotation_tool = self.annotation.tool;
         self.persisted.annotation_brush_radius = self.annotation.brush_radius;
         self.persisted.gui_mode = self.annotation.mode;

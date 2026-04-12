@@ -1,4 +1,7 @@
-use cellacdc_rs::{CustomAnnotationStore, FrameProjection, MaskEditSession, ViewPlane};
+use cellacdc_rs::{
+    BackgroundRoiSet, CropPreview, CropRoiRect, CustomAnnotationStore, FrameProjection,
+    FreehandRoiMask, MaskEditSession, ViewPlane,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -6,6 +9,12 @@ use std::path::PathBuf;
 pub(crate) enum ProjectionMode {
     Max,
     ZSlice,
+}
+
+impl Default for ProjectionMode {
+    fn default() -> Self {
+        Self::Max
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -553,6 +562,40 @@ pub(crate) struct LoadedMaskDocument {
     pub(crate) segmentation_endname: Option<String>,
     pub(crate) session: MaskEditSession,
     pub(crate) revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DataPrepInteractionMode {
+    None,
+    AddCropRoi,
+    AddBackgroundRoi,
+    DrawFreeRoi,
+}
+
+impl Default for DataPrepInteractionMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DataPrepWorkspaceState {
+    pub(crate) active_channel: String,
+    pub(crate) segm_info: cellacdc_rs::SegmInfoTable,
+    pub(crate) crop_rois: Vec<CropRoiRect>,
+    pub(crate) background_rois: BackgroundRoiSet,
+    pub(crate) free_roi_points: Vec<(usize, usize)>,
+    pub(crate) free_roi: Option<FreehandRoiMask>,
+    pub(crate) frame_range: Option<(usize, usize)>,
+    pub(crate) z_range: Option<(usize, usize)>,
+    pub(crate) pending_crop_preview: Option<CropPreview>,
+    pub(crate) crop_dirty: bool,
+    pub(crate) interaction_mode: DataPrepInteractionMode,
+    pub(crate) projection_mode: ProjectionMode,
+    pub(crate) z_index: usize,
+    pub(crate) drag_start: Option<(usize, usize)>,
+    pub(crate) drag_current: Option<(usize, usize)>,
+    pub(crate) last_loaded_position: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

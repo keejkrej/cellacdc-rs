@@ -105,6 +105,48 @@ impl PositionSession {
             .join(format!("{}custom_annot_params.json", self.spec.basename))
     }
 
+    pub fn data_prep_state_paths(&self) -> crate::prep::PrepOutputPaths {
+        crate::prep::PrepOutputPaths {
+            primary_path: self
+                .spec
+                .images_dir
+                .join(format!("{}dataPrep_bkgrROIs.json", self.spec.basename)),
+            secondary_paths: vec![
+                self.spec
+                    .images_dir
+                    .join(format!("{}dataPrepROIs_coords.csv", self.spec.basename)),
+                self.spec
+                    .images_dir
+                    .join(format!("{}dataPrepFreeRoi.npz", self.spec.basename)),
+                self.spec
+                    .images_dir
+                    .join(format!("{}segmInfo.csv", self.spec.basename)),
+                self.alignment_shifts_path(),
+            ],
+        }
+    }
+
+    pub fn aligned_channel_path(&self, channel_name: &str) -> Option<PathBuf> {
+        let aligned_h5 = self
+            .spec
+            .images_dir
+            .join(format!("{}{}_aligned.h5", self.spec.basename, channel_name));
+        if aligned_h5.exists() {
+            return Some(aligned_h5);
+        }
+        let aligned_npz = self
+            .spec
+            .images_dir
+            .join(format!("{}{}_aligned.npz", self.spec.basename, channel_name));
+        aligned_npz.exists().then_some(aligned_npz)
+    }
+
+    pub fn alignment_shifts_path(&self) -> PathBuf {
+        self.spec
+            .images_dir
+            .join(format!("{}align_shift.npy", self.spec.basename))
+    }
+
     pub fn channel_names(&self) -> Vec<String> {
         self.spec
             .channels
