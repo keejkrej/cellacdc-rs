@@ -6,10 +6,13 @@ use crate::lineage::{
 use crate::mask_io::{load_mask_data, save_mask_data, SegmentationLayout};
 use crate::measure::{measure_position, MeasurementRunConfig};
 use crate::runner::OverwritePolicy;
-use crate::session::open_position_session;
+use crate::session::{open_position_session, ViewPlane};
 use crate::tabular::{read_table, write_table, Table, TableValue};
 use crate::tracking::{track_sequence, TrackingConfig};
 use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 const REQUIRED_CCA_COLUMNS: &[&str] = &[
@@ -30,6 +33,72 @@ pub enum GuiModeKind {
     SegmentationAndTracking,
     CellCycleAnalysis,
     NormalDivisionLineageTree,
+    CustomAnnotations,
+    Snapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CustomAnnotationKind {
+    SingleTimePoint,
+    MultipleTimePoints,
+    MultipleValuesClass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomAnnotationDefinition {
+    pub name: String,
+    pub kind: CustomAnnotationKind,
+    pub symbol: String,
+    pub shortcut: Option<String>,
+    pub description: String,
+    pub keep_active: bool,
+    pub hide_when_inactive: bool,
+    pub symbol_color_rgba: [u8; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CustomAnnotationStore {
+    pub definitions: BTreeMap<String, CustomAnnotationDefinition>,
+    pub annotated_ids_by_position:
+        BTreeMap<String, BTreeMap<String, BTreeMap<usize, BTreeSet<u32>>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomAnnotationMutation {
+    ToggleObject {
+        position_key: String,
+        annotation_name: String,
+        frame_index: usize,
+        object_id: u32,
+    },
+    RenameDefinition {
+        old_name: String,
+        definition: CustomAnnotationDefinition,
+    },
+    RemoveDefinitionKeepColumn {
+        annotation_name: String,
+    },
+    RemoveDefinitionAndColumn {
+        annotation_name: String,
+    },
+    UpdateDefinition {
+        old_name: String,
+        definition: CustomAnnotationDefinition,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotSaveScope {
+    CurrentPosition,
+    SelectedPositions(BTreeSet<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotProfile {
+    pub is_snapshot: bool,
+    pub is_3d_snapshot: bool,
+    pub editing_allowed_on_current_plane: bool,
+    pub save_scope_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +180,242 @@ pub struct TrackingRunReport {
     pub output_segmentation_path: PathBuf,
     pub measurement_table_path: Option<PathBuf>,
     pub frames_processed: usize,
+}
+
+pub fn global_custom_annotation_definitions_path() -> PathBuf {
+    let base_dir = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cellacdc-rs");
+    base_dir.join("custom_annotations.json")
+}
+
+pub fn load_custom_annotation_definitions(
+    path: impl AsRef<Path>,
+) -> Result<BTreeMap<String, CustomAnnotationDefinition>> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read custom annotation definitions {}", path.display()))?;
+    let definitions = serde_json::from_str::<BTreeMap<String, CustomAnnotationDefinition>>(&content)
+        .with_context(|| format!("Failed to parse custom annotation definitions {}", path.display()))?;
+    Ok(definitions)
+}
+
+pub fn save_custom_annotation_definitions(
+    path: impl AsRef<Path>,
+    definitions: &BTreeMap<String, CustomAnnotationDefinition>,
+) -> Result<PathBuf> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(definitions)?;
+    fs::write(path, content)
+        .with_context(|| format!("Failed to save custom annotation definitions {}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+pub fn derive_custom_annotation_memberships(
+    position_paths: &[PathBuf],
+    segm_endname: Option<&str>,
+) -> Result<CustomAnnotationStore> {
+    let mut store = CustomAnnotationStore::default();
+    for position_path in position_paths {
+        let position = open_position_session(position_path)?;
+        let position_key = position.position_key();
+        let local_definitions =
+            load_custom_annotation_definitions(position.custom_annotation_params_path())?;
+        for (name, definition) in local_definitions {
+            store.definitions.entry(name).or_insert(definition);
+        }
+        let acdc_output_path = position.acdc_output_path(segm_endname);
+        if !acdc_output_path.exists() {
+            continue;
+        }
+        let table = read_table(&acdc_output_path)?;
+        let frame_idx = table.header_index("frame_i")?;
+        let id_idx = table.header_index("Cell_ID")?;
+        for (name, definition) in &store.definitions {
+            if definition.kind != CustomAnnotationKind::SingleTimePoint {
+                continue;
+            }
+            let Some(column_idx) = table.maybe_header_index(name) else {
+                continue;
+            };
+            let per_annotation = store
+                .annotated_ids_by_position
+                .entry(position_key.clone())
+                .or_default()
+                .entry(name.clone())
+                .or_default();
+            for row in &table.rows {
+                let frame = row[frame_idx].as_i64().unwrap_or(0).max(0) as usize;
+                let cell_id = row[id_idx].as_i64().unwrap_or(0);
+                if cell_id <= 0 {
+                    continue;
+                }
+                if table_value_is_true(&row[column_idx]) {
+                    per_annotation
+                        .entry(frame)
+                        .or_default()
+                        .insert(cell_id as u32);
+                }
+            }
+        }
+    }
+    Ok(store)
+}
+
+pub fn apply_custom_annotation_mutation(
+    store: &CustomAnnotationStore,
+    mutation: CustomAnnotationMutation,
+) -> Result<CustomAnnotationStore> {
+    let mut updated = store.clone();
+    match mutation {
+        CustomAnnotationMutation::ToggleObject {
+            position_key,
+            annotation_name,
+            frame_index,
+            object_id,
+        } => {
+            let per_frame = updated
+                .annotated_ids_by_position
+                .entry(position_key)
+                .or_default()
+                .entry(annotation_name)
+                .or_default();
+            let ids = per_frame.entry(frame_index).or_default();
+            if !ids.insert(object_id) {
+                ids.remove(&object_id);
+            }
+        }
+        CustomAnnotationMutation::RenameDefinition { old_name, definition }
+        | CustomAnnotationMutation::UpdateDefinition { old_name, definition } => {
+            validate_custom_annotation_definition(&definition)?;
+            if definition.kind != CustomAnnotationKind::SingleTimePoint {
+                bail!("Only Single time-point custom annotations are currently supported");
+            }
+            updated.definitions.remove(&old_name);
+            for per_position in updated.annotated_ids_by_position.values_mut() {
+                if let Some(existing) = per_position.remove(&old_name) {
+                    per_position.insert(definition.name.clone(), existing);
+                }
+            }
+            updated
+                .definitions
+                .insert(definition.name.clone(), definition);
+        }
+        CustomAnnotationMutation::RemoveDefinitionKeepColumn { annotation_name }
+        | CustomAnnotationMutation::RemoveDefinitionAndColumn { annotation_name } => {
+            updated.definitions.remove(&annotation_name);
+            for per_position in updated.annotated_ids_by_position.values_mut() {
+                per_position.remove(&annotation_name);
+            }
+        }
+    }
+    Ok(updated)
+}
+
+pub fn write_custom_annotations_to_acdc_output(
+    position_dir: impl AsRef<Path>,
+    segm_endname: Option<&str>,
+    store: &CustomAnnotationStore,
+    delete_missing_columns: bool,
+) -> Result<PathBuf> {
+    let position = open_position_session(position_dir.as_ref())?;
+    let position_key = position.position_key();
+    let path = position.acdc_output_path(segm_endname);
+    if !path.exists() {
+        bail!(
+            "Cell-ACDC output table not found for custom annotations: {}",
+            path.display()
+        );
+    }
+    let mut table = read_table(&path)?;
+    let frame_idx = table.header_index("frame_i")?;
+    let id_idx = table.header_index("Cell_ID")?;
+    let active = store
+        .annotated_ids_by_position
+        .get(&position_key)
+        .cloned()
+        .unwrap_or_default();
+
+    let annotation_columns = table
+        .headers
+        .iter()
+        .filter(|header| {
+            store.definitions.contains_key(*header)
+                || active.contains_key(*header)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if delete_missing_columns {
+        let keep_indices = table
+            .headers
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, header)| {
+                (!annotation_columns.contains(header) || store.definitions.contains_key(header))
+                    .then_some(idx)
+            })
+            .collect::<Vec<_>>();
+        if keep_indices.len() != table.headers.len() {
+            table.headers = keep_indices
+                .iter()
+                .map(|idx| table.headers[*idx].clone())
+                .collect();
+            table.rows = table
+                .rows
+                .into_iter()
+                .map(|row| keep_indices.iter().map(|idx| row[*idx].clone()).collect())
+                .collect();
+        }
+    }
+
+    for name in store.definitions.keys() {
+        if table.maybe_header_index(name).is_none() {
+            table.with_column(name.clone(), vec![TableValue::Number(0.0); table.rows.len()])?;
+        }
+        let col_idx = table.header_index(name)?;
+        let memberships = active.get(name);
+        for row in &mut table.rows {
+            let frame = row[frame_idx].as_i64().unwrap_or(0).max(0) as usize;
+            let cell_id = row[id_idx].as_i64().unwrap_or(0).max(0) as u32;
+            let value = memberships
+                .and_then(|per_frame| per_frame.get(&frame))
+                .map(|ids| ids.contains(&cell_id))
+                .unwrap_or(false);
+            row[col_idx] = TableValue::Number(if value { 1.0 } else { 0.0 });
+        }
+    }
+    write_table(&path, &table)?;
+    Ok(path)
+}
+
+pub fn build_snapshot_profile(size_t: usize, size_z: usize, view_plane: ViewPlane) -> SnapshotProfile {
+    let is_snapshot = size_t <= 1;
+    SnapshotProfile {
+        is_snapshot,
+        is_3d_snapshot: is_snapshot && size_z > 1,
+        editing_allowed_on_current_plane: !is_snapshot || size_z <= 1 || view_plane == ViewPlane::XY,
+        save_scope_required: is_snapshot,
+    }
+}
+
+pub fn resolve_snapshot_save_scope(
+    selected_positions: &BTreeSet<String>,
+    current_position_key: &str,
+) -> Result<SnapshotSaveScope> {
+    if selected_positions.is_empty() {
+        return Ok(SnapshotSaveScope::CurrentPosition);
+    }
+    if selected_positions.len() == 1 && selected_positions.contains(current_position_key) {
+        return Ok(SnapshotSaveScope::CurrentPosition);
+    }
+    Ok(SnapshotSaveScope::SelectedPositions(selected_positions.clone()))
 }
 
 pub fn load_cell_cycle_annotations(
@@ -479,6 +784,71 @@ fn lineage_output_path(acdc_output_path: &Path) -> PathBuf {
     acdc_output_path.with_file_name(format!("{stem}_lineage.csv"))
 }
 
+pub fn builtin_acdc_measurement_columns() -> BTreeSet<String> {
+    [
+        "frame_i",
+        "time_seconds",
+        "time_minutes",
+        "time_hours",
+        "z_slice_used",
+        "which_z_proj",
+        "Cell_ID",
+        "cell_cycle_stage",
+        "generation_num",
+        "relative_ID",
+        "relationship",
+        "emerg_frame_i",
+        "division_frame_i",
+        "is_history_known",
+        "corrected_on_frame_i",
+        "will_divide",
+        "daughter_disappears_before_division",
+        "disappears_before_division",
+        "is_cell_dead",
+        "is_cell_excluded",
+        "was_manually_edited",
+        "x_centroid",
+        "y_centroid",
+        "cell_area_pxl",
+        "cell_area_um2",
+        "cell_vol_vox",
+        "cell_vol_fl",
+        "cell_vol_vox_3D",
+        "cell_vol_fl_3D",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub fn validate_custom_annotation_definition(
+    definition: &CustomAnnotationDefinition,
+) -> Result<()> {
+    let name = definition.name.trim();
+    if name.is_empty() {
+        bail!("Custom annotation name cannot be empty");
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("Custom annotation name may only contain letters, numbers, '_' or '-'");
+    }
+    if builtin_acdc_measurement_columns().contains(name) {
+        bail!("Custom annotation name {name:?} is reserved by Cell-ACDC measurements");
+    }
+    Ok(())
+}
+
+fn table_value_is_true(value: &TableValue) -> bool {
+    match value {
+        TableValue::Bool(value) => *value,
+        TableValue::Number(value) => *value != 0.0,
+        TableValue::Text(value) => matches!(value.to_ascii_lowercase().as_str(), "1" | "true"),
+        TableValue::Empty => false,
+    }
+}
+
 fn ensure_required_columns(table: &Table, columns: &[&str]) -> Result<()> {
     for column in columns {
         if table.maybe_header_index(column).is_none() {
@@ -541,6 +911,7 @@ fn write_row_bool(table: &mut Table, row_idx: usize, column: &str, value: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     fn sample_table() -> CellCycleAnnotationTable {
         let headers = REQUIRED_CCA_COLUMNS.iter().map(|value| value.to_string()).collect::<Vec<_>>();
@@ -606,5 +977,101 @@ mod tests {
         .unwrap();
         assert_eq!(propagated.records[1].relationship, "bud");
         assert_eq!(propagated.records[1].relative_id, 4);
+    }
+
+    #[test]
+    fn validates_custom_annotation_definitions() {
+        let valid = CustomAnnotationDefinition {
+            name: "mitotic_entry".into(),
+            kind: CustomAnnotationKind::SingleTimePoint,
+            symbol: "o".into(),
+            shortcut: Some("M".into()),
+            description: String::new(),
+            keep_active: true,
+            hide_when_inactive: false,
+            symbol_color_rgba: [255, 0, 0, 255],
+        };
+        validate_custom_annotation_definition(&valid).unwrap();
+
+        let reserved = CustomAnnotationDefinition {
+            name: "Cell_ID".into(),
+            ..valid.clone()
+        };
+        assert!(validate_custom_annotation_definition(&reserved).is_err());
+    }
+
+    #[test]
+    fn toggles_custom_annotation_membership() {
+        let mut store = CustomAnnotationStore::default();
+        store.definitions.insert(
+            "mitotic_entry".into(),
+            CustomAnnotationDefinition {
+                name: "mitotic_entry".into(),
+                kind: CustomAnnotationKind::SingleTimePoint,
+                symbol: "o".into(),
+                shortcut: Some("M".into()),
+                description: String::new(),
+                keep_active: true,
+                hide_when_inactive: false,
+                symbol_color_rgba: [255, 0, 0, 255],
+            },
+        );
+        let toggled = apply_custom_annotation_mutation(
+            &store,
+            CustomAnnotationMutation::ToggleObject {
+                position_key: "Position_1".into(),
+                annotation_name: "mitotic_entry".into(),
+                frame_index: 3,
+                object_id: 7,
+            },
+        )
+        .unwrap();
+        assert!(toggled.annotated_ids_by_position["Position_1"]["mitotic_entry"][&3].contains(&7));
+
+        let untoggled = apply_custom_annotation_mutation(
+            &toggled,
+            CustomAnnotationMutation::ToggleObject {
+                position_key: "Position_1".into(),
+                annotation_name: "mitotic_entry".into(),
+                frame_index: 3,
+                object_id: 7,
+            },
+        )
+        .unwrap();
+        assert!(!untoggled.annotated_ids_by_position["Position_1"]["mitotic_entry"][&3].contains(&7));
+    }
+
+    #[test]
+    fn roundtrips_custom_annotation_definition_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("custom_annot_params.json");
+        let mut definitions = BTreeMap::new();
+        definitions.insert(
+            "mitotic_entry".into(),
+            CustomAnnotationDefinition {
+                name: "mitotic_entry".into(),
+                kind: CustomAnnotationKind::SingleTimePoint,
+                symbol: "o".into(),
+                shortcut: Some("M".into()),
+                description: "Marks a mitotic event".into(),
+                keep_active: true,
+                hide_when_inactive: false,
+                symbol_color_rgba: [255, 0, 0, 255],
+            },
+        );
+        save_custom_annotation_definitions(&path, &definitions).unwrap();
+        let restored = load_custom_annotation_definitions(&path).unwrap();
+        assert_eq!(restored, definitions);
+    }
+
+    #[test]
+    fn builds_snapshot_profiles_with_plane_gating() {
+        let profile = build_snapshot_profile(1, 12, ViewPlane::XZ);
+        assert!(profile.is_snapshot);
+        assert!(profile.is_3d_snapshot);
+        assert!(!profile.editing_allowed_on_current_plane);
+
+        let xy_profile = build_snapshot_profile(1, 12, ViewPlane::XY);
+        assert!(xy_profile.editing_allowed_on_current_plane);
     }
 }

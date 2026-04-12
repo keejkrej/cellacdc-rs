@@ -1,7 +1,7 @@
 use super::actions::{
-    action_label, CELL_CYCLE_ACTIONS, EDIT_ACTIONS, FILE_ACTIONS, HELP_ACTIONS, IMAGE_ACTIONS,
-    LINEAGE_ACTIONS, MEASUREMENT_ACTIONS, SEGMENT_ACTIONS, SETTINGS_ACTIONS, TRACKING_ACTIONS,
-    VIEW_ACTIONS,
+    action_label, CELL_CYCLE_ACTIONS, CUSTOM_ANNOTATION_ACTIONS, EDIT_ACTIONS, FILE_ACTIONS,
+    HELP_ACTIONS, IMAGE_ACTIONS, LINEAGE_ACTIONS, MEASUREMENT_ACTIONS, SEGMENT_ACTIONS,
+    SETTINGS_ACTIONS, TRACKING_ACTIONS, VIEW_ACTIONS,
 };
 use super::app::CellAcdcGui;
 use super::shortcuts::shortcut_label;
@@ -17,18 +17,22 @@ impl CellAcdcGui {
                 self.draw_gui_toolbar(ui, "File", &[
                     GuiActionId::OpenSession,
                     GuiActionId::Save,
+                    GuiActionId::QuickSave,
                     GuiActionId::SaveAsVersion,
                     GuiActionId::LoadOlderVersions,
                     GuiActionId::ExportImage,
                     GuiActionId::ExportVideo,
                 ]);
             }
-            self.draw_gui_toolbar(ui, "Mode", &[
-                GuiActionId::ModeViewer,
-                GuiActionId::ModeSegmentationAndTracking,
-                GuiActionId::ModeCellCycleAnalysis,
-                GuiActionId::ModeNormalDivisionLineageTree,
-            ]);
+            if self.annotation.mode != GuiMode::Snapshot {
+                self.draw_gui_toolbar(ui, "Mode", &[
+                    GuiActionId::ModeViewer,
+                    GuiActionId::ModeSegmentationAndTracking,
+                    GuiActionId::ModeCellCycleAnalysis,
+                    GuiActionId::ModeNormalDivisionLineageTree,
+                    GuiActionId::ModeCustomAnnotations,
+                ]);
+            }
             if self.persisted.display.show_navigation_toolbar {
                 self.draw_navigation_toolbar(ui);
             }
@@ -67,6 +71,12 @@ impl CellAcdcGui {
                 GuiMode::NormalDivisionLineageTree => {
                     self.draw_gui_toolbar(ui, "Lineage Tree", LINEAGE_ACTIONS);
                 }
+                GuiMode::CustomAnnotations | GuiMode::Snapshot => {
+                    self.draw_custom_annotation_toolbar(ui);
+                    if self.annotation.mode == GuiMode::Snapshot {
+                        self.draw_gui_toolbar(ui, "Cell Cycle", CELL_CYCLE_ACTIONS);
+                    }
+                }
                 GuiMode::Viewer => {}
             }
         });
@@ -102,6 +112,7 @@ impl CellAcdcGui {
             self.draw_action_menu(ui, "Measurements", MEASUREMENT_ACTIONS, false);
             self.draw_action_menu(ui, "Cell cycle", CELL_CYCLE_ACTIONS, false);
             self.draw_action_menu(ui, "Lineage", LINEAGE_ACTIONS, false);
+            self.draw_action_menu(ui, "Custom annotations", CUSTOM_ANNOTATION_ACTIONS, false);
             self.draw_action_menu(ui, "Settings", SETTINGS_ACTIONS, false);
             self.draw_action_menu(ui, "Help", HELP_ACTIONS, false);
         });
@@ -255,13 +266,42 @@ impl CellAcdcGui {
                         }
                     });
                 if position.spec.size_t > 0 {
-                    ui.add(
-                        egui::Slider::new(
-                            &mut self.selected_frame_idx,
-                            0..=position.spec.size_t.saturating_sub(1),
-                        )
-                        .text("Frame"),
-                    );
+                    if self.annotation.mode == GuiMode::Snapshot {
+                        let max_pos = self
+                            .experiment
+                            .as_ref()
+                            .map(|experiment| experiment.positions.len().saturating_sub(1))
+                            .unwrap_or(0);
+                        ui.label(format!("Positions: {}/{}", self.selected_position_idx + 1, max_pos + 1));
+                    } else {
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.selected_frame_idx,
+                                0..=position.spec.size_t.saturating_sub(1),
+                            )
+                            .text("Frame"),
+                        );
+                    }
+                }
+                if position.spec.size_z > 1 {
+                    egui::ComboBox::from_id_salt("gui_view_plane")
+                        .selected_text(match self.annotation.view_plane {
+                            cellacdc_rs::ViewPlane::XY => "XY",
+                            cellacdc_rs::ViewPlane::XZ => "XZ",
+                            cellacdc_rs::ViewPlane::YZ => "YZ",
+                        })
+                        .show_ui(ui, |ui| {
+                            for (plane, label) in [
+                                (cellacdc_rs::ViewPlane::XY, "XY"),
+                                (cellacdc_rs::ViewPlane::XZ, "XZ"),
+                                (cellacdc_rs::ViewPlane::YZ, "YZ"),
+                            ] {
+                                if ui.selectable_label(self.annotation.view_plane == plane, label).clicked() {
+                                    self.annotation.view_plane = plane;
+                                    self.invalidate_texture();
+                                }
+                            }
+                        });
                 }
                 egui::ComboBox::from_id_salt("gui_projection_mode")
                     .selected_text(match self.persisted.projection_mode {
@@ -291,16 +331,21 @@ impl CellAcdcGui {
                             self.invalidate_texture();
                         }
                     });
+                let max_depth = self.current_view_depth_limit().unwrap_or(position.spec.size_z);
                 if self.persisted.projection_mode == super::state::ProjectionMode::ZSlice
-                    && position.spec.size_z > 0
+                    && max_depth > 0
                 {
                     if ui
                         .add(
                             egui::Slider::new(
                                 &mut self.persisted.z_index,
-                                0..=position.spec.size_z.saturating_sub(1),
+                                0..=max_depth.saturating_sub(1),
                             )
-                            .text("Z"),
+                            .text(match self.annotation.view_plane {
+                                cellacdc_rs::ViewPlane::XY => "Z",
+                                cellacdc_rs::ViewPlane::XZ => "Y",
+                                cellacdc_rs::ViewPlane::YZ => "X",
+                            }),
                         )
                         .changed()
                     {
@@ -335,6 +380,97 @@ impl CellAcdcGui {
             }
             if let Some(selected) = self.current_annotation_label() {
                 ui.label(format!("Selected: {selected}"));
+            }
+        });
+    }
+
+    fn draw_custom_annotation_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Custom annotations").strong());
+            for action in CUSTOM_ANNOTATION_ACTIONS {
+                let state = self.gui_action_state(*action);
+                if ui
+                    .add_enabled(
+                        state.enabled,
+                        Button::new(action_label(*action)).selected(state.checked),
+                    )
+                    .clicked()
+                {
+                    self.dispatch_gui_action(*action);
+                }
+            }
+            ui.separator();
+            let annotation_names = self
+                .annotation
+                .custom_annotations
+                .definitions
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            for name in annotation_names {
+                let is_active =
+                    self.annotation.active_custom_annotation.active_name.as_deref() == Some(name.as_str());
+                let response = ui.add(Button::new(name.clone()).selected(is_active));
+                if response.clicked() {
+                    if is_active {
+                        self.annotation.active_custom_annotation.active_name = None;
+                    } else {
+                        self.annotation.active_custom_annotation.active_name = Some(name.clone());
+                    }
+                    self.invalidate_texture();
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Modify").clicked() {
+                        if let Err(err) = self.open_custom_annotation_editor(Some(&name)) {
+                            self.last_error = Some(err.to_string());
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Remove only button").clicked() {
+                        if let Err(err) = self.remove_custom_annotation(&name, false) {
+                            self.last_error = Some(err.to_string());
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Remove also column with annotations").clicked() {
+                        if let Err(err) = self.remove_custom_annotation(&name, true) {
+                            self.last_error = Some(err.to_string());
+                        }
+                        ui.close_menu();
+                    }
+                    if let Some(definition) = self.annotation.custom_annotations.definitions.get(&name).cloned() {
+                        let keep_label = if definition.keep_active {
+                            "Disable keep tool active"
+                        } else {
+                            "Keep tool active"
+                        };
+                        if ui.button(keep_label).clicked() {
+                            if let Err(err) = self.update_custom_annotation_flags(
+                                &name,
+                                Some(!definition.keep_active),
+                                None,
+                            ) {
+                                self.last_error = Some(err.to_string());
+                            }
+                            ui.close_menu();
+                        }
+                        let hide_label = if definition.hide_when_inactive {
+                            "Show annotation when inactive"
+                        } else {
+                            "Hide annotation when inactive"
+                        };
+                        if ui.button(hide_label).clicked() {
+                            if let Err(err) = self.update_custom_annotation_flags(
+                                &name,
+                                None,
+                                Some(!definition.hide_when_inactive),
+                            ) {
+                                self.last_error = Some(err.to_string());
+                            }
+                            ui.close_menu();
+                        }
+                    }
+                });
             }
         });
     }

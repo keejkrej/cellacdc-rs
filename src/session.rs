@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,10 +10,17 @@ use crate::layout::{
 };
 use crate::mask_io::{load_mask_data, MaskData, MaskPathResolution, SegmentationLayout};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FrameProjection {
     Max,
     ZSlice(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewPlane {
+    XY,
+    XZ,
+    YZ,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +80,31 @@ impl ExperimentSession {
 }
 
 impl PositionSession {
+    pub fn position_key(&self) -> String {
+        self.spec
+            .position_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Position")
+            .to_string()
+    }
+
+    pub fn acdc_output_path(&self, endname: Option<&str>) -> PathBuf {
+        let suffix = endname
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| format!("_{value}"))
+            .unwrap_or_default();
+        self.spec
+            .images_dir
+            .join(format!("{}acdc_output{suffix}.csv", self.spec.basename))
+    }
+
+    pub fn custom_annotation_params_path(&self) -> PathBuf {
+        self.spec
+            .images_dir
+            .join(format!("{}custom_annot_params.json", self.spec.basename))
+    }
+
     pub fn channel_names(&self) -> Vec<String> {
         self.spec
             .channels
@@ -115,6 +148,16 @@ impl PositionSession {
         frame_index: usize,
         projection: FrameProjection,
     ) -> Result<FrameData<f32>> {
+        self.load_channel_frame_for_view(channel_name, frame_index, ViewPlane::XY, projection)
+    }
+
+    pub fn load_channel_frame_for_view(
+        &self,
+        channel_name: &str,
+        frame_index: usize,
+        view_plane: ViewPlane,
+        projection: FrameProjection,
+    ) -> Result<FrameData<f32>> {
         let channel = self
             .spec
             .channels
@@ -135,13 +178,14 @@ impl PositionSession {
                     channel.image_path.display()
                 )
             })?;
-            extract_projected_volume_frame_f32(
+            extract_volume_frame_f32(
                 &values,
                 shape.height,
                 shape.width,
                 shape.size_t,
                 shape.size_z,
                 frame_index,
+                view_plane,
                 projection,
             )
         } else {
@@ -167,6 +211,16 @@ impl PositionSession {
         &self,
         endname: Option<&str>,
         frame_index: usize,
+        projection: FrameProjection,
+    ) -> Result<Option<FrameData<u32>>> {
+        self.load_segmentation_frame_for_view(endname, frame_index, ViewPlane::XY, projection)
+    }
+
+    pub fn load_segmentation_frame_for_view(
+        &self,
+        endname: Option<&str>,
+        frame_index: usize,
+        view_plane: ViewPlane,
         projection: FrameProjection,
     ) -> Result<Option<FrameData<u32>>> {
         let Some(mask) = self.load_segmentation_mask(endname)? else {
@@ -206,17 +260,25 @@ impl PositionSession {
                         mask.source_path.display()
                     );
                 }
-                extract_projected_volume_frame_u32(
-                    values, shape[1], shape[2], 1, shape[0], 0, projection,
+                extract_volume_frame_u32(
+                    values,
+                    shape[1],
+                    shape[2],
+                    1,
+                    shape[0],
+                    0,
+                    view_plane,
+                    projection,
                 )?
             }
-            SegmentationLayout::TZYX => extract_projected_volume_frame_u32(
+            SegmentationLayout::TZYX => extract_volume_frame_u32(
                 values,
                 shape[2],
                 shape[3],
                 shape[0],
                 shape[1],
                 frame_index,
+                view_plane,
                 projection,
             )?,
         };
@@ -380,13 +442,14 @@ fn extract_stack_frame_u32(
     })
 }
 
-fn extract_projected_volume_frame_f32(
+fn extract_volume_frame_f32(
     values: &[f32],
     height: usize,
     width: usize,
     size_t: usize,
     size_z: usize,
     frame_index: usize,
+    view_plane: ViewPlane,
     projection: FrameProjection,
 ) -> Result<FrameData<f32>> {
     if frame_index >= size_t {
@@ -398,47 +461,24 @@ fn extract_projected_volume_frame_f32(
     }
     let plane_len = height * width;
     let frame_offset = frame_index * size_z * plane_len;
-    let pixels = match projection {
-        FrameProjection::Max => {
-            let mut projected = vec![f32::NEG_INFINITY; plane_len];
-            for z in 0..size_z {
-                let start = frame_offset + z * plane_len;
-                let end = start + plane_len;
-                for (dst, src) in projected.iter_mut().zip(&values[start..end]) {
-                    if *src > *dst {
-                        *dst = *src;
-                    }
-                }
-            }
-            projected
-        }
-        FrameProjection::ZSlice(z_index) => {
-            if z_index >= size_z {
-                bail!(
-                    "Requested z-slice {} but volume has {} slice(s)",
-                    z_index,
-                    size_z
-                );
-            }
-            let start = frame_offset + z_index * plane_len;
-            let end = start + plane_len;
-            values[start..end].to_vec()
-        }
-    };
-    Ok(FrameData {
-        width,
+    extract_oriented_frame_f32(
+        &values[frame_offset..frame_offset + size_z * plane_len],
+        size_z,
         height,
-        pixels,
-    })
+        width,
+        view_plane,
+        projection,
+    )
 }
 
-fn extract_projected_volume_frame_u32(
+fn extract_volume_frame_u32(
     values: &[u32],
     height: usize,
     width: usize,
     size_t: usize,
     size_z: usize,
     frame_index: usize,
+    view_plane: ViewPlane,
     projection: FrameProjection,
 ) -> Result<FrameData<u32>> {
     if frame_index >= size_t {
@@ -450,38 +490,222 @@ fn extract_projected_volume_frame_u32(
     }
     let plane_len = height * width;
     let frame_offset = frame_index * size_z * plane_len;
-    let pixels = match projection {
-        FrameProjection::Max => {
-            let mut projected = vec![0u32; plane_len];
-            for z in 0..size_z {
-                let start = frame_offset + z * plane_len;
-                let end = start + plane_len;
-                for (dst, src) in projected.iter_mut().zip(&values[start..end]) {
-                    if *src > *dst {
-                        *dst = *src;
+    extract_oriented_frame_u32(
+        &values[frame_offset..frame_offset + size_z * plane_len],
+        size_z,
+        height,
+        width,
+        view_plane,
+        projection,
+    )
+}
+
+fn extract_oriented_frame_f32(
+    values: &[f32],
+    size_z: usize,
+    size_y: usize,
+    size_x: usize,
+    view_plane: ViewPlane,
+    projection: FrameProjection,
+) -> Result<FrameData<f32>> {
+    match view_plane {
+        ViewPlane::XY => {
+            let plane_len = size_y * size_x;
+            let pixels = match projection {
+                FrameProjection::Max => {
+                    let mut projected = vec![f32::NEG_INFINITY; plane_len];
+                    for z in 0..size_z {
+                        let start = z * plane_len;
+                        let end = start + plane_len;
+                        for (dst, src) in projected.iter_mut().zip(&values[start..end]) {
+                            if *src > *dst {
+                                *dst = *src;
+                            }
+                        }
                     }
+                    projected
+                }
+                FrameProjection::ZSlice(z_index) => {
+                    if z_index >= size_z {
+                        bail!("Requested z-slice {} but volume has {} slice(s)", z_index, size_z);
+                    }
+                    let start = z_index * plane_len;
+                    values[start..start + plane_len].to_vec()
+                }
+            };
+            Ok(FrameData {
+                width: size_x,
+                height: size_y,
+                pixels,
+            })
+        }
+        ViewPlane::XZ => {
+            let slice_y = match projection {
+                FrameProjection::Max => None,
+                FrameProjection::ZSlice(index) => {
+                    if index >= size_y {
+                        bail!("Requested y-slice {} but volume has {} row(s)", index, size_y);
+                    }
+                    Some(index)
+                }
+            };
+            let mut pixels = vec![f32::NEG_INFINITY; size_z * size_x];
+            for z in 0..size_z {
+                for x in 0..size_x {
+                    let value = if let Some(y_index) = slice_y {
+                        values[z * size_y * size_x + y_index * size_x + x]
+                    } else {
+                        let mut best = f32::NEG_INFINITY;
+                        for y in 0..size_y {
+                            best = best.max(values[z * size_y * size_x + y * size_x + x]);
+                        }
+                        best
+                    };
+                    pixels[z * size_x + x] = value;
                 }
             }
-            projected
+            Ok(FrameData {
+                width: size_x,
+                height: size_z,
+                pixels,
+            })
         }
-        FrameProjection::ZSlice(z_index) => {
-            if z_index >= size_z {
-                bail!(
-                    "Requested z-slice {} but volume has {} slice(s)",
-                    z_index,
-                    size_z
-                );
+        ViewPlane::YZ => {
+            let slice_x = match projection {
+                FrameProjection::Max => None,
+                FrameProjection::ZSlice(index) => {
+                    if index >= size_x {
+                        bail!("Requested x-slice {} but volume has {} column(s)", index, size_x);
+                    }
+                    Some(index)
+                }
+            };
+            let mut pixels = vec![f32::NEG_INFINITY; size_z * size_y];
+            for z in 0..size_z {
+                for y in 0..size_y {
+                    let value = if let Some(x_index) = slice_x {
+                        values[z * size_y * size_x + y * size_x + x_index]
+                    } else {
+                        let mut best = f32::NEG_INFINITY;
+                        for x in 0..size_x {
+                            best = best.max(values[z * size_y * size_x + y * size_x + x]);
+                        }
+                        best
+                    };
+                    pixels[z * size_y + y] = value;
+                }
             }
-            let start = frame_offset + z_index * plane_len;
-            let end = start + plane_len;
-            values[start..end].to_vec()
+            Ok(FrameData {
+                width: size_y,
+                height: size_z,
+                pixels,
+            })
         }
-    };
-    Ok(FrameData {
-        width,
-        height,
-        pixels,
-    })
+    }
+}
+
+fn extract_oriented_frame_u32(
+    values: &[u32],
+    size_z: usize,
+    size_y: usize,
+    size_x: usize,
+    view_plane: ViewPlane,
+    projection: FrameProjection,
+) -> Result<FrameData<u32>> {
+    match view_plane {
+        ViewPlane::XY => {
+            let plane_len = size_y * size_x;
+            let pixels = match projection {
+                FrameProjection::Max => {
+                    let mut projected = vec![0u32; plane_len];
+                    for z in 0..size_z {
+                        let start = z * plane_len;
+                        let end = start + plane_len;
+                        for (dst, src) in projected.iter_mut().zip(&values[start..end]) {
+                            if *src > *dst {
+                                *dst = *src;
+                            }
+                        }
+                    }
+                    projected
+                }
+                FrameProjection::ZSlice(z_index) => {
+                    if z_index >= size_z {
+                        bail!("Requested z-slice {} but volume has {} slice(s)", z_index, size_z);
+                    }
+                    let start = z_index * plane_len;
+                    values[start..start + plane_len].to_vec()
+                }
+            };
+            Ok(FrameData {
+                width: size_x,
+                height: size_y,
+                pixels,
+            })
+        }
+        ViewPlane::XZ => {
+            let slice_y = match projection {
+                FrameProjection::Max => None,
+                FrameProjection::ZSlice(index) => {
+                    if index >= size_y {
+                        bail!("Requested y-slice {} but volume has {} row(s)", index, size_y);
+                    }
+                    Some(index)
+                }
+            };
+            let mut pixels = vec![0u32; size_z * size_x];
+            for z in 0..size_z {
+                for x in 0..size_x {
+                    let value = if let Some(y_index) = slice_y {
+                        values[z * size_y * size_x + y_index * size_x + x]
+                    } else {
+                        let mut best = 0u32;
+                        for y in 0..size_y {
+                            best = best.max(values[z * size_y * size_x + y * size_x + x]);
+                        }
+                        best
+                    };
+                    pixels[z * size_x + x] = value;
+                }
+            }
+            Ok(FrameData {
+                width: size_x,
+                height: size_z,
+                pixels,
+            })
+        }
+        ViewPlane::YZ => {
+            let slice_x = match projection {
+                FrameProjection::Max => None,
+                FrameProjection::ZSlice(index) => {
+                    if index >= size_x {
+                        bail!("Requested x-slice {} but volume has {} column(s)", index, size_x);
+                    }
+                    Some(index)
+                }
+            };
+            let mut pixels = vec![0u32; size_z * size_y];
+            for z in 0..size_z {
+                for y in 0..size_y {
+                    let value = if let Some(x_index) = slice_x {
+                        values[z * size_y * size_x + y * size_x + x_index]
+                    } else {
+                        let mut best = 0u32;
+                        for x in 0..size_x {
+                            best = best.max(values[z * size_y * size_x + y * size_x + x]);
+                        }
+                        best
+                    };
+                    pixels[z * size_y + y] = value;
+                }
+            }
+            Ok(FrameData {
+                width: size_y,
+                height: size_z,
+                pixels,
+            })
+        }
+    }
 }
 
 #[cfg(test)]

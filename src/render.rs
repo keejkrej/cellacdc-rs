@@ -76,11 +76,21 @@ impl Default for TimestampStyle {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayMarker {
+    pub x: usize,
+    pub y: usize,
+    pub symbol: String,
+    pub color: [u8; 4],
+    pub size: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderFrameRequest {
     pub frame: FrameData<f32>,
     pub segmentation: Option<FrameData<u32>>,
     pub overlay: OverlayRenderStyle,
+    pub markers: Vec<OverlayMarker>,
     pub scale_bar: ScaleBarStyle,
     pub timestamp: TimestampStyle,
     pub frame_index: usize,
@@ -148,6 +158,17 @@ pub fn render_frame(request: &RenderFrameRequest) -> Result<RenderedFrame> {
                 segm,
                 request.overlay.label_color,
                 request.overlay.label_scale.max(1),
+            );
+        }
+    }
+
+    if !request.markers.is_empty() {
+        for marker in &request.markers {
+            draw_overlay_marker(
+                &mut rgba,
+                request.frame.width,
+                request.frame.height,
+                marker,
             );
         }
     }
@@ -341,6 +362,106 @@ fn draw_label_annotations(
     }
 }
 
+fn draw_overlay_marker(
+    rgba: &mut [u8],
+    width: usize,
+    height: usize,
+    marker: &OverlayMarker,
+) {
+    let radius = marker.size.max(5) as i32 / 2;
+    let cx = marker.x as i32;
+    let cy = marker.y as i32;
+    match marker.symbol.as_str() {
+        "s" => {
+            for y in (cy - radius)..=(cy + radius) {
+                for x in (cx - radius)..=(cx + radius) {
+                    if within_bounds(x, y, width, height) {
+                        set_rgba_pixel(rgba, width, x as usize, y as usize, marker.color);
+                    }
+                }
+            }
+        }
+        "+" => {
+            for delta in -radius..=radius {
+                if within_bounds(cx + delta, cy, width, height) {
+                    set_rgba_pixel(rgba, width, (cx + delta) as usize, cy as usize, marker.color);
+                }
+                if within_bounds(cx, cy + delta, width, height) {
+                    set_rgba_pixel(rgba, width, cx as usize, (cy + delta) as usize, marker.color);
+                }
+            }
+        }
+        "x" => {
+            for delta in -radius..=radius {
+                if within_bounds(cx + delta, cy + delta, width, height) {
+                    set_rgba_pixel(
+                        rgba,
+                        width,
+                        (cx + delta) as usize,
+                        (cy + delta) as usize,
+                        marker.color,
+                    );
+                }
+                if within_bounds(cx + delta, cy - delta, width, height) {
+                    set_rgba_pixel(
+                        rgba,
+                        width,
+                        (cx + delta) as usize,
+                        (cy - delta) as usize,
+                        marker.color,
+                    );
+                }
+            }
+        }
+        "d" => {
+            for dy in -radius..=radius {
+                let span = radius - dy.abs();
+                for dx in -span..=span {
+                    if within_bounds(cx + dx, cy + dy, width, height) {
+                        set_rgba_pixel(
+                            rgba,
+                            width,
+                            (cx + dx) as usize,
+                            (cy + dy) as usize,
+                            marker.color,
+                        );
+                    }
+                }
+            }
+        }
+        "t" => {
+            for dy in 0..=radius {
+                let span = dy;
+                for dx in -span..=span {
+                    let x = cx + dx;
+                    let y = cy + radius - dy;
+                    if within_bounds(x, y, width, height) {
+                        set_rgba_pixel(rgba, width, x as usize, y as usize, marker.color);
+                    }
+                }
+            }
+        }
+        _ => {
+            for y in (cy - radius)..=(cy + radius) {
+                for x in (cx - radius)..=(cx + radius) {
+                    let dx = x - cx;
+                    let dy = y - cy;
+                    if dx * dx + dy * dy > radius * radius {
+                        continue;
+                    }
+                    if within_bounds(x, y, width, height) {
+                        set_rgba_pixel(rgba, width, x as usize, y as usize, marker.color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn within_bounds(x: i32, y: i32, width: usize, height: usize) -> bool {
+    x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height
+}
+
 fn draw_text(
     rgba: &mut [u8],
     width: usize,
@@ -442,6 +563,7 @@ mod tests {
             frame_index: 0,
             time_seconds: Some(0.0),
             physical_size_x: Some(0.1),
+            markers: Vec::new(),
         }
     }
 

@@ -56,6 +56,11 @@ pub(crate) const CELL_CYCLE_ACTIONS: &[GuiActionId] = &[
     GuiActionId::EditCellCycleAnnotations,
     GuiActionId::ViewCellCycleAnnotations,
 ];
+pub(crate) const CUSTOM_ANNOTATION_ACTIONS: &[GuiActionId] = &[
+    GuiActionId::LoadSavedCustomAnnotations,
+    GuiActionId::AddCustomAnnotation,
+    GuiActionId::ShowAllCustomAnnotations,
+];
 pub(crate) const LINEAGE_ACTIONS: &[GuiActionId] = &[
     GuiActionId::FindNextPotentialMother,
     GuiActionId::UnknownLineage,
@@ -115,6 +120,7 @@ pub(crate) fn action_label(action: GuiActionId) -> &'static str {
         GuiActionId::ModeSegmentationAndTracking => "Segmentation and Tracking",
         GuiActionId::ModeCellCycleAnalysis => "Cell cycle analysis",
         GuiActionId::ModeNormalDivisionLineageTree => "Normal division: Lineage tree",
+        GuiActionId::ModeCustomAnnotations => "Custom annotations",
         GuiActionId::RepeatTracking => "Repeat Tracking",
         GuiActionId::TrackCurrentFrame => "Track Current Frame Forward",
         GuiActionId::ManualTracking => "Manual Tracking",
@@ -127,6 +133,9 @@ pub(crate) fn action_label(action: GuiActionId) -> &'static str {
         GuiActionId::NoLineageTool => "No Lineage Tool",
         GuiActionId::PropagateLineage => "Propagate Lineage",
         GuiActionId::ViewLineageChanges => "View Lineage Changes",
+        GuiActionId::LoadSavedCustomAnnotations => "Load previously used custom annotations",
+        GuiActionId::AddCustomAnnotation => "Add custom annotation",
+        GuiActionId::ShowAllCustomAnnotations => "Show all custom annotations",
     }
 }
 
@@ -204,6 +213,12 @@ pub(crate) fn default_shortcut_binding(action: GuiActionId) -> Option<ShortcutBi
             shift: false,
             alt: false,
         },
+        GuiActionId::ModeCustomAnnotations => ShortcutBinding {
+            key: "C".to_string(),
+            command: false,
+            shift: false,
+            alt: false,
+        },
         GuiActionId::UnknownLineage => ShortcutBinding {
             key: "U".to_string(),
             command: false,
@@ -233,9 +248,15 @@ impl CellAcdcGui {
         let has_document = self.current_annotation_document().is_some();
         let has_selection = self.current_annotation_label().is_some();
         let can_edit = self.annotation_edits_allowed();
+        let snapshot_mode = self.annotation.mode == GuiMode::Snapshot;
         let tracking_mode = self.annotation.mode == GuiMode::SegmentationAndTracking;
         let cell_cycle_mode = self.annotation.mode == GuiMode::CellCycleAnalysis;
         let lineage_mode = self.annotation.mode == GuiMode::NormalDivisionLineageTree;
+        let custom_annotation_mode = self.annotation.mode == GuiMode::CustomAnnotations;
+        let session_is_snapshot = self
+            .current_snapshot_profile()
+            .map(|profile| profile.is_snapshot)
+            .unwrap_or(false);
         let mut state = GuiActionState::default();
         state.enabled = match action {
             GuiActionId::OpenSession
@@ -246,7 +267,8 @@ impl CellAcdcGui {
             | GuiActionId::ModeViewer
             | GuiActionId::ModeSegmentationAndTracking
             | GuiActionId::ModeCellCycleAnalysis
-            | GuiActionId::ModeNormalDivisionLineageTree => true,
+            | GuiActionId::ModeNormalDivisionLineageTree
+            | GuiActionId::ModeCustomAnnotations => !session_is_snapshot,
             GuiActionId::RevealCurrentPosition
             | GuiActionId::Save
             | GuiActionId::QuickSave
@@ -267,7 +289,8 @@ impl CellAcdcGui {
             | GuiActionId::AutosaveInterval
             | GuiActionId::CustomizeKeyboardShortcuts
             | GuiActionId::OverlayLabelsAppearance
-            | GuiActionId::OpenSegmentationWorkspace => has_session,
+            | GuiActionId::OpenSegmentationWorkspace
+            | GuiActionId::ShowAllCustomAnnotations => has_session,
             GuiActionId::Undo | GuiActionId::Redo => has_document,
             GuiActionId::RunSegmentationCurrentPosition | GuiActionId::MeasureCurrentPosition => {
                 has_session
@@ -277,21 +300,28 @@ impl CellAcdcGui {
             | GuiActionId::ToolEraser
             | GuiActionId::ToolRelabel
             | GuiActionId::ToolMerge
-            | GuiActionId::ToolDelete => has_document && (can_edit || has_selection),
-            GuiActionId::RepeatTracking | GuiActionId::TrackCurrentFrame => {
-                has_session && tracking_mode && !self.annotation_document_dirty()
+            | GuiActionId::ToolDelete => {
+                has_document
+                    && (can_edit || has_selection)
+                    && !custom_annotation_mode
             }
-            GuiActionId::ManualTracking => has_document && tracking_mode,
-            GuiActionId::EditRealTimeTrackerParameters => has_session && tracking_mode,
-            GuiActionId::AssignMotherToBud => has_session && cell_cycle_mode && has_selection,
+            GuiActionId::RepeatTracking | GuiActionId::TrackCurrentFrame => {
+                has_session && tracking_mode && !snapshot_mode && !self.annotation_document_dirty()
+            }
+            GuiActionId::ManualTracking => has_document && tracking_mode && !snapshot_mode,
+            GuiActionId::EditRealTimeTrackerParameters => has_session && tracking_mode && !snapshot_mode,
+            GuiActionId::AssignMotherToBud => {
+                has_session && (cell_cycle_mode || snapshot_mode) && has_selection
+            }
             GuiActionId::EditCellCycleAnnotations | GuiActionId::ViewCellCycleAnnotations => {
-                has_session && cell_cycle_mode
+                has_session && (cell_cycle_mode || snapshot_mode)
             }
             GuiActionId::FindNextPotentialMother
             | GuiActionId::UnknownLineage
             | GuiActionId::NoLineageTool
             | GuiActionId::PropagateLineage
             | GuiActionId::ViewLineageChanges => has_session && lineage_mode && has_selection,
+            GuiActionId::LoadSavedCustomAnnotations | GuiActionId::AddCustomAnnotation => has_session,
         };
         state.checked = match action {
             GuiActionId::ToggleObjectsDock => self.persisted.display.show_objects_dock,
@@ -320,14 +350,64 @@ impl CellAcdcGui {
             GuiActionId::ModeNormalDivisionLineageTree => {
                 self.annotation.mode == GuiMode::NormalDivisionLineageTree
             }
+            GuiActionId::ModeCustomAnnotations => {
+                self.annotation.mode == GuiMode::CustomAnnotations
+            }
             GuiActionId::ManualTracking => self.annotation.manual_tracking.active,
             GuiActionId::FindNextPotentialMother => {
                 self.annotation.lineage_tool == LineageTool::FindNextMother
             }
             GuiActionId::UnknownLineage => self.annotation.lineage_tool == LineageTool::UnknownLineage,
             GuiActionId::NoLineageTool => self.annotation.lineage_tool == LineageTool::NoTool,
+            GuiActionId::ShowAllCustomAnnotations => self.annotation.custom_annotation_toolbar.show_all,
             _ => false,
         };
+        if session_is_snapshot {
+            state.enabled = match action {
+                GuiActionId::ModeViewer
+                | GuiActionId::ModeSegmentationAndTracking
+                | GuiActionId::ModeCellCycleAnalysis
+                | GuiActionId::ModeNormalDivisionLineageTree
+                | GuiActionId::ModeCustomAnnotations => false,
+                _ => state.enabled,
+            };
+        }
+        if matches!(action, GuiActionId::LoadSavedCustomAnnotations | GuiActionId::ShowAllCustomAnnotations)
+        {
+            state.enabled = has_session;
+        }
+        if action == GuiActionId::AddCustomAnnotation {
+            state.enabled = has_session && has_document;
+        }
+        if action == GuiActionId::ShowAllCustomAnnotations {
+            state.visible = has_session && !self.annotation.custom_annotations.definitions.is_empty();
+        }
+        if matches!(action, GuiActionId::LoadSavedCustomAnnotations) {
+            state.visible = has_session;
+        }
+        if custom_annotation_mode {
+            if matches!(
+                action,
+                GuiActionId::ToolBrush
+                    | GuiActionId::ToolEraser
+                    | GuiActionId::ToolRelabel
+                    | GuiActionId::ToolMerge
+                    | GuiActionId::ToolDelete
+            ) {
+                state.enabled = false;
+            }
+        }
+        if snapshot_mode
+            && matches!(
+                action,
+                GuiActionId::RepeatTracking
+                    | GuiActionId::TrackCurrentFrame
+                    | GuiActionId::ManualTracking
+                    | GuiActionId::EditRealTimeTrackerParameters
+            )
+        {
+            state.enabled = false;
+        }
         state
     }
 
@@ -341,8 +421,13 @@ impl CellAcdcGui {
                     self.last_error = Some(err.to_string());
                 }
             }
-            GuiActionId::Save | GuiActionId::QuickSave => {
-                if let Err(err) = self.save_current_annotation_overwrite() {
+            GuiActionId::Save => {
+                if let Err(err) = self.request_save_current_annotation_overwrite(false) {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            GuiActionId::QuickSave => {
+                if let Err(err) = self.request_save_current_annotation_overwrite(true) {
                     self.last_error = Some(err.to_string());
                 }
             }
@@ -430,7 +515,7 @@ impl CellAcdcGui {
             }
             GuiActionId::CurrentLimitations => {
                 self.append_log(
-                    "Current GUI limitations: custom annotations, 3D interactive parity, and Python-only trackers are still deferred."
+                    "Current GUI limitations: Python-only trackers and wider non-editor module parity are still deferred."
                         .to_string(),
                 );
             }
@@ -449,6 +534,9 @@ impl CellAcdcGui {
             }
             GuiActionId::ModeNormalDivisionLineageTree => {
                 self.annotation.mode = GuiMode::NormalDivisionLineageTree;
+            }
+            GuiActionId::ModeCustomAnnotations => {
+                self.annotation.mode = GuiMode::CustomAnnotations;
             }
             GuiActionId::RepeatTracking => self.start_repeat_tracking_job(None),
             GuiActionId::TrackCurrentFrame => {
@@ -500,6 +588,19 @@ impl CellAcdcGui {
                     self.last_error = Some(err.to_string());
                 }
                 self.annotation.dialogs.lineage_review_open = true;
+            }
+            GuiActionId::LoadSavedCustomAnnotations => {
+                self.annotation.dialogs.load_saved_custom_annotations_open = true;
+            }
+            GuiActionId::AddCustomAnnotation => {
+                if let Err(err) = self.open_custom_annotation_editor(None) {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            GuiActionId::ShowAllCustomAnnotations => {
+                self.annotation.custom_annotation_toolbar.show_all =
+                    !self.annotation.custom_annotation_toolbar.show_all;
+                self.invalidate_texture();
             }
         }
     }

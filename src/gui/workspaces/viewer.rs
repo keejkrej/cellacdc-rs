@@ -1,4 +1,5 @@
 use crate::gui::app::CellAcdcGui;
+use crate::gui::state::GuiMode;
 use anyhow::{anyhow, bail, Context, Result};
 use cellacdc_rs::{MaskEditCommand, SegmentationLayout};
 use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureOptions};
@@ -336,6 +337,53 @@ impl CellAcdcGui {
             return;
         };
         self.update_canvas_status(x, y);
+        let ctrl_modifier = response.ctx.input(|input| input.modifiers.ctrl || input.modifiers.command);
+        if response.secondary_clicked() {
+            let should_toggle = matches!(self.annotation.mode, GuiMode::CustomAnnotations)
+                || (matches!(self.annotation.mode, GuiMode::Snapshot) && ctrl_modifier);
+            if should_toggle {
+                if !self.annotation_edits_allowed() {
+                    self.last_error = Some(
+                        "Snapshot edits are only enabled in XY view for 3D snapshot sessions."
+                            .to_string(),
+                    );
+                } else if let Some(label) = self
+                    .current_segmentation_frame_data()
+                    .ok()
+                    .flatten()
+                    .and_then(|segmentation| {
+                        if x < segmentation.width && y < segmentation.height {
+                            let label = segmentation.pixels[y * segmentation.width + x];
+                            (label != 0).then_some(label)
+                        } else {
+                            None
+                        }
+                    })
+                {
+                    if let Err(err) = self.toggle_custom_annotation_for_object(self.selected_frame_idx, label)
+                    {
+                        self.last_error = Some(err.to_string());
+                    } else if let Some(active) = self
+                        .annotation
+                        .active_custom_annotation
+                        .active_name
+                        .clone()
+                    {
+                        if let Some(definition) = self
+                            .annotation
+                            .custom_annotations
+                            .definitions
+                            .get(&active)
+                        {
+                            if !definition.keep_active {
+                                self.annotation.active_custom_annotation.active_name = None;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
         match self.annotation.tool {
             crate::gui::state::AnnotationTool::Select
                 if self.annotation.manual_tracking.active && response.clicked() =>
@@ -383,6 +431,11 @@ impl CellAcdcGui {
     }
 
     pub(crate) fn update_canvas_status(&mut self, x: usize, y: usize) {
+        let plane = match self.annotation.view_plane {
+            cellacdc_rs::ViewPlane::XY => "XY",
+            cellacdc_rs::ViewPlane::XZ => "XZ",
+            cellacdc_rs::ViewPlane::YZ => "YZ",
+        };
         let label = self
             .current_segmentation_frame_data()
             .ok()
@@ -397,21 +450,30 @@ impl CellAcdcGui {
             });
         self.status_text = match label {
             Some(label) => format!(
-                "Frame {}  x={} y={}  ID={}  {}",
+                "Frame {}  {}  x={} y={}  ID={}  {}",
                 self.selected_frame_idx,
+                plane,
                 x,
                 y,
                 label,
                 self.persisted.selected_channel
             ),
             None => format!(
-                "Frame {}  x={} y={}  {}",
+                "Frame {}  {}  x={} y={}  {}",
                 self.selected_frame_idx,
+                plane,
                 x,
                 y,
                 self.persisted.selected_channel
             ),
         };
+        if self
+            .current_snapshot_profile()
+            .map(|profile| profile.is_3d_snapshot && !profile.editing_allowed_on_current_plane)
+            .unwrap_or(false)
+        {
+            self.status_text.push_str("  Editing disabled outside XY view");
+        }
     }
 
     fn select_annotation_label_at(&mut self, x: usize, y: usize) -> Result<()> {

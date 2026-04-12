@@ -127,6 +127,7 @@ impl CellAcdcGui {
                         GuiActionId::ModeSegmentationAndTracking,
                         GuiActionId::ModeCellCycleAnalysis,
                         GuiActionId::ModeNormalDivisionLineageTree,
+                        GuiActionId::ModeCustomAnnotations,
                     ] {
                         let state = self.gui_action_state(action);
                         if ui
@@ -279,6 +280,41 @@ impl CellAcdcGui {
                             }
                         });
                     }
+                    GuiMode::CustomAnnotations => {
+                        ui.label(RichText::new("Custom annotations").strong());
+                        if let Some(active) =
+                            self.annotation.active_custom_annotation.active_name.as_deref()
+                        {
+                            ui.monospace(format!("Active: {active}"));
+                        } else {
+                            ui.small("Select or create a custom annotation tool from the toolbar.");
+                        }
+                        ui.small(
+                            "Right-click an object to toggle the active annotation on the current frame.",
+                        );
+                    }
+                    GuiMode::Snapshot => {
+                        ui.label(RichText::new("Snapshot").strong());
+                        if let Some(profile) = self.current_snapshot_profile() {
+                            let plane = match self.annotation.view_plane {
+                                cellacdc_rs::ViewPlane::XY => "XY",
+                                cellacdc_rs::ViewPlane::XZ => "XZ",
+                                cellacdc_rs::ViewPlane::YZ => "YZ",
+                            };
+                            ui.monospace(format!(
+                                "2D/3D snapshot: {} | editing on {plane}: {}",
+                                if profile.is_3d_snapshot { "3D" } else { "2D" },
+                                if profile.editing_allowed_on_current_plane {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
+                            ));
+                        }
+                        ui.small(
+                            "Tracking actions stay disabled in snapshot mode. Use XY view for edits in 3D snapshots.",
+                        );
+                    }
                     GuiMode::Viewer => {}
                 }
 
@@ -292,7 +328,12 @@ impl CellAcdcGui {
                         self.annotation_redo();
                     }
                     if ui.button("Save").clicked() {
-                        if let Err(err) = self.save_current_annotation_overwrite() {
+                        if let Err(err) = self.request_save_current_annotation_overwrite(false) {
+                            self.last_error = Some(err.to_string());
+                        }
+                    }
+                    if ui.button("Quick Save").clicked() {
+                        if let Err(err) = self.request_save_current_annotation_overwrite(true) {
                             self.last_error = Some(err.to_string());
                         }
                     }

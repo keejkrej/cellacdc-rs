@@ -5,17 +5,22 @@ use super::state::{
     LoadedMaskDocument, ProjectionMode, ViewKey,
 };
 use super::workspaces;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use cellacdc_rs::{
-    assign_mother_bud, find_next_mother_candidate, inspect_position_frame, mark_unknown_lineage,
-    open_experiment_session, export_frame_image, export_frame_sequence,
+    apply_custom_annotation_mutation, assign_mother_bud, build_snapshot_profile,
+    derive_custom_annotation_memberships, find_next_mother_candidate,
+    global_custom_annotation_definitions_path, inspect_position_frame, load_custom_annotation_definitions,
+    mark_unknown_lineage, open_experiment_session, export_frame_image, export_frame_sequence,
     propagate_lineage_for_position, review_lineage_frame,
-    save_cell_cycle_annotations, set_lineage_parent_for_position, CellCycleEdit,
-    CellCyclePropagationConfig, ExperimentSession, FrameData, FrameInspection,
-    FrameInspectionConfig, FrameProjection, ImageExportFormat, ImportSource, LineageFrameEdit,
-    MaskData, MaskEditCommand, MaskEditSession, MaskPathResolution,
-    MaskRecoveryState, MaskSaveMode, OverlayRenderStyle, OverwritePolicy, PositionSession,
-    RenderFrameRequest, ScaleBarStyle, SegmentationLayout, SegmentationParams, TimestampStyle,
+    save_cell_cycle_annotations, save_custom_annotation_definitions, set_lineage_parent_for_position,
+    validate_custom_annotation_definition, write_custom_annotations_to_acdc_output,
+    CellCycleEdit, CellCyclePropagationConfig, CustomAnnotationDefinition,
+    CustomAnnotationKind, CustomAnnotationMutation, ExperimentSession, FrameData,
+    FrameInspection, FrameInspectionConfig, FrameProjection, ImageExportFormat, ImportSource,
+    LineageFrameEdit, MaskData, MaskEditCommand, MaskEditSession, MaskPathResolution,
+    MaskRecoveryState, MaskSaveMode, OverlayMarker, OverlayRenderStyle, OverwritePolicy,
+    PositionSession, RenderFrameRequest, ScaleBarStyle, SegmentationLayout,
+    SegmentationParams, TimestampStyle, ViewPlane,
 };
 use eframe::egui::{self, TextureHandle};
 use rfd::FileDialog;
@@ -74,6 +79,10 @@ impl CellAcdcGui {
                 mode: persisted.gui_mode,
                 lineage_tool: persisted.lineage_tool,
                 brush_radius: persisted.annotation_brush_radius,
+                view_plane: persisted.view_plane,
+                custom_annotation_toolbar: super::state::CustomAnnotationToolbarState {
+                    show_all: persisted.show_all_custom_annotations,
+                },
                 tracking_params: super::state::TrackingParamsDialogState {
                     ioa_threshold: persisted.track_ioa_threshold,
                 },
@@ -148,6 +157,7 @@ impl CellAcdcGui {
         self.set_route(AppRoute::Segmentation);
         self.push_recent_path(path);
         self.sync_selection_with_position();
+        self.reload_custom_annotation_store();
         self.invalidate_texture();
         self.last_error = None;
         self.append_log("Opened Cell-ACDC session".to_string());
@@ -162,6 +172,7 @@ impl CellAcdcGui {
             Ok(experiment) => {
                 self.experiment = Some(experiment);
                 self.sync_selection_with_position();
+                self.reload_custom_annotation_store();
                 self.ensure_annotation_document_loaded();
                 self.invalidate_texture();
                 self.append_log("Reloaded experiment session".to_string());
@@ -260,8 +271,18 @@ impl CellAcdcGui {
         }
         if size_z <= 1 {
             self.persisted.z_index = 0;
+            self.annotation.view_plane = ViewPlane::XY;
+            self.persisted.view_plane = ViewPlane::XY;
         } else {
             self.persisted.z_index = self.persisted.z_index.min(size_z - 1);
+        }
+        if size_t <= 1 {
+            self.annotation.mode = super::state::GuiMode::Snapshot;
+        } else if self.annotation.mode == super::state::GuiMode::Snapshot {
+            self.annotation.mode = self.persisted.gui_mode;
+            if self.annotation.mode == super::state::GuiMode::Snapshot {
+                self.annotation.mode = super::state::GuiMode::Viewer;
+            }
         }
         self.annotation.save_as_endname = self
             .persisted
@@ -277,12 +298,211 @@ impl CellAcdcGui {
         }
     }
 
+    pub(crate) fn current_snapshot_profile(&self) -> Option<cellacdc_rs::SnapshotProfile> {
+        let position = self.selected_position()?;
+        Some(build_snapshot_profile(
+            position.spec.size_t,
+            position.spec.size_z,
+            self.annotation.view_plane,
+        ))
+    }
+
+    pub(crate) fn current_position_key(&self) -> Option<String> {
+        self.selected_position().map(PositionSession::position_key)
+    }
+
+    pub(crate) fn current_view_depth_limit(&self) -> Option<usize> {
+        let position = self.selected_position()?;
+        match self.annotation.view_plane {
+            ViewPlane::XY => Some(position.spec.size_z),
+            ViewPlane::XZ | ViewPlane::YZ => position
+                .load_channel_frame_for_view(
+                    &self.persisted.selected_channel,
+                    self.selected_frame_idx.min(position.spec.size_t.saturating_sub(1)),
+                    ViewPlane::XY,
+                    FrameProjection::ZSlice(0),
+                )
+                .ok()
+                .map(|frame| {
+                    if self.annotation.view_plane == ViewPlane::XZ {
+                        frame.height
+                    } else {
+                        frame.width
+                    }
+                }),
+        }
+    }
+
+    pub(crate) fn experiment_position_keys(&self) -> Vec<String> {
+        self.experiment
+            .as_ref()
+            .map(|experiment| {
+                experiment
+                    .positions
+                    .iter()
+                    .map(PositionSession::position_key)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn reload_custom_annotation_store(&mut self) {
+        let Some(experiment) = self.experiment.as_ref() else {
+            self.annotation.custom_annotations = Default::default();
+            self.annotation.active_custom_annotation.active_name = None;
+            self.annotation.custom_annotations_dirty = false;
+            return;
+        };
+        let global_path = global_custom_annotation_definitions_path();
+        let mut definitions = load_custom_annotation_definitions(&global_path).unwrap_or_default();
+        let position_paths = experiment
+            .positions
+            .iter()
+            .map(|position| position.spec.position_dir.clone())
+            .collect::<Vec<_>>();
+        match derive_custom_annotation_memberships(
+            &position_paths,
+            self.persisted.selected_segmentation_endname.as_deref(),
+        ) {
+            Ok(mut derived) => {
+                for (name, definition) in &derived.definitions {
+                    let name = name.clone();
+                    let definition = definition.clone();
+                    definitions.entry(name).or_insert(definition);
+                }
+                derived.definitions = definitions;
+                self.annotation.custom_annotations = derived;
+                if let Some(active) = self.annotation.active_custom_annotation.active_name.clone() {
+                    if !self.annotation.custom_annotations.definitions.contains_key(&active) {
+                        self.annotation.active_custom_annotation.active_name = None;
+                    }
+                }
+                self.annotation.custom_annotations_dirty = false;
+            }
+            Err(err) => {
+                self.last_error = Some(err.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn current_custom_annotation_column_exists(&self, name: &str) -> Result<bool> {
+        let Some(position) = self.selected_position() else {
+            return Ok(false);
+        };
+        let path = position.acdc_output_path(self.persisted.selected_segmentation_endname.as_deref());
+        if !path.exists() {
+            return Ok(false);
+        }
+        let table = cellacdc_rs::read_table(&path)?;
+        Ok(table.maybe_header_index(name).is_some())
+    }
+
+    pub(crate) fn persist_custom_annotation_definitions(
+        &mut self,
+        position_keys: &[String],
+    ) -> Result<()> {
+        let definitions = self.annotation.custom_annotations.definitions.clone();
+        let global_path = global_custom_annotation_definitions_path();
+        save_custom_annotation_definitions(&global_path, &definitions)?;
+        if let Some(experiment) = self.experiment.as_ref() {
+            for position in &experiment.positions {
+                let key = position.position_key();
+                if !position_keys.is_empty() && !position_keys.iter().any(|selected| selected == &key) {
+                    continue;
+                }
+                save_custom_annotation_definitions(position.custom_annotation_params_path(), &definitions)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn current_custom_annotation_markers(&self) -> Result<Vec<OverlayMarker>> {
+        self.custom_annotation_markers_for_frame(self.selected_frame_idx)
+    }
+
+    pub(crate) fn custom_annotation_markers_for_frame(
+        &self,
+        frame_index: usize,
+    ) -> Result<Vec<OverlayMarker>> {
+        if self.annotation.view_plane != ViewPlane::XY {
+            return Ok(Vec::new());
+        }
+        let Some(position_key) = self.current_position_key() else {
+            return Ok(Vec::new());
+        };
+        let Some(position) = self.selected_position() else {
+            return Ok(Vec::new());
+        };
+        let Some(segmentation) = position.load_segmentation_frame_for_view(
+            self.persisted.selected_segmentation_endname.as_deref(),
+            frame_index,
+            ViewPlane::XY,
+            self.current_projection(),
+        )? else {
+            return Ok(Vec::new());
+        };
+        let centroids = label_centroids(&segmentation);
+        let visible_names = if self.annotation.custom_annotation_toolbar.show_all {
+            self.annotation
+                .custom_annotations
+                .definitions
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            self.annotation
+                .custom_annotations
+                .definitions
+                .iter()
+                .filter_map(|(name, definition)| {
+                    (self.annotation.active_custom_annotation.active_name.as_deref() == Some(name.as_str())
+                        || !definition.hide_when_inactive)
+                        .then_some(name.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut markers = Vec::new();
+        let Some(per_position) = self
+            .annotation
+            .custom_annotations
+            .annotated_ids_by_position
+            .get(&position_key)
+        else {
+            return Ok(markers);
+        };
+        for name in visible_names {
+            let Some(definition) = self.annotation.custom_annotations.definitions.get(&name) else {
+                continue;
+            };
+            let Some(per_frame) = per_position.get(&name) else {
+                continue;
+            };
+            let Some(ids) = per_frame.get(&frame_index) else {
+                continue;
+            };
+            for id in ids {
+                let Some((x, y)) = centroids.get(id).copied() else {
+                    continue;
+                };
+                markers.push(OverlayMarker {
+                    x,
+                    y,
+                    symbol: definition.symbol.clone(),
+                    color: definition.symbol_color_rgba,
+                    size: 15,
+                });
+            }
+        }
+        Ok(markers)
+    }
+
     pub(crate) fn current_view_key(&self) -> Option<ViewKey> {
         let position = self.selected_position()?;
         Some(ViewKey {
             position_dir: position.spec.position_dir.clone(),
             channel: self.persisted.selected_channel.clone(),
             frame_index: self.selected_frame_idx,
+            view_plane: self.annotation.view_plane,
             projection: self.current_projection(),
             segmentation_endname: self.persisted.selected_segmentation_endname.clone(),
             overlay_alpha_bits: self.persisted.overlay_alpha.to_bits(),
@@ -350,6 +570,8 @@ impl CellAcdcGui {
         self.frame_inspection = None;
         self.inspection_key = None;
         self.pending_annotation_autosave = false;
+        self.annotation.editor_undo.clear();
+        self.annotation.editor_redo.clear();
     }
 
     pub(crate) fn current_annotation_document(&self) -> Option<&LoadedMaskDocument> {
@@ -382,6 +604,7 @@ impl CellAcdcGui {
         self.current_annotation_document()
             .map(|document| document.session.dirty)
             .unwrap_or(false)
+            || self.annotation.custom_annotations_dirty
     }
 
     pub(crate) fn annotation_recovery_state(&self) -> MaskRecoveryState {
@@ -392,6 +615,13 @@ impl CellAcdcGui {
 
     pub(crate) fn annotation_edits_allowed(&self) -> bool {
         if self.annotation_recovery_state() == MaskRecoveryState::RecoveryAvailable {
+            return false;
+        }
+        if self
+            .current_snapshot_profile()
+            .map(|profile| !profile.editing_allowed_on_current_plane)
+            .unwrap_or(false)
+        {
             return false;
         }
         let Some(document) = self.current_annotation_document() else {
@@ -422,6 +652,7 @@ impl CellAcdcGui {
         self.selected_frame_idx = 0;
         self.sync_selection_with_position();
         self.clear_annotation_document();
+        self.reload_custom_annotation_store();
         self.ensure_annotation_document_loaded();
         self.invalidate_texture();
     }
@@ -442,6 +673,7 @@ impl CellAcdcGui {
         self.persisted.selected_segmentation_endname = endname.clone();
         self.annotation.save_as_endname = endname.unwrap_or_else(|| "edited".to_string());
         self.clear_annotation_document();
+        self.reload_custom_annotation_store();
         self.ensure_annotation_document_loaded();
         self.invalidate_texture();
     }
@@ -464,6 +696,7 @@ impl CellAcdcGui {
 
     pub(crate) fn discard_annotation_changes_and_continue(&mut self) {
         self.clear_annotation_document();
+        self.reload_custom_annotation_store();
         self.apply_pending_annotation_action();
     }
 
@@ -596,6 +829,10 @@ impl CellAcdcGui {
         document.revision += 1;
         self.pending_annotation_autosave = false;
         self.flush_pending_manual_tracking_edits(selected_endname.as_deref())?;
+        self.write_custom_annotations_for_selected_positions(&[self
+            .current_position_key()
+            .ok_or_else(|| anyhow!("No position selected"))?], selected_endname.as_deref())?;
+        self.annotation.custom_annotations_dirty = false;
         self.append_log(format!("Saved GUI edits -> {}", saved.display()));
         self.reload_experiment();
         self.invalidate_texture();
@@ -619,13 +856,356 @@ impl CellAcdcGui {
             .save_with_mode(MaskSaveMode::SaveAs(target_path.clone()))?;
         document.revision += 1;
         self.pending_annotation_autosave = false;
+        self.copy_acdc_output_to_new_version(&endname)?;
         self.flush_pending_manual_tracking_edits(Some(&endname))?;
+        self.write_custom_annotations_for_selected_positions(&[self
+            .current_position_key()
+            .ok_or_else(|| anyhow!("No position selected"))?], Some(&endname))?;
         self.persisted.selected_segmentation_endname = Some(endname.clone());
+        self.annotation.custom_annotations_dirty = false;
         self.append_log(format!("Saved GUI version -> {}", saved.display()));
         self.reload_experiment();
         self.clear_annotation_document();
         self.ensure_annotation_document_loaded();
         self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn request_save_current_annotation_overwrite(&mut self, quick_save: bool) -> Result<()> {
+        let profile = self.current_snapshot_profile();
+        if profile.as_ref().map(|value| value.is_snapshot).unwrap_or(false)
+            && !quick_save
+            && self.experiment.as_ref().map(|experiment| experiment.positions.len()).unwrap_or(0) > 1
+        {
+            self.annotation.snapshot_save_dialog.quick_save = false;
+            self.annotation.snapshot_save_dialog.selected_positions =
+                vec![self.current_position_key().unwrap_or_default()];
+            self.annotation.dialogs.snapshot_save_scope_open = true;
+            return Ok(());
+        }
+        let positions = vec![self.current_position_key().ok_or_else(|| anyhow!("No position selected"))?];
+        self.save_current_annotation_overwrite_for_positions(&positions)
+    }
+
+    pub(crate) fn save_current_annotation_overwrite_for_positions(
+        &mut self,
+        position_keys: &[String],
+    ) -> Result<()> {
+        self.save_current_annotation_overwrite()?;
+        if self.current_snapshot_profile().map(|value| value.is_snapshot).unwrap_or(false) {
+            let segm_endname = self.persisted.selected_segmentation_endname.clone();
+            self.persist_custom_annotation_definitions(position_keys)?;
+            self.write_custom_annotations_for_selected_positions(
+                position_keys,
+                segm_endname.as_deref(),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn copy_acdc_output_to_new_version(&self, endname: &str) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Ok(());
+        };
+        let source_path = position.acdc_output_path(self.persisted.selected_segmentation_endname.as_deref());
+        if !source_path.exists() {
+            return Ok(());
+        }
+        let target_path = position.acdc_output_path(Some(endname));
+        if target_path.exists() {
+            return Ok(());
+        }
+        let table = cellacdc_rs::read_table(&source_path)?;
+        cellacdc_rs::write_table(&target_path, &table)?;
+        Ok(())
+    }
+
+    pub(crate) fn write_custom_annotations_for_selected_positions(
+        &mut self,
+        position_keys: &[String],
+        segm_endname: Option<&str>,
+    ) -> Result<()> {
+        self.persist_custom_annotation_definitions(position_keys)?;
+        if let Some(experiment) = self.experiment.as_ref() {
+            for position in &experiment.positions {
+                let key = position.position_key();
+                if !position_keys.is_empty() && !position_keys.iter().any(|item| item == &key) {
+                    continue;
+                }
+                if position.acdc_output_path(segm_endname).exists() {
+                    write_custom_annotations_to_acdc_output(
+                        &position.spec.position_dir,
+                        segm_endname,
+                        &self.annotation.custom_annotations,
+                        false,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn open_custom_annotation_editor(
+        &mut self,
+        existing_name: Option<&str>,
+    ) -> Result<()> {
+        self.annotation.custom_annotation_dialog = Default::default();
+        if let Some(name) = existing_name {
+            let definition = self
+                .annotation
+                .custom_annotations
+                .definitions
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow!("Unknown custom annotation {name}"))?;
+            self.annotation.custom_annotation_dialog.editing_name = Some(name.to_string());
+            self.annotation.custom_annotation_dialog.name = definition.name;
+            self.annotation.custom_annotation_dialog.kind_index = match definition.kind {
+                CustomAnnotationKind::SingleTimePoint => 0,
+                CustomAnnotationKind::MultipleTimePoints => 1,
+                CustomAnnotationKind::MultipleValuesClass => 2,
+            };
+            self.annotation.custom_annotation_dialog.symbol = definition.symbol;
+            self.annotation.custom_annotation_dialog.shortcut =
+                definition.shortcut.unwrap_or_default();
+            self.annotation.custom_annotation_dialog.description = definition.description;
+            self.annotation.custom_annotation_dialog.keep_active = definition.keep_active;
+            self.annotation.custom_annotation_dialog.hide_when_inactive =
+                definition.hide_when_inactive;
+            self.annotation.custom_annotation_dialog.color = definition.symbol_color_rgba;
+        }
+        self.annotation.dialogs.custom_annotation_editor_open = true;
+        Ok(())
+    }
+
+    pub(crate) fn apply_custom_annotation_dialog(&mut self) -> Result<()> {
+        let dialog = self.annotation.custom_annotation_dialog.clone();
+        let kind = match dialog.kind_index {
+            0 => CustomAnnotationKind::SingleTimePoint,
+            1 => {
+                bail!("Multiple time-points custom annotations are not implemented yet")
+            }
+            2 => bail!("Multiple values class custom annotations are not implemented yet"),
+            _ => bail!("Unsupported custom annotation type"),
+        };
+        let shortcut = (!dialog.shortcut.trim().is_empty()).then(|| dialog.shortcut.trim().to_string());
+        if let Some(shortcut) = &shortcut {
+            self.validate_custom_annotation_shortcut(shortcut, dialog.editing_name.as_deref())?;
+        }
+        let definition = CustomAnnotationDefinition {
+            name: dialog.name.trim().to_string(),
+            kind,
+            symbol: dialog.symbol,
+            shortcut,
+            description: dialog.description.trim().to_string(),
+            keep_active: dialog.keep_active,
+            hide_when_inactive: dialog.hide_when_inactive,
+            symbol_color_rgba: dialog.color,
+        };
+        validate_custom_annotation_definition(&definition)?;
+        if !dialog.reuse_existing_column
+            && self.current_custom_annotation_column_exists(&definition.name)?
+            && dialog.editing_name.as_deref() != Some(definition.name.as_str())
+        {
+            bail!(
+                "A custom annotation column named {:?} already exists. Enable reuse to continue.",
+                definition.name
+            );
+        }
+        let mutation = if let Some(old_name) = dialog.editing_name {
+            CustomAnnotationMutation::UpdateDefinition {
+                old_name,
+                definition: definition.clone(),
+            }
+        } else {
+            validate_custom_annotation_definition(&definition)?;
+            let mut updated = self.annotation.custom_annotations.clone();
+            updated
+                .definitions
+                .insert(definition.name.clone(), definition.clone());
+            self.annotation.custom_annotations = updated;
+            self.annotation.active_custom_annotation.active_name = Some(definition.name.clone());
+            self.annotation.custom_annotations_dirty = true;
+            self.persist_custom_annotation_definitions(&[self
+                .current_position_key()
+                .ok_or_else(|| anyhow!("No position selected"))?])?;
+            self.annotation.dialogs.custom_annotation_editor_open = false;
+            self.invalidate_texture();
+            return Ok(());
+        };
+        self.annotation.custom_annotations =
+            apply_custom_annotation_mutation(&self.annotation.custom_annotations, mutation)?;
+        self.annotation.active_custom_annotation.active_name = Some(definition.name.clone());
+        self.annotation.custom_annotations_dirty = true;
+        self.persist_custom_annotation_definitions(&[self
+            .current_position_key()
+            .ok_or_else(|| anyhow!("No position selected"))?])?;
+        self.annotation.dialogs.custom_annotation_editor_open = false;
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn remove_custom_annotation(
+        &mut self,
+        name: &str,
+        remove_column: bool,
+    ) -> Result<()> {
+        let mutation = if remove_column {
+            CustomAnnotationMutation::RemoveDefinitionAndColumn {
+                annotation_name: name.to_string(),
+            }
+        } else {
+            CustomAnnotationMutation::RemoveDefinitionKeepColumn {
+                annotation_name: name.to_string(),
+            }
+        };
+        self.annotation.custom_annotations =
+            apply_custom_annotation_mutation(&self.annotation.custom_annotations, mutation)?;
+        if self.annotation.active_custom_annotation.active_name.as_deref() == Some(name) {
+            self.annotation.active_custom_annotation.active_name = None;
+        }
+        self.annotation.custom_annotations_dirty = true;
+        let current_position = self.current_position_key().ok_or_else(|| anyhow!("No position selected"))?;
+        self.persist_custom_annotation_definitions(&[current_position.clone()])?;
+        if remove_column {
+            if let Some(position) = self.selected_position() {
+                let table_path =
+                    position.acdc_output_path(self.persisted.selected_segmentation_endname.as_deref());
+                if table_path.exists() {
+                    let mut table = cellacdc_rs::read_table(&table_path)?;
+                    if let Some(col_idx) = table.maybe_header_index(name) {
+                        table.headers.remove(col_idx);
+                        for row in &mut table.rows {
+                            row.remove(col_idx);
+                        }
+                        cellacdc_rs::write_table(&table_path, &table)?;
+                    }
+                }
+            }
+        }
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn update_custom_annotation_flags(
+        &mut self,
+        name: &str,
+        keep_active: Option<bool>,
+        hide_when_inactive: Option<bool>,
+    ) -> Result<()> {
+        let definition = self
+            .annotation
+            .custom_annotations
+            .definitions
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("Unknown custom annotation {name}"))?;
+        let mut updated = definition.clone();
+        if let Some(keep_active) = keep_active {
+            updated.keep_active = keep_active;
+        }
+        if let Some(hide_when_inactive) = hide_when_inactive {
+            updated.hide_when_inactive = hide_when_inactive;
+        }
+        self.annotation.custom_annotations = apply_custom_annotation_mutation(
+            &self.annotation.custom_annotations,
+            CustomAnnotationMutation::UpdateDefinition {
+                old_name: name.to_string(),
+                definition: updated,
+            },
+        )?;
+        self.annotation.custom_annotations_dirty = true;
+        self.persist_custom_annotation_definitions(&[self
+            .current_position_key()
+            .ok_or_else(|| anyhow!("No position selected"))?])?;
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn toggle_custom_annotation_for_object(
+        &mut self,
+        frame_index: usize,
+        object_id: u32,
+    ) -> Result<()> {
+        let annotation_name = self
+            .annotation
+            .active_custom_annotation
+            .active_name
+            .clone()
+            .ok_or_else(|| anyhow!("Activate a custom annotation first"))?;
+        let position_key = self.current_position_key().ok_or_else(|| anyhow!("No position selected"))?;
+        let before = self.annotation.custom_annotations.clone();
+        let selected_before = self.current_annotation_label();
+        let after = apply_custom_annotation_mutation(
+            &before,
+            CustomAnnotationMutation::ToggleObject {
+                position_key,
+                annotation_name,
+                frame_index,
+                object_id,
+            },
+        )?;
+        self.annotation.custom_annotations = after.clone();
+        self.annotation.custom_annotations_dirty = true;
+        self.annotation.editor_undo.push(super::state::EditorHistoryKind::CustomAnnotation(
+            super::state::CustomAnnotationCommandSnapshot {
+                before,
+                after,
+                selected_label_before: selected_before,
+                selected_label_after: Some(object_id),
+            },
+        ));
+        self.annotation.editor_redo.clear();
+        self.annotation_select_label(Some(object_id))?;
+        self.invalidate_texture();
+        Ok(())
+    }
+
+    pub(crate) fn validate_custom_annotation_shortcut(
+        &self,
+        shortcut: &str,
+        editing_name: Option<&str>,
+    ) -> Result<()> {
+        let binding = super::state::ShortcutBinding {
+            key: shortcut.to_ascii_uppercase(),
+            command: false,
+            shift: false,
+            alt: false,
+        };
+        let candidate = super::shortcuts::binding_to_shortcut(&binding)
+            .ok_or_else(|| anyhow!("Unsupported custom annotation shortcut {shortcut:?}"))?;
+        let reserved_actions = [
+            super::state::GuiActionId::Save,
+            super::state::GuiActionId::Undo,
+            super::state::GuiActionId::Redo,
+            super::state::GuiActionId::FindId,
+            super::state::GuiActionId::ToolSelect,
+            super::state::GuiActionId::ToolBrush,
+            super::state::GuiActionId::ToolEraser,
+            super::state::GuiActionId::ManualTracking,
+            super::state::GuiActionId::RepeatTracking,
+            super::state::GuiActionId::AssignMotherToBud,
+            super::state::GuiActionId::UnknownLineage,
+            super::state::GuiActionId::NoLineageTool,
+            super::state::GuiActionId::PropagateLineage,
+        ];
+        for action in reserved_actions {
+            if let Some(existing) =
+                super::shortcuts::shortcut_for_action(&self.persisted.shortcut_overrides, action)
+            {
+                if existing == candidate {
+                    bail!("Shortcut {shortcut:?} is already used by {}", super::actions::action_label(action));
+                }
+            }
+        }
+        for definition in self.annotation.custom_annotations.definitions.values() {
+            if editing_name == Some(definition.name.as_str()) {
+                continue;
+            }
+            if definition.shortcut.as_deref() == Some(shortcut) {
+                bail!("Shortcut {shortcut:?} is already used by custom annotation {:?}", definition.name);
+            }
+        }
         Ok(())
     }
 
@@ -648,6 +1228,7 @@ impl CellAcdcGui {
     }
 
     pub(crate) fn run_annotation_command(&mut self, command: MaskEditCommand) -> Result<()> {
+        let is_selection_only = matches!(command, MaskEditCommand::SelectLabel { .. });
         let document = self
             .current_annotation_document_mut()
             .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
@@ -656,8 +1237,13 @@ impl CellAcdcGui {
             document.revision += 1;
             self.pending_annotation_autosave = true;
             self.last_annotation_change_at = Some(Instant::now());
+            self.annotation.editor_undo.push(super::state::EditorHistoryKind::MaskEdit);
+            self.annotation.editor_redo.clear();
         } else {
             document.revision += 1;
+        }
+        if is_selection_only {
+            return Ok(());
         }
         self.last_error = None;
         self.invalidate_texture();
@@ -666,12 +1252,42 @@ impl CellAcdcGui {
 
     pub(crate) fn annotation_undo(&mut self) {
         let mut changed = false;
-        if let Some(document) = self.current_annotation_document_mut() {
-            if document.session.undo() {
-                document.revision += 1;
+        let Some(history) = self.annotation.editor_undo.pop() else {
+            if let Some(document) = self.current_annotation_document_mut() {
+                if document.session.undo() {
+                    document.revision += 1;
+                    changed = true;
+                    self.pending_annotation_autosave = true;
+                    self.last_annotation_change_at = Some(Instant::now());
+                }
+            }
+            if changed {
+                self.invalidate_texture();
+            }
+            return;
+        };
+        match history {
+            super::state::EditorHistoryKind::MaskEdit => {
+                if let Some(document) = self.current_annotation_document_mut() {
+                    if document.session.undo() {
+                        document.revision += 1;
+                        changed = true;
+                        self.pending_annotation_autosave = true;
+                        self.last_annotation_change_at = Some(Instant::now());
+                        self.annotation
+                            .editor_redo
+                            .push(super::state::EditorHistoryKind::MaskEdit);
+                    }
+                }
+            }
+            super::state::EditorHistoryKind::CustomAnnotation(snapshot) => {
+                self.annotation.custom_annotations = snapshot.before.clone();
+                self.annotation.custom_annotations_dirty = true;
+                let _ = self.annotation_select_label(snapshot.selected_label_before);
+                self.annotation
+                    .editor_redo
+                    .push(super::state::EditorHistoryKind::CustomAnnotation(snapshot));
                 changed = true;
-                self.pending_annotation_autosave = true;
-                self.last_annotation_change_at = Some(Instant::now());
             }
         }
         if changed {
@@ -681,12 +1297,42 @@ impl CellAcdcGui {
 
     pub(crate) fn annotation_redo(&mut self) {
         let mut changed = false;
-        if let Some(document) = self.current_annotation_document_mut() {
-            if document.session.redo() {
-                document.revision += 1;
+        let Some(history) = self.annotation.editor_redo.pop() else {
+            if let Some(document) = self.current_annotation_document_mut() {
+                if document.session.redo() {
+                    document.revision += 1;
+                    changed = true;
+                    self.pending_annotation_autosave = true;
+                    self.last_annotation_change_at = Some(Instant::now());
+                }
+            }
+            if changed {
+                self.invalidate_texture();
+            }
+            return;
+        };
+        match history {
+            super::state::EditorHistoryKind::MaskEdit => {
+                if let Some(document) = self.current_annotation_document_mut() {
+                    if document.session.redo() {
+                        document.revision += 1;
+                        changed = true;
+                        self.pending_annotation_autosave = true;
+                        self.last_annotation_change_at = Some(Instant::now());
+                        self.annotation
+                            .editor_undo
+                            .push(super::state::EditorHistoryKind::MaskEdit);
+                    }
+                }
+            }
+            super::state::EditorHistoryKind::CustomAnnotation(snapshot) => {
+                self.annotation.custom_annotations = snapshot.after.clone();
+                self.annotation.custom_annotations_dirty = true;
+                let _ = self.annotation_select_label(snapshot.selected_label_after);
+                self.annotation
+                    .editor_undo
+                    .push(super::state::EditorHistoryKind::CustomAnnotation(snapshot));
                 changed = true;
-                self.pending_annotation_autosave = true;
-                self.last_annotation_change_at = Some(Instant::now());
             }
         }
         if changed {
@@ -707,13 +1353,15 @@ impl CellAcdcGui {
                 return Ok(Some(mask_frame_for_projection(
                     &document.session.data,
                     self.selected_frame_idx,
+                    self.annotation.view_plane,
                     self.current_projection(),
                 )?));
             }
         }
-        position.load_segmentation_frame(
+        position.load_segmentation_frame_for_view(
             self.persisted.selected_segmentation_endname.as_deref(),
             self.selected_frame_idx,
+            self.annotation.view_plane,
             self.current_projection(),
         )
     }
@@ -722,9 +1370,10 @@ impl CellAcdcGui {
         let Some(position) = self.selected_position() else {
             return Ok(None);
         };
-        let frame = position.load_channel_frame(
+        let frame = position.load_channel_frame_for_view(
             &self.persisted.selected_channel,
             self.selected_frame_idx,
+            self.annotation.view_plane,
             self.current_projection(),
         )?;
         let segmentation = if self.persisted.show_segmentation_overlay {
@@ -746,6 +1395,7 @@ impl CellAcdcGui {
                 label_color: self.persisted.display.overlay_label_color,
                 label_scale: self.persisted.display.overlay_label_scale,
             },
+            markers: self.current_custom_annotation_markers()?,
             scale_bar: ScaleBarStyle {
                 enabled: self.persisted.display.add_scale_bar,
                 ..Default::default()
@@ -802,6 +1452,11 @@ impl CellAcdcGui {
             self.inspection_key = None;
             return Ok(None);
         };
+        if self.annotation.view_plane != ViewPlane::XY {
+            self.frame_inspection = None;
+            self.inspection_key = None;
+            return Ok(None);
+        }
         let key = InspectionKey {
             position_dir: position.spec.position_dir.clone(),
             segmentation_endname: self.persisted.selected_segmentation_endname.clone(),
@@ -1081,15 +1736,17 @@ impl CellAcdcGui {
         }
         let mut requests = Vec::new();
         for frame_index in start..=end {
-            let frame = position.load_channel_frame(
+            let frame = position.load_channel_frame_for_view(
                 &self.persisted.selected_channel,
                 frame_index,
+                self.annotation.view_plane,
                 self.current_projection(),
             )?;
             let segmentation = if self.annotation.export_video.include_overlay {
-                position.load_segmentation_frame(
+                position.load_segmentation_frame_for_view(
                     self.persisted.selected_segmentation_endname.as_deref(),
                     frame_index,
+                    self.annotation.view_plane,
                     self.current_projection(),
                 )?
             } else {
@@ -1109,6 +1766,7 @@ impl CellAcdcGui {
                     label_color: self.persisted.display.overlay_label_color,
                     label_scale: self.persisted.display.overlay_label_scale,
                 },
+                markers: self.custom_annotation_markers_for_frame(frame_index)?,
                 scale_bar: ScaleBarStyle {
                     enabled: self.annotation.export_video.include_scale_bar,
                     ..Default::default()
@@ -1182,6 +1840,7 @@ impl CellAcdcGui {
 pub(crate) fn mask_frame_for_projection(
     data: &MaskData,
     frame_index: usize,
+    view_plane: ViewPlane,
     projection: FrameProjection,
 ) -> Result<FrameData<u32>> {
     let shape = data.values.shape().to_vec();
@@ -1232,7 +1891,7 @@ pub(crate) fn mask_frame_for_projection(
                     data.source_path.display()
                 );
             }
-            project_mask_volume(values, shape[0], shape[1], shape[2], projection)
+            project_mask_volume(values, shape[0], shape[1], shape[2], view_plane, projection)
         }
         SegmentationLayout::TZYX => {
             let size_t = shape[0];
@@ -1253,6 +1912,7 @@ pub(crate) fn mask_frame_for_projection(
                 size_z,
                 height,
                 width,
+                view_plane,
                 projection,
             )
         }
@@ -1264,33 +1924,100 @@ fn project_mask_volume(
     size_z: usize,
     height: usize,
     width: usize,
+    view_plane: ViewPlane,
     projection: FrameProjection,
 ) -> Result<FrameData<u32>> {
-    let plane_len = height * width;
-    match projection {
-        FrameProjection::Max => {
-            let mut pixels = vec![0u32; plane_len];
+    match view_plane {
+        ViewPlane::XY => {
+            let plane_len = height * width;
+            match projection {
+                FrameProjection::Max => {
+                    let mut pixels = vec![0u32; plane_len];
+                    for z in 0..size_z {
+                        let start = z * plane_len;
+                        for (index, value) in values[start..start + plane_len].iter().enumerate() {
+                            pixels[index] = pixels[index].max(*value);
+                        }
+                    }
+                    Ok(FrameData {
+                        width,
+                        height,
+                        pixels,
+                    })
+                }
+                FrameProjection::ZSlice(z_index) => {
+                    if z_index >= size_z {
+                        anyhow::bail!("Z {} is out of bounds for {} plane(s)", z_index, size_z);
+                    }
+                    let start = z_index * plane_len;
+                    Ok(FrameData {
+                        width,
+                        height,
+                        pixels: values[start..start + plane_len].to_vec(),
+                    })
+                }
+            }
+        }
+        ViewPlane::XZ => {
+            let slice_y = match projection {
+                FrameProjection::Max => None,
+                FrameProjection::ZSlice(index) => {
+                    if index >= height {
+                        anyhow::bail!("Y {} is out of bounds for {} row(s)", index, height);
+                    }
+                    Some(index)
+                }
+            };
+            let mut pixels = vec![0u32; size_z * width];
             for z in 0..size_z {
-                let start = z * plane_len;
-                for (index, value) in values[start..start + plane_len].iter().enumerate() {
-                    pixels[index] = pixels[index].max(*value);
+                for x in 0..width {
+                    let value = if let Some(y_index) = slice_y {
+                        values[z * height * width + y_index * width + x]
+                    } else {
+                        let mut best = 0u32;
+                        for y in 0..height {
+                            best = best.max(values[z * height * width + y * width + x]);
+                        }
+                        best
+                    };
+                    pixels[z * width + x] = value;
                 }
             }
             Ok(FrameData {
                 width,
-                height,
+                height: size_z,
                 pixels,
             })
         }
-        FrameProjection::ZSlice(z_index) => {
-            if z_index >= size_z {
-                anyhow::bail!("Z {} is out of bounds for {} plane(s)", z_index, size_z);
+        ViewPlane::YZ => {
+            let slice_x = match projection {
+                FrameProjection::Max => None,
+                FrameProjection::ZSlice(index) => {
+                    if index >= width {
+                        anyhow::bail!("X {} is out of bounds for {} column(s)", index, width);
+                    }
+                    Some(index)
+                }
+            };
+            let mut pixels = vec![0u32; size_z * height];
+            for z in 0..size_z {
+                for y in 0..height {
+                    let value = if let Some(x_index) = slice_x {
+                        values[z * height * width + y * width + x_index]
+                    } else {
+                        let mut best = 0u32;
+                        for x in 0..width {
+                            best = best.max(values[z * height * width + y * width + x]);
+                        }
+                        best
+                    };
+                    pixels[z * height + y] = value;
+                }
             }
-            let start = z_index * plane_len;
             Ok(FrameData {
-                width,
-                height,
-                pixels: values[start..start + plane_len].to_vec(),
+                width: height,
+                height: size_z,
+                pixels,
             })
         }
     }
@@ -1302,6 +2029,8 @@ impl eframe::App for CellAcdcGui {
         self.persisted.annotation_brush_radius = self.annotation.brush_radius;
         self.persisted.gui_mode = self.annotation.mode;
         self.persisted.lineage_tool = self.annotation.lineage_tool;
+        self.persisted.view_plane = self.annotation.view_plane;
+        self.persisted.show_all_custom_annotations = self.annotation.custom_annotation_toolbar.show_all;
         self.persisted.track_ioa_threshold = self.annotation.tracking_params.ioa_threshold;
         if self.pending_annotation_autosave {
             if let Some(document) = self.current_annotation_document_mut() {
@@ -1358,5 +2087,67 @@ impl CellAcdcGui {
                 self.dispatch_gui_action(action);
             }
         }
+        if !matches!(
+            self.annotation.mode,
+            super::state::GuiMode::CustomAnnotations | super::state::GuiMode::Snapshot
+        ) {
+            return;
+        }
+        let definitions = self
+            .annotation
+            .custom_annotations
+            .definitions
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for definition in definitions {
+            let Some(shortcut) = definition.shortcut.as_deref() else {
+                continue;
+            };
+            let Some(key) = super::shortcuts::key_from_name(shortcut) else {
+                continue;
+            };
+            let keyboard_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::NONE, key);
+            let triggered = ctx.input_mut(|input| input.consume_shortcut(&keyboard_shortcut));
+            if !triggered {
+                continue;
+            }
+            if self.annotation.active_custom_annotation.active_name.as_deref()
+                == Some(definition.name.as_str())
+            {
+                self.annotation.active_custom_annotation.active_name = None;
+            } else {
+                self.annotation.active_custom_annotation.active_name = Some(definition.name);
+            }
+        }
     }
+}
+
+fn label_centroids(frame: &FrameData<u32>) -> std::collections::BTreeMap<u32, (usize, usize)> {
+    use std::collections::BTreeMap;
+
+    let mut accum = BTreeMap::<u32, (u64, u64, u64)>::new();
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            let label = frame.pixels[y * frame.width + x];
+            if label == 0 {
+                continue;
+            }
+            let entry = accum.entry(label).or_insert((0, 0, 0));
+            entry.0 += x as u64;
+            entry.1 += y as u64;
+            entry.2 += 1;
+        }
+    }
+
+    accum
+        .into_iter()
+        .filter_map(|(label, (sum_x, sum_y, count))| {
+            if count == 0 {
+                None
+            } else {
+                Some((label, ((sum_x / count) as usize, (sum_y / count) as usize)))
+            }
+        })
+        .collect()
 }

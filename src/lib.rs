@@ -27,13 +27,20 @@ pub use edit::{
     MaskSaveMode, SelectionState, UndoStack,
 };
 pub use annotate::{
-    apply_cell_cycle_edits, apply_manual_tracking_edit, assign_mother_bud,
-    find_next_mother_candidate, load_cell_cycle_annotations, mark_unknown_lineage,
+    apply_cell_cycle_edits, apply_custom_annotation_mutation, apply_manual_tracking_edit,
+    assign_mother_bud, build_snapshot_profile, derive_custom_annotation_memberships,
+    find_next_mother_candidate, global_custom_annotation_definitions_path,
+    load_cell_cycle_annotations, load_custom_annotation_definitions, mark_unknown_lineage,
     propagate_cell_cycle_edits, propagate_lineage_for_position, repeat_tracking_current_position,
-    review_lineage_frame, save_cell_cycle_annotations, set_lineage_parent_for_position,
-    CellCycleAnnotationRecord, CellCycleAnnotationTable, CellCycleEdit,
-    CellCyclePropagationConfig, GuiModeKind, LineageEditAction, LineageReview,
-    ManualTrackingEdit, ManualTrackingPreview, TrackingRunReport, TrackingRunScope,
+    resolve_snapshot_save_scope, review_lineage_frame, save_cell_cycle_annotations,
+    save_custom_annotation_definitions, set_lineage_parent_for_position,
+    validate_custom_annotation_definition, write_custom_annotations_to_acdc_output,
+    CellCycleAnnotationRecord,
+    CellCycleAnnotationTable, CellCycleEdit, CellCyclePropagationConfig,
+    CustomAnnotationDefinition, CustomAnnotationKind, CustomAnnotationMutation,
+    CustomAnnotationStore, GuiModeKind, LineageEditAction, LineageReview, ManualTrackingEdit,
+    ManualTrackingPreview, SnapshotProfile, SnapshotSaveScope, TrackingRunReport,
+    TrackingRunScope,
 };
 pub use import::{
     detect_import_source_kind, discover_import_sources, import_experiment, ImportExperimentConfig,
@@ -70,7 +77,7 @@ pub use prep::{
     BackgroundRoiSet, CropConfig, PrepOutputPaths, TimeCropConfig, ZCropConfig,
 };
 pub use render::{
-    export_frame_image, export_frame_sequence, render_frame, ImageExportFormat,
+    export_frame_image, export_frame_sequence, render_frame, ImageExportFormat, OverlayMarker,
     OverlayRenderStyle, RenderFrameRequest, RenderedFrame, ScaleBarStyle, TimestampStyle,
 };
 pub use runner::{
@@ -83,7 +90,7 @@ pub use segm_info::{
 };
 pub use session::{
     open_experiment_session, open_position_session, ExperimentSession, FrameData, FrameProjection,
-    PositionSession, SegmentationAsset,
+    PositionSession, SegmentationAsset, ViewPlane,
 };
 pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
 pub use tracking::{manual_track_label, remap_frame_labels, TrackingConfig, TrackingFrameEdit};

@@ -1,4 +1,4 @@
-use cellacdc_rs::{FrameProjection, MaskEditSession};
+use cellacdc_rs::{CustomAnnotationStore, FrameProjection, MaskEditSession, ViewPlane};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -42,6 +42,8 @@ pub(crate) enum GuiMode {
     SegmentationAndTracking,
     CellCycleAnalysis,
     NormalDivisionLineageTree,
+    CustomAnnotations,
+    Snapshot,
 }
 
 impl Default for GuiMode {
@@ -105,6 +107,7 @@ pub(crate) enum GuiActionId {
     ModeSegmentationAndTracking,
     ModeCellCycleAnalysis,
     ModeNormalDivisionLineageTree,
+    ModeCustomAnnotations,
     RepeatTracking,
     TrackCurrentFrame,
     ManualTracking,
@@ -117,6 +120,9 @@ pub(crate) enum GuiActionId {
     NoLineageTool,
     PropagateLineage,
     ViewLineageChanges,
+    LoadSavedCustomAnnotations,
+    AddCustomAnnotation,
+    ShowAllCustomAnnotations,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +273,9 @@ pub(crate) struct GuiDialogState {
     pub(crate) cell_cycle_editor_open: bool,
     pub(crate) cell_cycle_viewer_open: bool,
     pub(crate) lineage_review_open: bool,
+    pub(crate) custom_annotation_editor_open: bool,
+    pub(crate) load_saved_custom_annotations_open: bool,
+    pub(crate) snapshot_save_scope_open: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -378,6 +387,79 @@ pub(crate) struct ModeToolbarState {
     pub(crate) show: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CustomAnnotationToolbarState {
+    pub(crate) show_all: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ActiveCustomAnnotationState {
+    pub(crate) active_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CustomAnnotationDialogState {
+    pub(crate) editing_name: Option<String>,
+    pub(crate) name: String,
+    pub(crate) kind_index: usize,
+    pub(crate) symbol: String,
+    pub(crate) shortcut: String,
+    pub(crate) description: String,
+    pub(crate) keep_active: bool,
+    pub(crate) hide_when_inactive: bool,
+    pub(crate) color: [u8; 4],
+    pub(crate) error: Option<String>,
+    pub(crate) reuse_existing_column: bool,
+}
+
+impl Default for CustomAnnotationDialogState {
+    fn default() -> Self {
+        Self {
+            editing_name: None,
+            name: String::new(),
+            kind_index: 0,
+            symbol: "o".to_string(),
+            shortcut: String::new(),
+            description: String::new(),
+            keep_active: true,
+            hide_when_inactive: true,
+            color: [255, 0, 0, 255],
+            error: None,
+            reuse_existing_column: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SavedCustomAnnotationsDialogState {
+    pub(crate) selected_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SnapshotModeState {
+    pub(crate) last_profile_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SnapshotSaveDialogState {
+    pub(crate) selected_positions: Vec<String>,
+    pub(crate) quick_save: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CustomAnnotationCommandSnapshot {
+    pub(crate) before: CustomAnnotationStore,
+    pub(crate) after: CustomAnnotationStore,
+    pub(crate) selected_label_before: Option<u32>,
+    pub(crate) selected_label_after: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum EditorHistoryKind {
+    MaskEdit,
+    CustomAnnotation(CustomAnnotationCommandSnapshot),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnnotationPendingAction {
     ChangePosition(usize),
@@ -410,6 +492,17 @@ pub(crate) struct AnnotationWorkspaceState {
     pub(crate) mode_toolbar: ModeToolbarState,
     pub(crate) lineage_candidate_index: usize,
     pub(crate) pending_manual_tracking_edits: Vec<cellacdc_rs::ManualTrackingEdit>,
+    pub(crate) custom_annotation_toolbar: CustomAnnotationToolbarState,
+    pub(crate) active_custom_annotation: ActiveCustomAnnotationState,
+    pub(crate) custom_annotation_dialog: CustomAnnotationDialogState,
+    pub(crate) saved_custom_annotations_dialog: SavedCustomAnnotationsDialogState,
+    pub(crate) snapshot_mode: SnapshotModeState,
+    pub(crate) snapshot_save_dialog: SnapshotSaveDialogState,
+    pub(crate) custom_annotations: CustomAnnotationStore,
+    pub(crate) custom_annotations_dirty: bool,
+    pub(crate) view_plane: ViewPlane,
+    pub(crate) editor_undo: Vec<EditorHistoryKind>,
+    pub(crate) editor_redo: Vec<EditorHistoryKind>,
 }
 
 impl Default for AnnotationWorkspaceState {
@@ -439,6 +532,17 @@ impl Default for AnnotationWorkspaceState {
             mode_toolbar: ModeToolbarState { show: true },
             lineage_candidate_index: 0,
             pending_manual_tracking_edits: Vec::new(),
+            custom_annotation_toolbar: CustomAnnotationToolbarState::default(),
+            active_custom_annotation: ActiveCustomAnnotationState::default(),
+            custom_annotation_dialog: CustomAnnotationDialogState::default(),
+            saved_custom_annotations_dialog: SavedCustomAnnotationsDialogState::default(),
+            snapshot_mode: SnapshotModeState::default(),
+            snapshot_save_dialog: SnapshotSaveDialogState::default(),
+            custom_annotations: CustomAnnotationStore::default(),
+            custom_annotations_dirty: false,
+            view_plane: ViewPlane::XY,
+            editor_undo: Vec::new(),
+            editor_redo: Vec::new(),
         }
     }
 }
@@ -525,6 +629,7 @@ pub(crate) struct ViewKey {
     pub(crate) position_dir: PathBuf,
     pub(crate) channel: String,
     pub(crate) frame_index: usize,
+    pub(crate) view_plane: ViewPlane,
     pub(crate) projection: FrameProjection,
     pub(crate) segmentation_endname: Option<String>,
     pub(crate) overlay_alpha_bits: u32,
