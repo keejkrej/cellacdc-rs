@@ -2,6 +2,7 @@ mod edit;
 mod image_io;
 mod import;
 mod inspect;
+mod annotate;
 mod layout;
 mod lineage;
 mod mask_io;
@@ -25,6 +26,15 @@ pub use edit::{
     MaskDocumentPaths, MaskEditCommand, MaskEditResult, MaskEditSession, MaskRecoveryState,
     MaskSaveMode, SelectionState, UndoStack,
 };
+pub use annotate::{
+    apply_cell_cycle_edits, apply_manual_tracking_edit, assign_mother_bud,
+    find_next_mother_candidate, load_cell_cycle_annotations, mark_unknown_lineage,
+    propagate_cell_cycle_edits, propagate_lineage_for_position, repeat_tracking_current_position,
+    review_lineage_frame, save_cell_cycle_annotations, set_lineage_parent_for_position,
+    CellCycleAnnotationRecord, CellCycleAnnotationTable, CellCycleEdit,
+    CellCyclePropagationConfig, GuiModeKind, LineageEditAction, LineageReview,
+    ManualTrackingEdit, ManualTrackingPreview, TrackingRunReport, TrackingRunScope,
+};
 pub use import::{
     detect_import_source_kind, discover_import_sources, import_experiment, ImportExperimentConfig,
     ImportSource, ImportSourceKind, ImportedExperiment,
@@ -40,9 +50,10 @@ pub use layout::{
 pub use lineage::{
     build_lineage_state, build_lineage_state_file, export_lineage_frame, export_lineage_info,
     export_lineage_info_file, load_lineage_state, propagate_lineage, propagate_lineage_file,
-    update_lineage_frame, update_lineage_frame_file, LineageBuildConfig, LineageFrameInfo,
-    LineageInfoConfig, LineageOutputPaths, LineagePropagateConfig, LineageState,
-    LineageUpdateConfig,
+    propagate_lineage_from_frame, set_lineage_parent, set_lineage_unknown, update_lineage_frame,
+    update_lineage_frame_file, LineageBuildConfig, LineageCandidateSet, LineageFrameEdit,
+    LineageFrameInfo, LineageInfoConfig, LineageOutputPaths, LineagePropagateConfig,
+    LineageState, LineageUpdateConfig,
 };
 pub use mask_io::{
     load_mask_data, save_mask_data, MaskData, MaskDimensionality, MaskPathResolution,
@@ -75,7 +86,7 @@ pub use session::{
     PositionSession, SegmentationAsset,
 };
 pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
-pub use tracking::TrackingConfig;
+pub use tracking::{manual_track_label, remap_frame_labels, TrackingConfig, TrackingFrameEdit};
 pub use utilities::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
     combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,

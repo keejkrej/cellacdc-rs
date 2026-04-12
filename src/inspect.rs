@@ -1,4 +1,5 @@
 use crate::session::{open_position_session, FrameProjection};
+use crate::tabular::read_table;
 use anyhow::{anyhow, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,6 +26,11 @@ pub struct ObjectMeasurementSummary {
     pub bbox_max_y: usize,
     pub channel_mean: BTreeMap<String, f64>,
     pub channel_sum: BTreeMap<String, f64>,
+    pub cell_cycle_stage: Option<String>,
+    pub generation_num: Option<i64>,
+    pub relative_id: Option<i64>,
+    pub relationship: Option<String>,
+    pub is_history_known: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +93,13 @@ pub fn inspect_position_frame(config: FrameInspectionConfig) -> Result<FrameInsp
                 channel_sum.insert(channel.clone(), sum);
                 channel_mean.insert(channel, mean);
             }
+            let cca = load_cell_cycle_fields(
+                &position.spec.images_dir,
+                &position.spec.basename,
+                config.segm_endname.as_deref(),
+                config.frame_index,
+                selected_label,
+            )?;
             Some(ObjectMeasurementSummary {
                 label: region.label,
                 area_pixels: region.area,
@@ -101,6 +114,11 @@ pub fn inspect_position_frame(config: FrameInspectionConfig) -> Result<FrameInsp
                 bbox_max_y: region.bbox_max_y,
                 channel_mean,
                 channel_sum,
+                cell_cycle_stage: cca.as_ref().map(|value| value.cell_cycle_stage.clone()),
+                generation_num: cca.as_ref().map(|value| value.generation_num),
+                relative_id: cca.as_ref().map(|value| value.relative_id),
+                relationship: cca.as_ref().map(|value| value.relationship.clone()),
+                is_history_known: cca.as_ref().map(|value| value.is_history_known),
             })
         } else {
             None
@@ -116,6 +134,60 @@ pub fn inspect_position_frame(config: FrameInspectionConfig) -> Result<FrameInsp
         available_labels,
         selected_object,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CellCycleInspection {
+    cell_cycle_stage: String,
+    generation_num: i64,
+    relative_id: i64,
+    relationship: String,
+    is_history_known: bool,
+}
+
+fn load_cell_cycle_fields(
+    images_dir: &std::path::Path,
+    basename: &str,
+    segm_endname: Option<&str>,
+    frame_index: usize,
+    label: u32,
+) -> Result<Option<CellCycleInspection>> {
+    let suffix = segm_endname
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("_{value}"))
+        .unwrap_or_default();
+    let path = images_dir.join(format!("{basename}acdc_output{suffix}.csv"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let table = read_table(&path)?;
+    let frame_col = table.header_index("frame_i")?;
+    let id_col = table.header_index("Cell_ID")?;
+    let stage_col = table.header_index("cell_cycle_stage")?;
+    let generation_col = table.header_index("generation_num")?;
+    let relative_col = table.header_index("relative_ID")?;
+    let relationship_col = table.header_index("relationship")?;
+    let history_col = table.header_index("is_history_known")?;
+    for row in &table.rows {
+        if row[frame_col].as_i64() != Some(frame_index as i64) || row[id_col].as_i64() != Some(label as i64) {
+            continue;
+        }
+        return Ok(Some(CellCycleInspection {
+            cell_cycle_stage: row[stage_col].as_string_lossy(),
+            generation_num: row[generation_col].as_i64().unwrap_or(-1),
+            relative_id: row[relative_col].as_i64().unwrap_or(-1),
+            relationship: row[relationship_col].as_string_lossy(),
+            is_history_known: match &row[history_col] {
+                crate::tabular::TableValue::Bool(value) => *value,
+                crate::tabular::TableValue::Number(value) => *value != 0.0,
+                crate::tabular::TableValue::Text(value) => {
+                    matches!(value.to_ascii_lowercase().as_str(), "true" | "1")
+                }
+                crate::tabular::TableValue::Empty => false,
+            },
+        }));
+    }
+    Ok(None)
 }
 
 fn extract_regions(mask_frame: &[u32], height: usize, width: usize) -> Vec<FrameRegion> {

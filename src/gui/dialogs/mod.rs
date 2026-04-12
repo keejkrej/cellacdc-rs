@@ -1,9 +1,13 @@
 mod autosave_interval;
+mod cell_cycle_editor;
+mod cell_cycle_viewer;
 mod export_image;
 mod export_video;
 mod find_id;
+mod lineage_review;
 mod overlay_labels;
 mod shortcut_editor;
+mod tracking_params;
 mod version_browser;
 
 use super::app::CellAcdcGui;
@@ -18,5 +22,9 @@ impl CellAcdcGui {
         self.draw_export_video_dialog(ctx);
         self.draw_autosave_interval_dialog(ctx);
         self.draw_overlay_labels_dialog(ctx);
+        self.draw_tracking_params_dialog(ctx);
+        self.draw_cell_cycle_editor_dialog(ctx);
+        self.draw_cell_cycle_viewer_dialog(ctx);
+        self.draw_lineage_review_dialog(ctx);
     }
 }

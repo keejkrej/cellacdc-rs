@@ -1,6 +1,6 @@
 use crate::gui::actions::action_label;
 use crate::gui::app::CellAcdcGui;
-use crate::gui::state::{AnnotationTool, GuiActionId};
+use crate::gui::state::{AnnotationTool, GuiActionId, GuiMode};
 use cellacdc_rs::{MaskEditCommand, MaskRecoveryState};
 use eframe::egui::{self, Color32, RichText};
 
@@ -120,6 +120,28 @@ impl CellAcdcGui {
                 }
 
                 ui.separator();
+                ui.label(RichText::new("Mode").strong());
+                ui.horizontal_wrapped(|ui| {
+                    for action in [
+                        GuiActionId::ModeViewer,
+                        GuiActionId::ModeSegmentationAndTracking,
+                        GuiActionId::ModeCellCycleAnalysis,
+                        GuiActionId::ModeNormalDivisionLineageTree,
+                    ] {
+                        let state = self.gui_action_state(action);
+                        if ui
+                            .add_enabled(
+                                state.enabled,
+                                egui::Button::new(action_label(action)).selected(state.checked),
+                            )
+                            .clicked()
+                        {
+                            self.dispatch_gui_action(action);
+                        }
+                    }
+                });
+
+                ui.separator();
                 ui.label(RichText::new("ID actions").strong());
                 ui.horizontal(|ui| {
                     ui.label("Relabel target");
@@ -172,6 +194,92 @@ impl CellAcdcGui {
                     if let Err(err) = action {
                         self.last_error = Some(err.to_string());
                     }
+                }
+
+                ui.separator();
+                match self.annotation.mode {
+                    GuiMode::SegmentationAndTracking => {
+                        ui.label(RichText::new("Tracking").strong());
+                        ui.horizontal_wrapped(|ui| {
+                            for action in [
+                                GuiActionId::RepeatTracking,
+                                GuiActionId::TrackCurrentFrame,
+                                GuiActionId::ManualTracking,
+                                GuiActionId::EditRealTimeTrackerParameters,
+                            ] {
+                                let state = self.gui_action_state(action);
+                                if ui
+                                    .add_enabled(
+                                        state.enabled,
+                                        egui::Button::new(action_label(action)).selected(state.checked),
+                                    )
+                                    .clicked()
+                                {
+                                    self.dispatch_gui_action(action);
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Track into ID");
+                            ui.text_edit_singleline(&mut self.annotation.manual_tracking.target_label);
+                        });
+                        ui.small(
+                            "Activate Manual Tracking, then click an object on the current frame to remap it.",
+                        );
+                    }
+                    GuiMode::CellCycleAnalysis => {
+                        ui.label(RichText::new("Cell cycle").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Mother ID");
+                            ui.text_edit_singleline(&mut self.annotation.mother_target);
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            for action in [
+                                GuiActionId::AssignMotherToBud,
+                                GuiActionId::EditCellCycleAnnotations,
+                                GuiActionId::ViewCellCycleAnnotations,
+                            ] {
+                                let state = self.gui_action_state(action);
+                                if ui
+                                    .add_enabled(
+                                        state.enabled,
+                                        egui::Button::new(action_label(action)).selected(state.checked),
+                                    )
+                                    .clicked()
+                                {
+                                    self.dispatch_gui_action(action);
+                                }
+                            }
+                        });
+                    }
+                    GuiMode::NormalDivisionLineageTree => {
+                        ui.label(RichText::new("Lineage tree").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Parent ID");
+                            ui.text_edit_singleline(&mut self.annotation.mother_target);
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            for action in [
+                                GuiActionId::FindNextPotentialMother,
+                                GuiActionId::UnknownLineage,
+                                GuiActionId::NoLineageTool,
+                                GuiActionId::PropagateLineage,
+                                GuiActionId::ViewLineageChanges,
+                            ] {
+                                let state = self.gui_action_state(action);
+                                if ui
+                                    .add_enabled(
+                                        state.enabled,
+                                        egui::Button::new(action_label(action)).selected(state.checked),
+                                    )
+                                    .clicked()
+                                {
+                                    self.dispatch_gui_action(action);
+                                }
+                            }
+                        });
+                    }
+                    GuiMode::Viewer => {}
                 }
 
                 ui.separator();

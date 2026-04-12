@@ -12,6 +12,13 @@ pub struct TrackedSequence {
     pub disappeared: Vec<(usize, u32)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackingFrameEdit {
+    pub frame_index: usize,
+    pub source_label: u32,
+    pub target_label: u32,
+}
+
 pub fn track_sequence(
     frames: &[Vec<u32>],
     height: usize,
@@ -248,6 +255,27 @@ fn unique_nonzero(values: impl IntoIterator<Item = u32>) -> BTreeSet<u32> {
     values.into_iter().filter(|value| *value != 0).collect()
 }
 
+pub fn remap_frame_labels(frame: &mut [u32], source_label: u32, target_label: u32) -> usize {
+    if source_label == 0 || source_label == target_label {
+        return 0;
+    }
+    let mut changed = 0usize;
+    for value in frame.iter_mut() {
+        if *value == source_label {
+            *value = target_label;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+pub fn manual_track_label(frames: &mut [Vec<u32>], edit: &TrackingFrameEdit) -> usize {
+    let Some(frame) = frames.get_mut(edit.frame_index) else {
+        return 0;
+    };
+    remap_frame_labels(frame, edit.source_label, edit.target_label)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,5 +426,20 @@ mod tests {
 
         assert_eq!(tracked.frames[1], vec![0; 16]);
         assert_eq!(tracked.disappeared, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn remaps_labels_in_single_frame() {
+        let mut frames = vec![vec![1, 1, 2, 0]];
+        let changed = manual_track_label(
+            &mut frames,
+            &TrackingFrameEdit {
+                frame_index: 0,
+                source_label: 1,
+                target_label: 7,
+            },
+        );
+        assert_eq!(changed, 2);
+        assert_eq!(frames[0], vec![7, 7, 2, 0]);
     }
 }

@@ -37,6 +37,23 @@ impl CellAcdcGui {
                                 object.bbox_min_y,
                                 object.bbox_max_y
                             ));
+                            if let Some(stage) = &object.cell_cycle_stage {
+                                ui.separator();
+                                ui.label(RichText::new("Cell cycle").strong());
+                                ui.label(format!("Stage: {stage}"));
+                                if let Some(generation_num) = object.generation_num {
+                                    ui.label(format!("Generation: {generation_num}"));
+                                }
+                                if let Some(relative_id) = object.relative_id {
+                                    ui.label(format!("Relative ID: {relative_id}"));
+                                }
+                                if let Some(relationship) = &object.relationship {
+                                    ui.label(format!("Relationship: {relationship}"));
+                                }
+                                if let Some(is_history_known) = object.is_history_known {
+                                    ui.label(format!("History known: {is_history_known}"));
+                                }
+                            }
                             ui.separator();
                             ui.label(RichText::new("Per-channel intensity").strong());
                             for (channel, mean) in &object.channel_mean {

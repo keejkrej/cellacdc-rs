@@ -59,6 +59,19 @@ pub struct LineageFrameInfo {
     pub lost_cells: Vec<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineageFrameEdit {
+    pub frame_i: i64,
+    pub cell_id: i64,
+    pub parent_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineageCandidateSet {
+    pub cell_id: i64,
+    pub candidates: Vec<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineageState {
     headers: Vec<String>,
@@ -285,6 +298,77 @@ pub fn export_lineage_info(state: &LineageState, frame_i: i64) -> Result<Lineage
         orphan_cells,
         lost_cells,
     })
+}
+
+pub fn lineage_mother_candidates(
+    state: &LineageState,
+    frame_i: i64,
+    cell_id: i64,
+) -> Result<LineageCandidateSet> {
+    let mut candidates = state
+        .cell_ids_in_frame(frame_i)
+        .into_iter()
+        .filter(|candidate| *candidate != cell_id)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() && frame_i > 0 {
+        candidates = state
+            .cell_ids_in_frame(frame_i - 1)
+            .into_iter()
+            .filter(|candidate| *candidate != cell_id)
+            .collect::<Vec<_>>();
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    Ok(LineageCandidateSet { cell_id, candidates })
+}
+
+pub fn set_lineage_parent(
+    state: LineageState,
+    frame_i: i64,
+    cell_id: i64,
+    parent_id: i64,
+) -> Result<LineageState> {
+    let edits = Table {
+        headers: vec![
+            "Cell_ID".into(),
+            "parent_ID_tree".into(),
+            HISTORY_COLUMN.into(),
+        ],
+        rows: vec![vec![
+            TableValue::Number(cell_id as f64),
+            TableValue::Number(parent_id as f64),
+            TableValue::Bool(true),
+        ]],
+    };
+    update_lineage_frame(state, frame_i, &edits)
+}
+
+pub fn set_lineage_unknown(
+    state: LineageState,
+    frame_i: i64,
+    cell_id: i64,
+) -> Result<LineageState> {
+    let edits = Table {
+        headers: vec![
+            "Cell_ID".into(),
+            "parent_ID_tree".into(),
+            HISTORY_COLUMN.into(),
+        ],
+        rows: vec![vec![
+            TableValue::Number(cell_id as f64),
+            TableValue::Number(-1.0),
+            TableValue::Bool(false),
+        ]],
+    };
+    update_lineage_frame(state, frame_i, &edits)
+}
+
+pub fn propagate_lineage_from_frame(
+    state: LineageState,
+    frame_i: i64,
+    relevant_cell_ids: &[i64],
+) -> Result<LineageState> {
+    propagate_lineage(state, frame_i, relevant_cell_ids)
 }
 
 pub fn build_lineage_state_file(config: LineageBuildConfig) -> Result<LineageOutputPaths> {

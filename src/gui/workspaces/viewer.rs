@@ -1,5 +1,5 @@
 use crate::gui::app::CellAcdcGui;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use cellacdc_rs::{MaskEditCommand, SegmentationLayout};
 use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureOptions};
 
@@ -337,6 +337,13 @@ impl CellAcdcGui {
         };
         self.update_canvas_status(x, y);
         match self.annotation.tool {
+            crate::gui::state::AnnotationTool::Select
+                if self.annotation.manual_tracking.active && response.clicked() =>
+            {
+                if let Err(err) = self.manual_track_annotation_at(x, y) {
+                    self.last_error = Some(err.to_string());
+                }
+            }
             crate::gui::state::AnnotationTool::Select if response.clicked() => {
                 if let Err(err) = self.select_annotation_label_at(x, y) {
                     self.last_error = Some(err.to_string());
@@ -438,6 +445,62 @@ impl CellAcdcGui {
         }
         let flat_indices = self.annotation_disk_indices(x, y)?;
         self.run_annotation_command(MaskEditCommand::Erase { flat_indices })
+    }
+
+    fn manual_track_annotation_at(&mut self, x: usize, y: usize) -> Result<()> {
+        if !self.annotation_edits_allowed() {
+            bail!("Manual tracking requires a writable 2D view.");
+        }
+        let target_label = self
+            .annotation
+            .manual_tracking
+            .target_label
+            .trim()
+            .parse::<u32>()
+            .with_context(|| "Manual tracking target ID must be an integer")?;
+        let Some((source_label, flat_indices)) = self.annotation_object_indices_at(x, y)? else {
+            return Ok(());
+        };
+        self.run_annotation_command(MaskEditCommand::Paint { flat_indices, label: target_label })?;
+        self.annotation.pending_manual_tracking_edits.push(cellacdc_rs::ManualTrackingEdit {
+            frame_index: self.selected_frame_idx,
+            source_label,
+            target_label,
+        });
+        self.annotation_select_label(Some(target_label))?;
+        Ok(())
+    }
+
+    fn annotation_object_indices_at(&self, x: usize, y: usize) -> Result<Option<(u32, Vec<usize>)>> {
+        let Some(segmentation) = self.current_segmentation_frame_data()? else {
+            return Ok(None);
+        };
+        if x >= segmentation.width || y >= segmentation.height {
+            return Ok(None);
+        }
+        let source_label = segmentation.pixels[y * segmentation.width + x];
+        if source_label == 0 {
+            return Ok(None);
+        }
+        let document = self
+            .current_annotation_document()
+            .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
+        let shape = document.session.data.values.shape().to_vec();
+        let plane_offset = match document.session.data.layout {
+            SegmentationLayout::YX => 0,
+            SegmentationLayout::TYX => self.selected_frame_idx * segmentation.width * segmentation.height,
+            SegmentationLayout::ZYX | SegmentationLayout::TZYX => {
+                bail!("Manual tracking is currently limited to 2D timelapse segmentations.")
+            }
+        };
+        let mut flat_indices = Vec::new();
+        for (frame_index, value) in segmentation.pixels.iter().enumerate() {
+            if *value == source_label {
+                flat_indices.push(plane_offset + frame_index);
+            }
+        }
+        let _ = shape;
+        Ok(Some((source_label, flat_indices)))
     }
 
     pub(crate) fn annotation_disk_indices(&self, x: usize, y: usize) -> Result<Vec<usize>> {

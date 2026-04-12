@@ -1,10 +1,11 @@
 use super::actions::{
-    action_label, EDIT_ACTIONS, FILE_ACTIONS, HELP_ACTIONS, IMAGE_ACTIONS, MEASUREMENT_ACTIONS,
-    SEGMENT_ACTIONS, SETTINGS_ACTIONS, VIEW_ACTIONS,
+    action_label, CELL_CYCLE_ACTIONS, EDIT_ACTIONS, FILE_ACTIONS, HELP_ACTIONS, IMAGE_ACTIONS,
+    LINEAGE_ACTIONS, MEASUREMENT_ACTIONS, SEGMENT_ACTIONS, SETTINGS_ACTIONS, TRACKING_ACTIONS,
+    VIEW_ACTIONS,
 };
 use super::app::CellAcdcGui;
 use super::shortcuts::shortcut_label;
-use super::state::GuiActionId;
+use super::state::{GuiActionId, GuiMode};
 use eframe::egui::{self, Button, RichText};
 use std::path::PathBuf;
 
@@ -22,6 +23,12 @@ impl CellAcdcGui {
                     GuiActionId::ExportVideo,
                 ]);
             }
+            self.draw_gui_toolbar(ui, "Mode", &[
+                GuiActionId::ModeViewer,
+                GuiActionId::ModeSegmentationAndTracking,
+                GuiActionId::ModeCellCycleAnalysis,
+                GuiActionId::ModeNormalDivisionLineageTree,
+            ]);
             if self.persisted.display.show_navigation_toolbar {
                 self.draw_navigation_toolbar(ui);
             }
@@ -49,6 +56,18 @@ impl CellAcdcGui {
             }
             if self.persisted.display.show_highlight_toolbar {
                 self.draw_highlight_toolbar(ui);
+            }
+            match self.annotation.mode {
+                GuiMode::SegmentationAndTracking => {
+                    self.draw_gui_toolbar(ui, "Tracking", TRACKING_ACTIONS);
+                }
+                GuiMode::CellCycleAnalysis => {
+                    self.draw_gui_toolbar(ui, "Cell Cycle", CELL_CYCLE_ACTIONS);
+                }
+                GuiMode::NormalDivisionLineageTree => {
+                    self.draw_gui_toolbar(ui, "Lineage Tree", LINEAGE_ACTIONS);
+                }
+                GuiMode::Viewer => {}
             }
         });
 
@@ -79,8 +98,10 @@ impl CellAcdcGui {
             self.draw_action_menu(ui, "View", VIEW_ACTIONS, false);
             self.draw_action_menu(ui, "Image", IMAGE_ACTIONS, false);
             self.draw_action_menu(ui, "Segment", SEGMENT_ACTIONS, false);
-            self.draw_action_menu(ui, "Tracking", &[], false);
+            self.draw_action_menu(ui, "Tracking", TRACKING_ACTIONS, false);
             self.draw_action_menu(ui, "Measurements", MEASUREMENT_ACTIONS, false);
+            self.draw_action_menu(ui, "Cell cycle", CELL_CYCLE_ACTIONS, false);
+            self.draw_action_menu(ui, "Lineage", LINEAGE_ACTIONS, false);
             self.draw_action_menu(ui, "Settings", SETTINGS_ACTIONS, false);
             self.draw_action_menu(ui, "Help", HELP_ACTIONS, false);
         });

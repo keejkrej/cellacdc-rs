@@ -3,11 +3,13 @@ use super::state::ResolutionLayoutChoice;
 use crate::gui::workspaces::{format_utility_summary, parse_optional_usize};
 use anyhow::{bail, Result};
 use cellacdc_rs::{
+    repeat_tracking_current_position,
     combine_channels, connect_3d_segm, count_objects, fill_holes, measure_experiment,
     measure_position, open_position_session, resolve_position, run_experiment, run_position,
     stack_2d_segm_to_3d, CombineChannelsConfig, Connect3DSegmConfig, CountObjectsConfig,
     ExperimentRunConfig, FillHolesConfig, MaskPathResolution, MeasurementExperimentConfig,
     MeasurementRunConfig, SegmentationLayout, Stack2DSegmTo3DConfig, TrackingConfig,
+    TrackingRunScope,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -344,6 +346,45 @@ impl CellAcdcGui {
                 summary: format!("Segmented {} position(s)", results.len()),
                 reload_session: true,
                 select_segmentation_endname: Some(segm_endname),
+            })
+        });
+    }
+
+    pub(crate) fn start_repeat_tracking_job(&mut self, start_frame: Option<usize>) {
+        let Some(position) = self.selected_position() else {
+            return;
+        };
+        let position_path = position.spec.position_dir.clone();
+        let segm_endname = self.persisted.selected_segmentation_endname.clone();
+        let tracking = self.annotation.tracking_params.ioa_threshold;
+        let scope = start_frame
+            .map(|frame| TrackingRunScope::CurrentFrameToEnd { start_frame: frame })
+            .unwrap_or(TrackingRunScope::CurrentPosition);
+        let label = format!("Repeat tracking {}", position_path.display());
+        self.start_job(JobRequest { label }, move |sender, token| {
+            if token.is_cancelled() {
+                bail!("Job cancelled before start");
+            }
+            let _ = sender.send(JobUpdate::Log(format!(
+                "Running repeat tracking for {}",
+                position_path.display()
+            )));
+            let report = repeat_tracking_current_position(
+                &position_path,
+                segm_endname.as_deref(),
+                &TrackingConfig {
+                    ioa_threshold: tracking,
+                },
+                scope,
+            )?;
+            Ok(JobSummary {
+                summary: format!(
+                    "Repeat tracking updated {} frame(s) -> {}",
+                    report.frames_processed,
+                    report.output_segmentation_path.display()
+                ),
+                reload_session: true,
+                select_segmentation_endname: None,
             })
         });
     }

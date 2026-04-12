@@ -36,6 +36,33 @@ impl Default for AnnotationTool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum GuiMode {
+    Viewer,
+    SegmentationAndTracking,
+    CellCycleAnalysis,
+    NormalDivisionLineageTree,
+}
+
+impl Default for GuiMode {
+    fn default() -> Self {
+        Self::Viewer
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum LineageTool {
+    NoTool,
+    FindNextMother,
+    UnknownLineage,
+}
+
+impl Default for LineageTool {
+    fn default() -> Self {
+        Self::NoTool
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum GuiActionId {
     OpenSession,
@@ -74,6 +101,22 @@ pub(crate) enum GuiActionId {
     ToolRelabel,
     ToolMerge,
     ToolDelete,
+    ModeViewer,
+    ModeSegmentationAndTracking,
+    ModeCellCycleAnalysis,
+    ModeNormalDivisionLineageTree,
+    RepeatTracking,
+    TrackCurrentFrame,
+    ManualTracking,
+    EditRealTimeTrackerParameters,
+    AssignMotherToBud,
+    EditCellCycleAnnotations,
+    ViewCellCycleAnnotations,
+    FindNextPotentialMother,
+    UnknownLineage,
+    NoLineageTool,
+    PropagateLineage,
+    ViewLineageChanges,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +263,10 @@ pub(crate) struct GuiDialogState {
     pub(crate) export_video_open: bool,
     pub(crate) autosave_interval_open: bool,
     pub(crate) overlay_labels_open: bool,
+    pub(crate) tracking_params_open: bool,
+    pub(crate) cell_cycle_editor_open: bool,
+    pub(crate) cell_cycle_viewer_open: bool,
+    pub(crate) lineage_review_open: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -291,6 +338,46 @@ pub(crate) struct ShortcutEditorState {
     pub(crate) error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ManualTrackingState {
+    pub(crate) active: bool,
+    pub(crate) target_label: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CellCycleDialogState {
+    pub(crate) selected_row: Option<usize>,
+    pub(crate) apply_to_future: bool,
+    pub(crate) propagate_end_frame: String,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CellCycleTableState {
+    pub(crate) records: Vec<cellacdc_rs::CellCycleAnnotationRecord>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LineageReviewDialogState {
+    pub(crate) review: Option<cellacdc_rs::LineageReview>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TrackingParamsDialogState {
+    pub(crate) ioa_threshold: f32,
+}
+
+impl Default for TrackingParamsDialogState {
+    fn default() -> Self {
+        Self { ioa_threshold: 0.4 }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModeToolbarState {
+    pub(crate) show: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnnotationPendingAction {
     ChangePosition(usize),
@@ -300,9 +387,12 @@ pub(crate) enum AnnotationPendingAction {
 #[derive(Debug, Clone)]
 pub(crate) struct AnnotationWorkspaceState {
     pub(crate) tool: AnnotationTool,
+    pub(crate) mode: GuiMode,
+    pub(crate) lineage_tool: LineageTool,
     pub(crate) brush_radius: usize,
     pub(crate) relabel_target: String,
     pub(crate) merge_target: String,
+    pub(crate) mother_target: String,
     pub(crate) save_as_endname: String,
     pub(crate) pending_action: Option<AnnotationPendingAction>,
     pub(crate) dialogs: GuiDialogState,
@@ -312,15 +402,26 @@ pub(crate) struct AnnotationWorkspaceState {
     pub(crate) export_video: ExportVideoDialogState,
     pub(crate) version_browser: VersionBrowserState,
     pub(crate) shortcut_editor: ShortcutEditorState,
+    pub(crate) manual_tracking: ManualTrackingState,
+    pub(crate) cell_cycle_dialog: CellCycleDialogState,
+    pub(crate) cell_cycle_table: CellCycleTableState,
+    pub(crate) lineage_review: LineageReviewDialogState,
+    pub(crate) tracking_params: TrackingParamsDialogState,
+    pub(crate) mode_toolbar: ModeToolbarState,
+    pub(crate) lineage_candidate_index: usize,
+    pub(crate) pending_manual_tracking_edits: Vec<cellacdc_rs::ManualTrackingEdit>,
 }
 
 impl Default for AnnotationWorkspaceState {
     fn default() -> Self {
         Self {
             tool: AnnotationTool::Select,
+            mode: GuiMode::Viewer,
+            lineage_tool: LineageTool::NoTool,
             brush_radius: 5,
             relabel_target: String::new(),
             merge_target: String::new(),
+            mother_target: String::new(),
             save_as_endname: "edited".to_string(),
             pending_action: None,
             dialogs: GuiDialogState::default(),
@@ -330,6 +431,14 @@ impl Default for AnnotationWorkspaceState {
             export_video: ExportVideoDialogState::default(),
             version_browser: VersionBrowserState::default(),
             shortcut_editor: ShortcutEditorState::default(),
+            manual_tracking: ManualTrackingState::default(),
+            cell_cycle_dialog: CellCycleDialogState::default(),
+            cell_cycle_table: CellCycleTableState::default(),
+            lineage_review: LineageReviewDialogState::default(),
+            tracking_params: TrackingParamsDialogState::default(),
+            mode_toolbar: ModeToolbarState { show: true },
+            lineage_candidate_index: 0,
+            pending_manual_tracking_edits: Vec::new(),
         }
     }
 }

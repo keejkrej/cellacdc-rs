@@ -1,6 +1,6 @@
 use super::app::CellAcdcGui;
 use super::state::{
-    AnnotationTool, GuiActionId, GuiActionState, ShortcutBinding,
+    AnnotationTool, GuiActionId, GuiActionState, GuiMode, LineageTool, ShortcutBinding,
 };
 
 pub(crate) const FILE_ACTIONS: &[GuiActionId] = &[
@@ -45,6 +45,24 @@ pub(crate) const SEGMENT_ACTIONS: &[GuiActionId] = &[
     GuiActionId::OpenSegmentationWorkspace,
 ];
 pub(crate) const MEASUREMENT_ACTIONS: &[GuiActionId] = &[GuiActionId::MeasureCurrentPosition];
+pub(crate) const TRACKING_ACTIONS: &[GuiActionId] = &[
+    GuiActionId::RepeatTracking,
+    GuiActionId::TrackCurrentFrame,
+    GuiActionId::ManualTracking,
+    GuiActionId::EditRealTimeTrackerParameters,
+];
+pub(crate) const CELL_CYCLE_ACTIONS: &[GuiActionId] = &[
+    GuiActionId::AssignMotherToBud,
+    GuiActionId::EditCellCycleAnnotations,
+    GuiActionId::ViewCellCycleAnnotations,
+];
+pub(crate) const LINEAGE_ACTIONS: &[GuiActionId] = &[
+    GuiActionId::FindNextPotentialMother,
+    GuiActionId::UnknownLineage,
+    GuiActionId::NoLineageTool,
+    GuiActionId::PropagateLineage,
+    GuiActionId::ViewLineageChanges,
+];
 pub(crate) const SETTINGS_ACTIONS: &[GuiActionId] = &[
     GuiActionId::AutosaveInterval,
     GuiActionId::CustomizeKeyboardShortcuts,
@@ -93,6 +111,22 @@ pub(crate) fn action_label(action: GuiActionId) -> &'static str {
         GuiActionId::ToolRelabel => "Relabel",
         GuiActionId::ToolMerge => "Merge",
         GuiActionId::ToolDelete => "Delete",
+        GuiActionId::ModeViewer => "Viewer",
+        GuiActionId::ModeSegmentationAndTracking => "Segmentation and Tracking",
+        GuiActionId::ModeCellCycleAnalysis => "Cell cycle analysis",
+        GuiActionId::ModeNormalDivisionLineageTree => "Normal division: Lineage tree",
+        GuiActionId::RepeatTracking => "Repeat Tracking",
+        GuiActionId::TrackCurrentFrame => "Track Current Frame Forward",
+        GuiActionId::ManualTracking => "Manual Tracking",
+        GuiActionId::EditRealTimeTrackerParameters => "Edit Real-time Tracker Parameters",
+        GuiActionId::AssignMotherToBud => "Assign Mother To Bud",
+        GuiActionId::EditCellCycleAnnotations => "Edit Cell Cycle Annotations",
+        GuiActionId::ViewCellCycleAnnotations => "View Cell Cycle Annotations",
+        GuiActionId::FindNextPotentialMother => "Find Next Potential Mother",
+        GuiActionId::UnknownLineage => "Unknown Lineage",
+        GuiActionId::NoLineageTool => "No Lineage Tool",
+        GuiActionId::PropagateLineage => "Propagate Lineage",
+        GuiActionId::ViewLineageChanges => "View Lineage Changes",
     }
 }
 
@@ -152,6 +186,42 @@ pub(crate) fn default_shortcut_binding(action: GuiActionId) -> Option<ShortcutBi
             shift: false,
             alt: false,
         },
+        GuiActionId::ManualTracking => ShortcutBinding {
+            key: "T".to_string(),
+            command: false,
+            shift: false,
+            alt: false,
+        },
+        GuiActionId::RepeatTracking => ShortcutBinding {
+            key: "T".to_string(),
+            command: false,
+            shift: true,
+            alt: false,
+        },
+        GuiActionId::AssignMotherToBud => ShortcutBinding {
+            key: "A".to_string(),
+            command: false,
+            shift: false,
+            alt: false,
+        },
+        GuiActionId::UnknownLineage => ShortcutBinding {
+            key: "U".to_string(),
+            command: false,
+            shift: false,
+            alt: false,
+        },
+        GuiActionId::NoLineageTool => ShortcutBinding {
+            key: "N".to_string(),
+            command: false,
+            shift: false,
+            alt: false,
+        },
+        GuiActionId::PropagateLineage => ShortcutBinding {
+            key: "P".to_string(),
+            command: false,
+            shift: false,
+            alt: false,
+        },
         _ => return None,
     };
     Some(binding)
@@ -163,13 +233,20 @@ impl CellAcdcGui {
         let has_document = self.current_annotation_document().is_some();
         let has_selection = self.current_annotation_label().is_some();
         let can_edit = self.annotation_edits_allowed();
+        let tracking_mode = self.annotation.mode == GuiMode::SegmentationAndTracking;
+        let cell_cycle_mode = self.annotation.mode == GuiMode::CellCycleAnalysis;
+        let lineage_mode = self.annotation.mode == GuiMode::NormalDivisionLineageTree;
         let mut state = GuiActionState::default();
         state.enabled = match action {
             GuiActionId::OpenSession
             | GuiActionId::LoadDifferentPosition
             | GuiActionId::OpenLogs
             | GuiActionId::AboutRustPort
-            | GuiActionId::CurrentLimitations => true,
+            | GuiActionId::CurrentLimitations
+            | GuiActionId::ModeViewer
+            | GuiActionId::ModeSegmentationAndTracking
+            | GuiActionId::ModeCellCycleAnalysis
+            | GuiActionId::ModeNormalDivisionLineageTree => true,
             GuiActionId::RevealCurrentPosition
             | GuiActionId::Save
             | GuiActionId::QuickSave
@@ -201,6 +278,20 @@ impl CellAcdcGui {
             | GuiActionId::ToolRelabel
             | GuiActionId::ToolMerge
             | GuiActionId::ToolDelete => has_document && (can_edit || has_selection),
+            GuiActionId::RepeatTracking | GuiActionId::TrackCurrentFrame => {
+                has_session && tracking_mode && !self.annotation_document_dirty()
+            }
+            GuiActionId::ManualTracking => has_document && tracking_mode,
+            GuiActionId::EditRealTimeTrackerParameters => has_session && tracking_mode,
+            GuiActionId::AssignMotherToBud => has_session && cell_cycle_mode && has_selection,
+            GuiActionId::EditCellCycleAnnotations | GuiActionId::ViewCellCycleAnnotations => {
+                has_session && cell_cycle_mode
+            }
+            GuiActionId::FindNextPotentialMother
+            | GuiActionId::UnknownLineage
+            | GuiActionId::NoLineageTool
+            | GuiActionId::PropagateLineage
+            | GuiActionId::ViewLineageChanges => has_session && lineage_mode && has_selection,
         };
         state.checked = match action {
             GuiActionId::ToggleObjectsDock => self.persisted.display.show_objects_dock,
@@ -219,6 +310,22 @@ impl CellAcdcGui {
             GuiActionId::ToolRelabel => self.annotation.tool == AnnotationTool::Relabel,
             GuiActionId::ToolMerge => self.annotation.tool == AnnotationTool::Merge,
             GuiActionId::ToolDelete => self.annotation.tool == AnnotationTool::Delete,
+            GuiActionId::ModeViewer => self.annotation.mode == GuiMode::Viewer,
+            GuiActionId::ModeSegmentationAndTracking => {
+                self.annotation.mode == GuiMode::SegmentationAndTracking
+            }
+            GuiActionId::ModeCellCycleAnalysis => {
+                self.annotation.mode == GuiMode::CellCycleAnalysis
+            }
+            GuiActionId::ModeNormalDivisionLineageTree => {
+                self.annotation.mode == GuiMode::NormalDivisionLineageTree
+            }
+            GuiActionId::ManualTracking => self.annotation.manual_tracking.active,
+            GuiActionId::FindNextPotentialMother => {
+                self.annotation.lineage_tool == LineageTool::FindNextMother
+            }
+            GuiActionId::UnknownLineage => self.annotation.lineage_tool == LineageTool::UnknownLineage,
+            GuiActionId::NoLineageTool => self.annotation.lineage_tool == LineageTool::NoTool,
             _ => false,
         };
         state
@@ -323,7 +430,7 @@ impl CellAcdcGui {
             }
             GuiActionId::CurrentLimitations => {
                 self.append_log(
-                    "Current GUI limitations: no lineage editor, no cell-cycle editor, no OS-native menu bar."
+                    "Current GUI limitations: custom annotations, 3D interactive parity, and Python-only trackers are still deferred."
                         .to_string(),
                 );
             }
@@ -333,6 +440,67 @@ impl CellAcdcGui {
             GuiActionId::ToolRelabel => self.annotation.tool = AnnotationTool::Relabel,
             GuiActionId::ToolMerge => self.annotation.tool = AnnotationTool::Merge,
             GuiActionId::ToolDelete => self.annotation.tool = AnnotationTool::Delete,
+            GuiActionId::ModeViewer => self.annotation.mode = GuiMode::Viewer,
+            GuiActionId::ModeSegmentationAndTracking => {
+                self.annotation.mode = GuiMode::SegmentationAndTracking;
+            }
+            GuiActionId::ModeCellCycleAnalysis => {
+                self.annotation.mode = GuiMode::CellCycleAnalysis;
+            }
+            GuiActionId::ModeNormalDivisionLineageTree => {
+                self.annotation.mode = GuiMode::NormalDivisionLineageTree;
+            }
+            GuiActionId::RepeatTracking => self.start_repeat_tracking_job(None),
+            GuiActionId::TrackCurrentFrame => {
+                self.start_repeat_tracking_job(Some(self.selected_frame_idx));
+            }
+            GuiActionId::ManualTracking => {
+                self.annotation.manual_tracking.active = !self.annotation.manual_tracking.active;
+            }
+            GuiActionId::EditRealTimeTrackerParameters => {
+                self.annotation.dialogs.tracking_params_open = true;
+            }
+            GuiActionId::AssignMotherToBud => {
+                if let Err(err) = self.assign_selected_bud_to_mother() {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            GuiActionId::EditCellCycleAnnotations => {
+                if let Err(err) = self.load_cell_cycle_dialog_state() {
+                    self.last_error = Some(err.to_string());
+                }
+                self.annotation.dialogs.cell_cycle_editor_open = true;
+            }
+            GuiActionId::ViewCellCycleAnnotations => {
+                if let Err(err) = self.load_cell_cycle_dialog_state() {
+                    self.last_error = Some(err.to_string());
+                }
+                self.annotation.dialogs.cell_cycle_viewer_open = true;
+            }
+            GuiActionId::FindNextPotentialMother => {
+                self.annotation.lineage_tool = LineageTool::FindNextMother;
+                if let Err(err) = self.select_next_lineage_candidate() {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            GuiActionId::UnknownLineage => {
+                self.annotation.lineage_tool = LineageTool::UnknownLineage;
+                if let Err(err) = self.mark_selected_lineage_unknown() {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            GuiActionId::NoLineageTool => self.annotation.lineage_tool = LineageTool::NoTool,
+            GuiActionId::PropagateLineage => {
+                if let Err(err) = self.propagate_selected_lineage() {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+            GuiActionId::ViewLineageChanges => {
+                if let Err(err) = self.refresh_lineage_review() {
+                    self.last_error = Some(err.to_string());
+                }
+                self.annotation.dialogs.lineage_review_open = true;
+            }
         }
     }
 }

@@ -5,14 +5,17 @@ use super::state::{
     LoadedMaskDocument, ProjectionMode, ViewKey,
 };
 use super::workspaces;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use cellacdc_rs::{
-    inspect_position_frame, open_experiment_session, export_frame_image, export_frame_sequence,
-    ExperimentSession, FrameData, FrameInspection, FrameInspectionConfig, FrameProjection,
-    ImageExportFormat, ImportSource, MaskData, MaskEditCommand, MaskEditSession,
-    MaskPathResolution, MaskRecoveryState, MaskSaveMode, OverlayRenderStyle, OverwritePolicy,
-    PositionSession, RenderFrameRequest, ScaleBarStyle, SegmentationLayout,
-    SegmentationParams, TimestampStyle,
+    assign_mother_bud, find_next_mother_candidate, inspect_position_frame, mark_unknown_lineage,
+    open_experiment_session, export_frame_image, export_frame_sequence,
+    propagate_lineage_for_position, review_lineage_frame,
+    save_cell_cycle_annotations, set_lineage_parent_for_position, CellCycleEdit,
+    CellCyclePropagationConfig, ExperimentSession, FrameData, FrameInspection,
+    FrameInspectionConfig, FrameProjection, ImageExportFormat, ImportSource, LineageFrameEdit,
+    MaskData, MaskEditCommand, MaskEditSession, MaskPathResolution,
+    MaskRecoveryState, MaskSaveMode, OverlayRenderStyle, OverwritePolicy, PositionSession,
+    RenderFrameRequest, ScaleBarStyle, SegmentationLayout, SegmentationParams, TimestampStyle,
 };
 use eframe::egui::{self, TextureHandle};
 use rfd::FileDialog;
@@ -68,7 +71,12 @@ impl CellAcdcGui {
         let mut app = Self {
             annotation: AnnotationWorkspaceState {
                 tool: persisted.annotation_tool,
+                mode: persisted.gui_mode,
+                lineage_tool: persisted.lineage_tool,
                 brush_radius: persisted.annotation_brush_radius,
+                tracking_params: super::state::TrackingParamsDialogState {
+                    ioa_threshold: persisted.track_ioa_threshold,
+                },
                 ..Default::default()
             },
             persisted,
@@ -580,12 +588,14 @@ impl CellAcdcGui {
     }
 
     pub(crate) fn save_current_annotation_overwrite(&mut self) -> Result<()> {
+        let selected_endname = self.persisted.selected_segmentation_endname.clone();
         let document = self
             .current_annotation_document_mut()
             .ok_or_else(|| anyhow!("No GUI mask document is loaded"))?;
         let saved = document.session.save_with_mode(MaskSaveMode::Overwrite)?;
         document.revision += 1;
         self.pending_annotation_autosave = false;
+        self.flush_pending_manual_tracking_edits(selected_endname.as_deref())?;
         self.append_log(format!("Saved GUI edits -> {}", saved.display()));
         self.reload_experiment();
         self.invalidate_texture();
@@ -609,12 +619,31 @@ impl CellAcdcGui {
             .save_with_mode(MaskSaveMode::SaveAs(target_path.clone()))?;
         document.revision += 1;
         self.pending_annotation_autosave = false;
+        self.flush_pending_manual_tracking_edits(Some(&endname))?;
         self.persisted.selected_segmentation_endname = Some(endname.clone());
         self.append_log(format!("Saved GUI version -> {}", saved.display()));
         self.reload_experiment();
         self.clear_annotation_document();
         self.ensure_annotation_document_loaded();
         self.invalidate_texture();
+        Ok(())
+    }
+
+    fn flush_pending_manual_tracking_edits(&mut self, segm_endname: Option<&str>) -> Result<()> {
+        let Some(position_dir) = self
+            .selected_position()
+            .map(|position| position.spec.position_dir.clone())
+        else {
+            return Ok(());
+        };
+        let edits = std::mem::take(&mut self.annotation.pending_manual_tracking_edits);
+        for edit in edits {
+            cellacdc_rs::apply_manual_tracking_edit(
+                &position_dir,
+                segm_endname,
+                &edit,
+            )?;
+        }
         Ok(())
     }
 
@@ -800,6 +829,184 @@ impl CellAcdcGui {
             self.inspection_key = Some(key);
         }
         Ok(self.frame_inspection.as_ref())
+    }
+
+    pub(crate) fn load_cell_cycle_dialog_state(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Err(anyhow!("No session is open"));
+        };
+        let table = cellacdc_rs::load_cell_cycle_annotations(
+            &position.spec.position_dir,
+            self.persisted.selected_segmentation_endname.as_deref(),
+        )?;
+        self.annotation.cell_cycle_table.records = table.records;
+        self.annotation.cell_cycle_dialog.error = None;
+        Ok(())
+    }
+
+    pub(crate) fn save_cell_cycle_dialog_state(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Err(anyhow!("No session is open"));
+        };
+        let existing = cellacdc_rs::load_cell_cycle_annotations(
+            &position.spec.position_dir,
+            self.persisted.selected_segmentation_endname.as_deref(),
+        )?;
+        let edits = self
+            .annotation
+            .cell_cycle_table
+            .records
+            .iter()
+            .filter(|record| record.frame_i == self.selected_frame_idx as i64)
+            .map(|record| CellCycleEdit {
+                frame_i: record.frame_i,
+                cell_id: record.cell_id,
+                cell_cycle_stage: Some(record.cell_cycle_stage.clone()),
+                generation_num: Some(record.generation_num),
+                relative_id: Some(record.relative_id),
+                relationship: Some(record.relationship.clone()),
+                emerg_frame_i: Some(record.emerg_frame_i),
+                division_frame_i: Some(record.division_frame_i),
+                is_history_known: Some(record.is_history_known),
+            })
+            .collect::<Vec<_>>();
+        let updated = if self.annotation.cell_cycle_dialog.apply_to_future {
+            let end_frame_i = self
+                .annotation
+                .cell_cycle_dialog
+                .propagate_end_frame
+                .trim()
+                .parse::<i64>()
+                .ok();
+            cellacdc_rs::propagate_cell_cycle_edits(
+                &existing,
+                &edits,
+                &CellCyclePropagationConfig {
+                    start_frame_i: self.selected_frame_idx as i64,
+                    end_frame_i,
+                },
+            )?
+        } else {
+            cellacdc_rs::apply_cell_cycle_edits(&existing, &edits)?
+        };
+        save_cell_cycle_annotations(&updated)?;
+        self.annotation.cell_cycle_table.records = updated.records;
+        self.append_log("Saved cell-cycle annotations".to_string());
+        Ok(())
+    }
+
+    pub(crate) fn assign_selected_bud_to_mother(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Err(anyhow!("No session is open"));
+        };
+        let bud_id = self
+            .current_annotation_label()
+            .ok_or_else(|| anyhow!("Select a bud ID first"))? as i64;
+        let mother_id = self
+            .annotation
+            .mother_target
+            .trim()
+            .parse::<i64>()
+            .with_context(|| "Mother ID must be an integer")?;
+        let updated = assign_mother_bud(
+            &position.spec.position_dir,
+            self.persisted.selected_segmentation_endname.as_deref(),
+            self.selected_frame_idx as i64,
+            bud_id,
+            mother_id,
+        )?;
+        self.annotation.cell_cycle_table.records = updated.records;
+        self.append_log(format!("Assigned bud {bud_id} to mother {mother_id}"));
+        Ok(())
+    }
+
+    pub(crate) fn refresh_lineage_review(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Err(anyhow!("No session is open"));
+        };
+        let review = review_lineage_frame(
+            &position.spec.position_dir,
+            self.persisted.selected_segmentation_endname.as_deref(),
+            self.selected_frame_idx as i64,
+        )?;
+        self.annotation.lineage_review.review = Some(review);
+        Ok(())
+    }
+
+    pub(crate) fn select_next_lineage_candidate(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Err(anyhow!("No session is open"));
+        };
+        let cell_id = self
+            .current_annotation_label()
+            .ok_or_else(|| anyhow!("Select an object first"))? as i64;
+        if let Some(candidate) = find_next_mother_candidate(
+            &position.spec.position_dir,
+            self.persisted.selected_segmentation_endname.as_deref(),
+            self.selected_frame_idx as i64,
+            cell_id,
+        )? {
+            self.annotation.mother_target = candidate.to_string();
+            self.annotation.highlight.searched_label = Some(candidate as u32);
+            self.append_log(format!("Suggested mother candidate for {cell_id}: {candidate}"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn mark_selected_lineage_unknown(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Err(anyhow!("No session is open"));
+        };
+        let cell_id = self
+            .current_annotation_label()
+            .ok_or_else(|| anyhow!("Select an object first"))? as i64;
+        mark_unknown_lineage(
+            &position.spec.position_dir,
+            self.persisted.selected_segmentation_endname.as_deref(),
+            self.selected_frame_idx as i64,
+            cell_id,
+        )?;
+        self.append_log(format!("Marked lineage unknown for Cell_ID {cell_id}"));
+        self.refresh_lineage_review()?;
+        Ok(())
+    }
+
+    pub(crate) fn propagate_selected_lineage(&mut self) -> Result<()> {
+        let Some(position) = self.selected_position() else {
+            return Err(anyhow!("No session is open"));
+        };
+        let cell_id = self
+            .current_annotation_label()
+            .ok_or_else(|| anyhow!("Select an object first"))? as i64;
+        if !self.annotation.mother_target.trim().is_empty() {
+            let parent_id = self
+                .annotation
+                .mother_target
+                .trim()
+                .parse::<i64>()
+                .with_context(|| "Mother ID must be an integer")?;
+            set_lineage_parent_for_position(
+                &position.spec.position_dir,
+                self.persisted.selected_segmentation_endname.as_deref(),
+                LineageFrameEdit {
+                    frame_i: self.selected_frame_idx as i64,
+                    cell_id,
+                    parent_id,
+                },
+            )?;
+        }
+        propagate_lineage_for_position(
+            &position.spec.position_dir,
+            self.persisted.selected_segmentation_endname.as_deref(),
+            self.selected_frame_idx as i64,
+            &[cell_id],
+        )?;
+        self.append_log(format!(
+            "Propagated lineage from frame {} for Cell_ID {}",
+            self.selected_frame_idx, cell_id
+        ));
+        self.refresh_lineage_review()?;
+        Ok(())
     }
 
     pub(crate) fn reveal_current_position(&self) -> Result<()> {
@@ -1093,6 +1300,9 @@ impl eframe::App for CellAcdcGui {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.persisted.annotation_tool = self.annotation.tool;
         self.persisted.annotation_brush_radius = self.annotation.brush_radius;
+        self.persisted.gui_mode = self.annotation.mode;
+        self.persisted.lineage_tool = self.annotation.lineage_tool;
+        self.persisted.track_ioa_threshold = self.annotation.tracking_params.ioa_threshold;
         if self.pending_annotation_autosave {
             if let Some(document) = self.current_annotation_document_mut() {
                 let _ = document.session.save_autosave();
@@ -1134,6 +1344,12 @@ impl CellAcdcGui {
             super::state::GuiActionId::ToolBrush,
             super::state::GuiActionId::ToolEraser,
             super::state::GuiActionId::HighlightSelectedId,
+            super::state::GuiActionId::ManualTracking,
+            super::state::GuiActionId::RepeatTracking,
+            super::state::GuiActionId::AssignMotherToBud,
+            super::state::GuiActionId::UnknownLineage,
+            super::state::GuiActionId::NoLineageTool,
+            super::state::GuiActionId::PropagateLineage,
         ];
         if let Some(action) =
             super::shortcuts::triggered_action(ctx, &self.persisted.shortcut_overrides, &actions)

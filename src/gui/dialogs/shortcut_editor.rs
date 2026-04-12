@@ -14,6 +14,12 @@ const SHORTCUT_ACTIONS: &[GuiActionId] = &[
     GuiActionId::ToolSelect,
     GuiActionId::ToolBrush,
     GuiActionId::ToolEraser,
+    GuiActionId::ManualTracking,
+    GuiActionId::RepeatTracking,
+    GuiActionId::AssignMotherToBud,
+    GuiActionId::UnknownLineage,
+    GuiActionId::NoLineageTool,
+    GuiActionId::PropagateLineage,
 ];
 
 impl CellAcdcGui {
