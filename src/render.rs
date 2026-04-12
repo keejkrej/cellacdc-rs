@@ -132,7 +132,8 @@ pub fn render_frame(request: &RenderFrameRequest) -> Result<RenderedFrame> {
                 if label != 0 {
                     let is_selected = request.overlay.selected_label == Some(label);
                     let is_highlighted = request.overlay.highlighted_label == Some(label);
-                    let overlay = overlay_color(label, &request.overlay, is_selected, is_highlighted);
+                    let overlay =
+                        overlay_color(label, &request.overlay, is_selected, is_highlighted);
                     let alpha = if request.overlay.true_transparency {
                         (request.overlay.alpha * 0.75).clamp(0.0, 1.0)
                     } else if is_selected || is_highlighted {
@@ -164,12 +165,7 @@ pub fn render_frame(request: &RenderFrameRequest) -> Result<RenderedFrame> {
 
     if !request.markers.is_empty() {
         for marker in &request.markers {
-            draw_overlay_marker(
-                &mut rgba,
-                request.frame.width,
-                request.frame.height,
-                marker,
-            );
+            draw_overlay_marker(&mut rgba, request.frame.width, request.frame.height, marker);
         }
     }
 
@@ -241,7 +237,10 @@ pub fn export_frame_sequence(
 
 fn write_rendered_frame(rendered: &RenderedFrame, output_path: &Path) -> Result<()> {
     let Some(parent) = output_path.parent() else {
-        return Err(anyhow!("Export path has no parent: {}", output_path.display()));
+        return Err(anyhow!(
+            "Export path has no parent: {}",
+            output_path.display()
+        ));
     };
     std::fs::create_dir_all(parent)?;
     let format = match output_path
@@ -362,12 +361,7 @@ fn draw_label_annotations(
     }
 }
 
-fn draw_overlay_marker(
-    rgba: &mut [u8],
-    width: usize,
-    height: usize,
-    marker: &OverlayMarker,
-) {
+fn draw_overlay_marker(rgba: &mut [u8], width: usize, height: usize, marker: &OverlayMarker) {
     let radius = marker.size.max(5) as i32 / 2;
     let cx = marker.x as i32;
     let cy = marker.y as i32;
@@ -384,10 +378,22 @@ fn draw_overlay_marker(
         "+" => {
             for delta in -radius..=radius {
                 if within_bounds(cx + delta, cy, width, height) {
-                    set_rgba_pixel(rgba, width, (cx + delta) as usize, cy as usize, marker.color);
+                    set_rgba_pixel(
+                        rgba,
+                        width,
+                        (cx + delta) as usize,
+                        cy as usize,
+                        marker.color,
+                    );
                 }
                 if within_bounds(cx, cy + delta, width, height) {
-                    set_rgba_pixel(rgba, width, cx as usize, (cy + delta) as usize, marker.color);
+                    set_rgba_pixel(
+                        rgba,
+                        width,
+                        cx as usize,
+                        (cy + delta) as usize,
+                        marker.color,
+                    );
                 }
             }
         }

@@ -12,7 +12,11 @@ impl CellAcdcGui {
             .show(ctx, |ui| {
                 ui.heading("Cell-ACDC objects");
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.annotation.object_dock.selected_tab, 0, "Measurements");
+                    ui.selectable_value(
+                        &mut self.annotation.object_dock.selected_tab,
+                        0,
+                        "Measurements",
+                    );
                 });
                 ui.separator();
                 match self.current_inspection() {
@@ -57,7 +61,8 @@ impl CellAcdcGui {
                             ui.separator();
                             ui.label(RichText::new("Per-channel intensity").strong());
                             for (channel, mean) in &object.channel_mean {
-                                let sum = object.channel_sum.get(channel).copied().unwrap_or_default();
+                                let sum =
+                                    object.channel_sum.get(channel).copied().unwrap_or_default();
                                 ui.label(format!("{channel}: mean {mean:.3}  sum {sum:.3}"));
                             }
                         } else {
@@ -68,10 +73,7 @@ impl CellAcdcGui {
                         ui.label("No segmentation is available for inspection.");
                     }
                     Err(err) => {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 60, 60),
-                            err.to_string(),
-                        );
+                        ui.colored_label(egui::Color32::from_rgb(200, 60, 60), err.to_string());
                     }
                 }
             });

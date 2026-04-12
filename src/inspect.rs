@@ -64,8 +64,15 @@ pub fn inspect_position_frame(config: FrameInspectionConfig) -> Result<FrameInsp
             config.projection,
         )?
         .ok_or_else(|| anyhow!("No segmentation is available for the selected frame"))?;
-    let regions = extract_regions(&segmentation.pixels, segmentation.height, segmentation.width);
-    let available_labels = regions.iter().map(|region| region.label).collect::<Vec<_>>();
+    let regions = extract_regions(
+        &segmentation.pixels,
+        segmentation.height,
+        segmentation.width,
+    );
+    let available_labels = regions
+        .iter()
+        .map(|region| region.label)
+        .collect::<Vec<_>>();
 
     let selected_object = if let Some(selected_label) = config.selected_label {
         let region = regions
@@ -76,11 +83,8 @@ pub fn inspect_position_frame(config: FrameInspectionConfig) -> Result<FrameInsp
             let mut channel_mean = BTreeMap::new();
             let mut channel_sum = BTreeMap::new();
             for channel in position.channel_names() {
-                let frame = position.load_channel_frame(
-                    &channel,
-                    config.frame_index,
-                    config.projection,
-                )?;
+                let frame =
+                    position.load_channel_frame(&channel, config.frame_index, config.projection)?;
                 let mut sum = 0.0f64;
                 for &(x, y) in &region.pixels {
                     sum += frame.pixels[y * frame.width + x] as f64;
@@ -169,7 +173,9 @@ fn load_cell_cycle_fields(
     let relationship_col = table.header_index("relationship")?;
     let history_col = table.header_index("is_history_known")?;
     for row in &table.rows {
-        if row[frame_col].as_i64() != Some(frame_index as i64) || row[id_col].as_i64() != Some(label as i64) {
+        if row[frame_col].as_i64() != Some(frame_index as i64)
+            || row[id_col].as_i64() != Some(label as i64)
+        {
             continue;
         }
         return Ok(Some(CellCycleInspection {
@@ -210,16 +216,18 @@ fn extract_regions(mask_frame: &[u32], height: usize, width: usize) -> Vec<Frame
             if label == 0 {
                 continue;
             }
-            let entry = accumulators.entry(label).or_insert_with(|| RegionAccumulator {
-                area: 0,
-                pixels: Vec::new(),
-                min_x: x,
-                min_y: y,
-                max_x: x,
-                max_y: y,
-                sum_x: 0.0,
-                sum_y: 0.0,
-            });
+            let entry = accumulators
+                .entry(label)
+                .or_insert_with(|| RegionAccumulator {
+                    area: 0,
+                    pixels: Vec::new(),
+                    min_x: x,
+                    min_y: y,
+                    max_x: x,
+                    max_y: y,
+                    sum_x: 0.0,
+                    sum_y: 0.0,
+                });
             entry.area += 1;
             entry.pixels.push((x, y));
             entry.min_x = entry.min_x.min(x);

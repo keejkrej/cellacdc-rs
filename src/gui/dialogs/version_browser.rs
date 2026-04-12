@@ -21,7 +21,8 @@ impl CellAcdcGui {
                         let selected =
                             self.annotation.version_browser.selected_endname == asset.endname;
                         if ui.selectable_label(selected, &asset.name).clicked() {
-                            self.annotation.version_browser.selected_endname = asset.endname.clone();
+                            self.annotation.version_browser.selected_endname =
+                                asset.endname.clone();
                         }
                     }
                 });

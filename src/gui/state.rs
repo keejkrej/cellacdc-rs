@@ -1,6 +1,8 @@
 use cellacdc_rs::{
     BackgroundRoiSet, CropPreview, CropRoiRect, CustomAnnotationStore, FrameProjection,
-    FreehandRoiMask, MaskEditSession, ViewPlane,
+    FreehandRoiMask, ImportConflictMode, ImportLayoutKind, ImportMetadataDraft, ImportOutputFormat,
+    ImportReaderBackend, ImportSamplePlaneSet, ImportSourceEntry, MaskEditSession,
+    MetadataReusePolicy, ViewPlane,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -596,6 +598,57 @@ pub(crate) struct DataPrepWorkspaceState {
     pub(crate) drag_start: Option<(usize, usize)>,
     pub(crate) drag_current: Option<(usize, usize)>,
     pub(crate) last_loaded_position: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DataStructureWorkspaceState {
+    pub(crate) source_path: String,
+    pub(crate) destination_path: String,
+    pub(crate) backend: ImportReaderBackend,
+    pub(crate) layout_kind: ImportLayoutKind,
+    pub(crate) conflict_mode: ImportConflictMode,
+    pub(crate) metadata_policy: MetadataReusePolicy,
+    pub(crate) output_format: ImportOutputFormat,
+    pub(crate) add_image_name: bool,
+    pub(crate) discovered_sources: Vec<ImportSourceEntry>,
+    pub(crate) metadata_drafts: Vec<ImportMetadataDraft>,
+    pub(crate) selected_source_idx: usize,
+    pub(crate) sample_planes: Option<ImportSamplePlaneSet>,
+    pub(crate) preview_frame_index: usize,
+    pub(crate) preview_z_index: usize,
+    pub(crate) selected_positions: Vec<String>,
+    pub(crate) save_channels: Vec<bool>,
+    pub(crate) time_range_start: String,
+    pub(crate) time_range_end: String,
+    pub(crate) imported_experiment_path: Option<PathBuf>,
+    pub(crate) error: Option<String>,
+}
+
+impl Default for DataStructureWorkspaceState {
+    fn default() -> Self {
+        Self {
+            source_path: String::new(),
+            destination_path: String::new(),
+            backend: ImportReaderBackend::Auto,
+            layout_kind: ImportLayoutKind::FilePerPosition,
+            conflict_mode: ImportConflictMode::CreateNewPositions,
+            metadata_policy: MetadataReusePolicy::ConfirmEverySource,
+            output_format: ImportOutputFormat::Tiff,
+            add_image_name: true,
+            discovered_sources: Vec::new(),
+            metadata_drafts: Vec::new(),
+            selected_source_idx: 0,
+            sample_planes: None,
+            preview_frame_index: 0,
+            preview_z_index: 0,
+            selected_positions: vec!["All Positions".to_string()],
+            save_channels: Vec::new(),
+            time_range_start: String::new(),
+            time_range_end: String::new(),
+            imported_experiment_path: None,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

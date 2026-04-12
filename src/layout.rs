@@ -68,6 +68,49 @@ pub struct MeasurementExperimentSpec {
     pub positions: Vec<MeasurementPositionSpec>,
 }
 
+pub fn discover_experiment_positions(experiment_dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+    let experiment_dir = experiment_dir.as_ref();
+    if !experiment_dir.is_dir() {
+        bail!(
+            "Experiment path is not a directory: {}",
+            experiment_dir.display()
+        );
+    }
+    let mut positions = Vec::new();
+    for entry in fs::read_dir(experiment_dir)
+        .with_context(|| format!("Failed to read {}", experiment_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name.starts_with("Position_") && path.join("Images").is_dir() {
+            positions.push(path);
+        }
+    }
+    positions.sort();
+    Ok(positions)
+}
+
+pub fn validate_imported_experiment(experiment_dir: impl AsRef<Path>) -> Result<()> {
+    let experiment_dir = experiment_dir.as_ref();
+    let positions = discover_experiment_positions(experiment_dir)?;
+    if positions.is_empty() {
+        bail!(
+            "No Cell-ACDC positions were discovered under {}",
+            experiment_dir.display()
+        );
+    }
+    for position in positions {
+        resolve_measurement_position(&position)?;
+    }
+    Ok(())
+}
+
 pub fn resolve_position(
     path: impl AsRef<Path>,
     phase_channel: impl Into<String>,

@@ -2,7 +2,10 @@ use super::state::{
     AnnotationTool, AppRoute, DisplaySettingsState, GuiDockLayoutState, GuiMode, LineageTool,
     ProjectionMode, ShortcutOverrides, UtilityState,
 };
-use cellacdc_rs::ViewPlane;
+use cellacdc_rs::{
+    ImportConflictMode, ImportLayoutKind, ImportOutputFormat, ImportReaderBackend,
+    MetadataReusePolicy, ViewPlane,
+};
 use eframe::Storage;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +34,12 @@ pub(crate) struct PersistedState {
     pub(crate) show_segmentation_overlay: bool,
     pub(crate) selected_channel: String,
     pub(crate) selected_segmentation_endname: Option<String>,
+    pub(crate) data_structure_backend: ImportReaderBackend,
+    pub(crate) data_structure_layout_kind: ImportLayoutKind,
+    pub(crate) data_structure_conflict_mode: ImportConflictMode,
+    pub(crate) data_structure_metadata_policy: MetadataReusePolicy,
+    pub(crate) data_structure_output_format: ImportOutputFormat,
+    pub(crate) data_structure_destination_path: String,
     pub(crate) data_prep_active_channel: String,
     pub(crate) data_prep_projection_mode: ProjectionMode,
     pub(crate) data_prep_z_index: usize,
@@ -71,6 +80,12 @@ impl Default for PersistedState {
             show_segmentation_overlay: true,
             selected_channel: String::new(),
             selected_segmentation_endname: None,
+            data_structure_backend: ImportReaderBackend::Auto,
+            data_structure_layout_kind: ImportLayoutKind::FilePerPosition,
+            data_structure_conflict_mode: ImportConflictMode::CreateNewPositions,
+            data_structure_metadata_policy: MetadataReusePolicy::ConfirmEverySource,
+            data_structure_output_format: ImportOutputFormat::Tiff,
+            data_structure_destination_path: String::new(),
             data_prep_active_channel: String::new(),
             data_prep_projection_mode: ProjectionMode::Max,
             data_prep_z_index: 0,

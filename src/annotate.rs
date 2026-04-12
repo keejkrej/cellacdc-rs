@@ -143,8 +143,15 @@ pub struct CellCyclePropagationConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineageEditAction {
-    SetParent { frame_i: i64, cell_id: i64, parent_id: i64 },
-    SetUnknown { frame_i: i64, cell_id: i64 },
+    SetParent {
+        frame_i: i64,
+        cell_id: i64,
+        parent_id: i64,
+    },
+    SetUnknown {
+        frame_i: i64,
+        cell_id: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,10 +204,20 @@ pub fn load_custom_annotation_definitions(
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read custom annotation definitions {}", path.display()))?;
-    let definitions = serde_json::from_str::<BTreeMap<String, CustomAnnotationDefinition>>(&content)
-        .with_context(|| format!("Failed to parse custom annotation definitions {}", path.display()))?;
+    let content = fs::read_to_string(path).with_context(|| {
+        format!(
+            "Failed to read custom annotation definitions {}",
+            path.display()
+        )
+    })?;
+    let definitions =
+        serde_json::from_str::<BTreeMap<String, CustomAnnotationDefinition>>(&content)
+            .with_context(|| {
+                format!(
+                    "Failed to parse custom annotation definitions {}",
+                    path.display()
+                )
+            })?;
     Ok(definitions)
 }
 
@@ -213,8 +230,12 @@ pub fn save_custom_annotation_definitions(
         fs::create_dir_all(parent)?;
     }
     let content = serde_json::to_string_pretty(definitions)?;
-    fs::write(path, content)
-        .with_context(|| format!("Failed to save custom annotation definitions {}", path.display()))?;
+    fs::write(path, content).with_context(|| {
+        format!(
+            "Failed to save custom annotation definitions {}",
+            path.display()
+        )
+    })?;
     Ok(path.to_path_buf())
 }
 
@@ -292,8 +313,14 @@ pub fn apply_custom_annotation_mutation(
                 ids.remove(&object_id);
             }
         }
-        CustomAnnotationMutation::RenameDefinition { old_name, definition }
-        | CustomAnnotationMutation::UpdateDefinition { old_name, definition } => {
+        CustomAnnotationMutation::RenameDefinition {
+            old_name,
+            definition,
+        }
+        | CustomAnnotationMutation::UpdateDefinition {
+            old_name,
+            definition,
+        } => {
             validate_custom_annotation_definition(&definition)?;
             if definition.kind != CustomAnnotationKind::SingleTimePoint {
                 bail!("Only Single time-point custom annotations are currently supported");
@@ -346,10 +373,7 @@ pub fn write_custom_annotations_to_acdc_output(
     let annotation_columns = table
         .headers
         .iter()
-        .filter(|header| {
-            store.definitions.contains_key(*header)
-                || active.contains_key(*header)
-        })
+        .filter(|header| store.definitions.contains_key(*header) || active.contains_key(*header))
         .cloned()
         .collect::<Vec<_>>();
     if delete_missing_columns {
@@ -377,7 +401,10 @@ pub fn write_custom_annotations_to_acdc_output(
 
     for name in store.definitions.keys() {
         if table.maybe_header_index(name).is_none() {
-            table.with_column(name.clone(), vec![TableValue::Number(0.0); table.rows.len()])?;
+            table.with_column(
+                name.clone(),
+                vec![TableValue::Number(0.0); table.rows.len()],
+            )?;
         }
         let col_idx = table.header_index(name)?;
         let memberships = active.get(name);
@@ -395,12 +422,18 @@ pub fn write_custom_annotations_to_acdc_output(
     Ok(path)
 }
 
-pub fn build_snapshot_profile(size_t: usize, size_z: usize, view_plane: ViewPlane) -> SnapshotProfile {
+pub fn build_snapshot_profile(
+    size_t: usize,
+    size_z: usize,
+    view_plane: ViewPlane,
+) -> SnapshotProfile {
     let is_snapshot = size_t <= 1;
     SnapshotProfile {
         is_snapshot,
         is_3d_snapshot: is_snapshot && size_z > 1,
-        editing_allowed_on_current_plane: !is_snapshot || size_z <= 1 || view_plane == ViewPlane::XY,
+        editing_allowed_on_current_plane: !is_snapshot
+            || size_z <= 1
+            || view_plane == ViewPlane::XY,
         save_scope_required: is_snapshot,
     }
 }
@@ -415,7 +448,9 @@ pub fn resolve_snapshot_save_scope(
     if selected_positions.len() == 1 && selected_positions.contains(current_position_key) {
         return Ok(SnapshotSaveScope::CurrentPosition);
     }
-    Ok(SnapshotSaveScope::SelectedPositions(selected_positions.clone()))
+    Ok(SnapshotSaveScope::SelectedPositions(
+        selected_positions.clone(),
+    ))
 }
 
 pub fn load_cell_cycle_annotations(
@@ -423,7 +458,11 @@ pub fn load_cell_cycle_annotations(
     segm_endname: Option<&str>,
 ) -> Result<CellCycleAnnotationTable> {
     let position = open_position_session(position_dir.as_ref())?;
-    let path = acdc_output_path(&position.spec.images_dir, &position.spec.basename, segm_endname);
+    let path = acdc_output_path(
+        &position.spec.images_dir,
+        &position.spec.basename,
+        segm_endname,
+    );
     let table = read_table(&path)
         .with_context(|| format!("Failed to load Cell-ACDC output {}", path.display()))?;
     ensure_required_columns(&table, REQUIRED_CCA_COLUMNS)?;
@@ -510,7 +549,9 @@ pub fn repeat_tracking_current_position(
 
     let start_frame = match scope {
         TrackingRunScope::CurrentPosition => 0,
-        TrackingRunScope::CurrentFrameToEnd { start_frame } => start_frame.min(size_t.saturating_sub(1)),
+        TrackingRunScope::CurrentFrameToEnd { start_frame } => {
+            start_frame.min(size_t.saturating_sub(1))
+        }
     };
     let anchor = start_frame.saturating_sub(1);
     let frames = (anchor..size_t)
@@ -555,7 +596,11 @@ pub fn apply_manual_tracking_edit(
     }
 
     let position = open_position_session(position_dir.as_ref())?;
-    let table_path = acdc_output_path(&position.spec.images_dir, &position.spec.basename, segm_endname);
+    let table_path = acdc_output_path(
+        &position.spec.images_dir,
+        &position.spec.basename,
+        segm_endname,
+    );
     if !table_path.exists() {
         return Ok(ManualTrackingPreview {
             changed_pixels: 0,
@@ -571,7 +616,12 @@ pub fn apply_manual_tracking_edit(
         if target_row.is_some() && edit.source_label != edit.target_label {
             updated.rows.remove(source_row);
         } else {
-            write_row_number(&mut updated, source_row, "Cell_ID", edit.target_label as i64)?;
+            write_row_number(
+                &mut updated,
+                source_row,
+                "Cell_ID",
+                edit.target_label as i64,
+            )?;
         }
         let updated_table = cell_cycle_table_from_table(table.path.clone(), updated)?;
         save_cell_cycle_annotations(&updated_table)?;
@@ -623,7 +673,8 @@ pub fn mark_unknown_lineage(
     frame_i: i64,
     cell_id: i64,
 ) -> Result<LineageState> {
-    let (lineage_path, mut state) = load_or_initialize_lineage(position_dir.as_ref(), segm_endname)?;
+    let (lineage_path, mut state) =
+        load_or_initialize_lineage(position_dir.as_ref(), segm_endname)?;
     state = set_lineage_unknown(state, frame_i, cell_id)?;
     write_table(&lineage_path, &state.to_table())?;
     Ok(state)
@@ -660,7 +711,8 @@ pub fn set_lineage_parent_for_position(
     segm_endname: Option<&str>,
     edit: LineageFrameEdit,
 ) -> Result<LineageState> {
-    let (lineage_path, mut state) = load_or_initialize_lineage(position_dir.as_ref(), segm_endname)?;
+    let (lineage_path, mut state) =
+        load_or_initialize_lineage(position_dir.as_ref(), segm_endname)?;
     state = set_lineage_parent(state, edit.frame_i, edit.cell_id, edit.parent_id)?;
     write_table(&lineage_path, &state.to_table())?;
     Ok(state)
@@ -672,7 +724,8 @@ pub fn propagate_lineage_for_position(
     frame_i: i64,
     cell_ids: &[i64],
 ) -> Result<LineageState> {
-    let (lineage_path, mut state) = load_or_initialize_lineage(position_dir.as_ref(), segm_endname)?;
+    let (lineage_path, mut state) =
+        load_or_initialize_lineage(position_dir.as_ref(), segm_endname)?;
     state = propagate_lineage_from_frame(state, frame_i, cell_ids)?;
     write_table(&lineage_path, &state.to_table())?;
     Ok(state)
@@ -683,7 +736,11 @@ fn load_or_initialize_lineage(
     segm_endname: Option<&str>,
 ) -> Result<(PathBuf, LineageState)> {
     let position = open_position_session(position_dir)?;
-    let acdc_path = acdc_output_path(&position.spec.images_dir, &position.spec.basename, segm_endname);
+    let acdc_path = acdc_output_path(
+        &position.spec.images_dir,
+        &position.spec.basename,
+        segm_endname,
+    );
     let lineage_path = lineage_output_path(&acdc_path);
     if lineage_path.exists() {
         let table = read_table(&lineage_path)?;
@@ -743,7 +800,11 @@ fn validate_cell_cycle_edit(edit: &CellCycleEdit) -> Result<()> {
     Ok(())
 }
 
-fn apply_cell_cycle_edit_to_row(table: &mut Table, row_idx: usize, edit: &CellCycleEdit) -> Result<()> {
+fn apply_cell_cycle_edit_to_row(
+    table: &mut Table,
+    row_idx: usize,
+    edit: &CellCycleEdit,
+) -> Result<()> {
     if let Some(value) = &edit.cell_cycle_stage {
         write_row_text(table, row_idx, "cell_cycle_stage", value)?;
     }
@@ -914,7 +975,10 @@ mod tests {
     use tempfile::tempdir;
 
     fn sample_table() -> CellCycleAnnotationTable {
-        let headers = REQUIRED_CCA_COLUMNS.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+        let headers = REQUIRED_CCA_COLUMNS
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
         let source_table = Table {
             headers: headers.clone(),
             rows: vec![
@@ -1038,7 +1102,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(!untoggled.annotated_ids_by_position["Position_1"]["mitotic_entry"][&3].contains(&7));
+        assert!(
+            !untoggled.annotated_ids_by_position["Position_1"]["mitotic_entry"][&3].contains(&7)
+        );
     }
 
     #[test]

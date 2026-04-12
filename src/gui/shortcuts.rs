@@ -138,7 +138,11 @@ fn modifiers_from_binding(binding: &ShortcutBinding) -> Modifiers {
 pub(crate) fn display_binding(binding: &ShortcutBinding) -> String {
     let mut parts = Vec::new();
     if binding.command {
-        parts.push(if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" });
+        parts.push(if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Ctrl"
+        });
     }
     if binding.alt {
         parts.push("Alt");
@@ -150,10 +154,7 @@ pub(crate) fn display_binding(binding: &ShortcutBinding) -> String {
     parts.join("+")
 }
 
-pub(crate) fn shortcut_label(
-    overrides: &ShortcutOverrides,
-    action: GuiActionId,
-) -> Option<String> {
+pub(crate) fn shortcut_label(overrides: &ShortcutOverrides, action: GuiActionId) -> Option<String> {
     let binding = overrides
         .bindings
         .iter()
@@ -239,10 +240,16 @@ pub(crate) fn set_override(
     action: GuiActionId,
     binding: ShortcutBinding,
 ) {
-    if let Some(entry) = overrides.bindings.iter_mut().find(|entry| entry.action == action) {
+    if let Some(entry) = overrides
+        .bindings
+        .iter_mut()
+        .find(|entry| entry.action == action)
+    {
         entry.binding = binding;
     } else {
-        overrides.bindings.push(super::state::ShortcutOverride { action, binding });
+        overrides
+            .bindings
+            .push(super::state::ShortcutOverride { action, binding });
     }
 }
 

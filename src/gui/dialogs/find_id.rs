@@ -16,7 +16,13 @@ impl CellAcdcGui {
                 ui.text_edit_singleline(&mut self.annotation.highlight.highlighted_input);
                 ui.horizontal(|ui| {
                     if ui.button("Apply").clicked() {
-                        match self.annotation.highlight.highlighted_input.trim().parse::<u32>() {
+                        match self
+                            .annotation
+                            .highlight
+                            .highlighted_input
+                            .trim()
+                            .parse::<u32>()
+                        {
                             Ok(label) => {
                                 if let Err(err) = self.annotation_select_label(Some(label)) {
                                     self.last_error = Some(err.to_string());

@@ -311,8 +311,9 @@ impl CellAcdcGui {
                     .min(available.y / image_size.y)
                     .max(0.1);
                 let desired = image_size * scale;
-                let response =
-                    ui.add(egui::Image::new((texture.id(), desired)).sense(egui::Sense::click_and_drag()));
+                let response = ui.add(
+                    egui::Image::new((texture.id(), desired)).sense(egui::Sense::click_and_drag()),
+                );
                 self.handle_annotation_canvas_interaction(
                     &response,
                     [texture.size()[0], texture.size()[1]],
@@ -337,7 +338,9 @@ impl CellAcdcGui {
             return;
         };
         self.update_canvas_status(x, y);
-        let ctrl_modifier = response.ctx.input(|input| input.modifiers.ctrl || input.modifiers.command);
+        let ctrl_modifier = response
+            .ctx
+            .input(|input| input.modifiers.ctrl || input.modifiers.command);
         if response.secondary_clicked() {
             let should_toggle = matches!(self.annotation.mode, GuiMode::CustomAnnotations)
                 || (matches!(self.annotation.mode, GuiMode::Snapshot) && ctrl_modifier);
@@ -360,20 +363,15 @@ impl CellAcdcGui {
                         }
                     })
                 {
-                    if let Err(err) = self.toggle_custom_annotation_for_object(self.selected_frame_idx, label)
+                    if let Err(err) =
+                        self.toggle_custom_annotation_for_object(self.selected_frame_idx, label)
                     {
                         self.last_error = Some(err.to_string());
-                    } else if let Some(active) = self
-                        .annotation
-                        .active_custom_annotation
-                        .active_name
-                        .clone()
+                    } else if let Some(active) =
+                        self.annotation.active_custom_annotation.active_name.clone()
                     {
-                        if let Some(definition) = self
-                            .annotation
-                            .custom_annotations
-                            .definitions
-                            .get(&active)
+                        if let Some(definition) =
+                            self.annotation.custom_annotations.definitions.get(&active)
                         {
                             if !definition.keep_active {
                                 self.annotation.active_custom_annotation.active_name = None;
@@ -451,20 +449,11 @@ impl CellAcdcGui {
         self.status_text = match label {
             Some(label) => format!(
                 "Frame {}  {}  x={} y={}  ID={}  {}",
-                self.selected_frame_idx,
-                plane,
-                x,
-                y,
-                label,
-                self.persisted.selected_channel
+                self.selected_frame_idx, plane, x, y, label, self.persisted.selected_channel
             ),
             None => format!(
                 "Frame {}  {}  x={} y={}  {}",
-                self.selected_frame_idx,
-                plane,
-                x,
-                y,
-                self.persisted.selected_channel
+                self.selected_frame_idx, plane, x, y, self.persisted.selected_channel
             ),
         };
         if self
@@ -472,7 +461,8 @@ impl CellAcdcGui {
             .map(|profile| profile.is_3d_snapshot && !profile.editing_allowed_on_current_plane)
             .unwrap_or(false)
         {
-            self.status_text.push_str("  Editing disabled outside XY view");
+            self.status_text
+                .push_str("  Editing disabled outside XY view");
         }
     }
 
@@ -523,17 +513,26 @@ impl CellAcdcGui {
         let Some((source_label, flat_indices)) = self.annotation_object_indices_at(x, y)? else {
             return Ok(());
         };
-        self.run_annotation_command(MaskEditCommand::Paint { flat_indices, label: target_label })?;
-        self.annotation.pending_manual_tracking_edits.push(cellacdc_rs::ManualTrackingEdit {
-            frame_index: self.selected_frame_idx,
-            source_label,
-            target_label,
-        });
+        self.run_annotation_command(MaskEditCommand::Paint {
+            flat_indices,
+            label: target_label,
+        })?;
+        self.annotation
+            .pending_manual_tracking_edits
+            .push(cellacdc_rs::ManualTrackingEdit {
+                frame_index: self.selected_frame_idx,
+                source_label,
+                target_label,
+            });
         self.annotation_select_label(Some(target_label))?;
         Ok(())
     }
 
-    fn annotation_object_indices_at(&self, x: usize, y: usize) -> Result<Option<(u32, Vec<usize>)>> {
+    fn annotation_object_indices_at(
+        &self,
+        x: usize,
+        y: usize,
+    ) -> Result<Option<(u32, Vec<usize>)>> {
         let Some(segmentation) = self.current_segmentation_frame_data()? else {
             return Ok(None);
         };
@@ -550,7 +549,9 @@ impl CellAcdcGui {
         let shape = document.session.data.values.shape().to_vec();
         let plane_offset = match document.session.data.layout {
             SegmentationLayout::YX => 0,
-            SegmentationLayout::TYX => self.selected_frame_idx * segmentation.width * segmentation.height,
+            SegmentationLayout::TYX => {
+                self.selected_frame_idx * segmentation.width * segmentation.height
+            }
             SegmentationLayout::ZYX | SegmentationLayout::TZYX => {
                 bail!("Manual tracking is currently limited to 2D timelapse segmentations.")
             }

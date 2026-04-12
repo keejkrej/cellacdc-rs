@@ -24,10 +24,22 @@ impl CellAcdcGui {
                         }
                     }
                 });
-                ui.checkbox(&mut self.annotation.export_image.include_overlay, "Include overlay");
-                ui.checkbox(&mut self.annotation.export_image.include_labels, "Include labels");
-                ui.checkbox(&mut self.annotation.export_image.include_scale_bar, "Include scale bar");
-                ui.checkbox(&mut self.annotation.export_image.include_timestamp, "Include timestamp");
+                ui.checkbox(
+                    &mut self.annotation.export_image.include_overlay,
+                    "Include overlay",
+                );
+                ui.checkbox(
+                    &mut self.annotation.export_image.include_labels,
+                    "Include labels",
+                );
+                ui.checkbox(
+                    &mut self.annotation.export_image.include_scale_bar,
+                    "Include scale bar",
+                );
+                ui.checkbox(
+                    &mut self.annotation.export_image.include_timestamp,
+                    "Include timestamp",
+                );
                 ui.horizontal(|ui| {
                     if ui.button("Export").clicked() {
                         if let Err(err) = self.export_current_image() {

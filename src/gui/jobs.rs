@@ -3,13 +3,13 @@ use super::state::ResolutionLayoutChoice;
 use crate::gui::workspaces::{format_utility_summary, parse_optional_usize};
 use anyhow::{bail, Result};
 use cellacdc_rs::{
-    repeat_tracking_current_position,
-    combine_channels, connect_3d_segm, count_objects, fill_holes, measure_experiment,
-    measure_position, open_position_session, resolve_position, run_experiment, run_position,
-    stack_2d_segm_to_3d, CombineChannelsConfig, Connect3DSegmConfig, CountObjectsConfig,
-    ExperimentRunConfig, FillHolesConfig, MaskPathResolution, MeasurementExperimentConfig,
-    MeasurementRunConfig, SegmentationLayout, Stack2DSegmTo3DConfig, TrackingConfig,
-    TrackingRunScope,
+    build_import_plan, combine_channels, connect_3d_segm, count_objects, execute_import_plan,
+    fill_holes, measure_experiment, measure_position, open_imported_experiment_session,
+    open_position_session, repeat_tracking_current_position, resolve_position, run_experiment,
+    run_position, stack_2d_segm_to_3d, CombineChannelsConfig, Connect3DSegmConfig,
+    CountObjectsConfig, ExperimentRunConfig, FillHolesConfig, ImportExecutionConfig,
+    ImportSelection, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
+    SegmentationLayout, Stack2DSegmTo3DConfig, TrackingConfig, TrackingRunScope,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,6 +53,7 @@ pub struct JobSummary {
     pub summary: String,
     pub reload_session: bool,
     pub select_segmentation_endname: Option<Option<String>>,
+    pub imported_experiment_path: Option<PathBuf>,
 }
 
 pub(crate) struct JobHandle {
@@ -86,6 +87,9 @@ impl CellAcdcGui {
                             self.append_log(outcome.summary);
                             if let Some(endname) = outcome.select_segmentation_endname {
                                 self.persisted.selected_segmentation_endname = endname;
+                            }
+                            if let Some(path) = outcome.imported_experiment_path {
+                                self.data_structure.imported_experiment_path = Some(path);
                             }
                             if outcome.reload_session {
                                 self.reload_experiment();
@@ -217,6 +221,7 @@ impl CellAcdcGui {
                 ),
                 reload_session: true,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
             })
         });
     }
@@ -250,6 +255,7 @@ impl CellAcdcGui {
                 summary: format!("Measured {} position(s)", results.len()),
                 reload_session: true,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
             })
         });
     }
@@ -298,6 +304,7 @@ impl CellAcdcGui {
                 ),
                 reload_session: true,
                 select_segmentation_endname: Some(segm_endname),
+                imported_experiment_path: None,
             })
         });
     }
@@ -346,6 +353,7 @@ impl CellAcdcGui {
                 summary: format!("Segmented {} position(s)", results.len()),
                 reload_session: true,
                 select_segmentation_endname: Some(segm_endname),
+                imported_experiment_path: None,
             })
         });
     }
@@ -385,6 +393,7 @@ impl CellAcdcGui {
                 ),
                 reload_session: true,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
             })
         });
     }
@@ -427,6 +436,73 @@ impl CellAcdcGui {
                 ),
                 reload_session: false,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
+            })
+        });
+    }
+
+    pub(crate) fn start_data_structure_import_job(&mut self) {
+        let source_paths = self
+            .data_structure
+            .discovered_sources
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        if source_paths.is_empty() {
+            self.last_error =
+                Some("Scan and probe import sources before starting the import".to_string());
+            return;
+        }
+        let destination = PathBuf::from(self.data_structure.destination_path.trim());
+        if destination.as_os_str().is_empty() {
+            self.last_error = Some("Destination experiment folder is required".to_string());
+            return;
+        }
+        let discovered_sources = self.data_structure.discovered_sources.clone();
+        let metadata_drafts = self.data_structure.metadata_drafts.clone();
+        let config = ImportExecutionConfig {
+            layout_kind: self.data_structure.layout_kind,
+            backend: self.data_structure.backend,
+            sources: source_paths,
+            destination_experiment_dir: destination.clone(),
+            conflict_mode: self.data_structure.conflict_mode,
+            metadata_policy: self.data_structure.metadata_policy,
+        };
+        let time_range = match (
+            parse_optional_usize(&self.data_structure.time_range_start),
+            parse_optional_usize(&self.data_structure.time_range_end),
+        ) {
+            (Ok(start), Ok(end)) => start.zip(end),
+            (Err(err), _) | (_, Err(err)) => {
+                self.last_error = Some(err.to_string());
+                return;
+            }
+        };
+        let selection = ImportSelection {
+            selected_positions: self.data_structure.selected_positions.clone(),
+            save_channels: self.data_structure.save_channels.clone(),
+            time_range,
+            add_image_name: self.data_structure.add_image_name,
+            output_format: self.data_structure.output_format,
+        };
+        let label = format!("Import experiment {}", destination.display());
+        self.start_job(JobRequest { label }, move |_sender, token| {
+            if token.is_cancelled() {
+                bail!("Job cancelled before start");
+            }
+            let plan =
+                build_import_plan(&config, &discovered_sources, &metadata_drafts, &selection)?;
+            let report = execute_import_plan(&plan)?;
+            open_imported_experiment_session(&report.experiment_dir)?;
+            Ok(JobSummary {
+                summary: format!(
+                    "Imported {} position(s) into {}",
+                    report.created_positions.len().max(plan.positions.len()),
+                    report.experiment_dir.display()
+                ),
+                reload_session: false,
+                select_segmentation_endname: None,
+                imported_experiment_path: Some(report.experiment_dir),
             })
         });
     }
@@ -465,6 +541,7 @@ impl CellAcdcGui {
                 summary: format_utility_summary("Filled holes", &result),
                 reload_session: false,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
             })
         });
     }
@@ -503,6 +580,7 @@ impl CellAcdcGui {
                 summary: format_utility_summary("Connected 3D segmentation", &result),
                 reload_session: false,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
             })
         });
     }
@@ -547,6 +625,7 @@ impl CellAcdcGui {
                 summary: format_utility_summary("Stacked 2D segmentation to 3D", &result),
                 reload_session: false,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
             })
         });
     }
@@ -591,6 +670,7 @@ impl CellAcdcGui {
                 summary: format!("Created {} combined output(s)", result.output_paths.len()),
                 reload_session,
                 select_segmentation_endname: None,
+                imported_experiment_path: None,
             })
         });
     }

@@ -218,10 +218,13 @@ pub fn propagate_segm_info_selection(
     anchor_frame: usize,
     mode: SegmInfoInterpolationMode,
 ) -> Result<SegmInfoTable> {
-    let anchor = table
-        .get(filename, anchor_frame)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("Missing _segmInfo anchor for {:?} frame {}", filename, anchor_frame))?;
+    let anchor = table.get(filename, anchor_frame).cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Missing _segmInfo anchor for {:?} frame {}",
+            filename,
+            anchor_frame
+        )
+    })?;
     let mut updated = table.clone();
     let frames = updated
         .records
@@ -383,10 +386,7 @@ fn parse_proj(row: &BTreeMap<String, String>, key: &str, path: &Path) -> Result<
     })
 }
 
-fn parse_optional_usize(
-    row: &BTreeMap<String, String>,
-    key: &str,
-) -> Result<Option<usize>> {
+fn parse_optional_usize(row: &BTreeMap<String, String>, key: &str) -> Result<Option<usize>> {
     match row.get(key).map(|value| value.trim()) {
         Some("") | None => Ok(None),
         Some(value) => value

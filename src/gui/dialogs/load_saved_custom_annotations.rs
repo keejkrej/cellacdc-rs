@@ -26,53 +26,55 @@ impl CellAcdcGui {
                     ui.label("No saved custom annotation definitions were found.");
                 } else {
                     ui.label("Select one or more saved definitions to load into this position.");
-                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                        for (name, definition) in &saved {
-                            let selected = self
-                                .annotation
-                                .saved_custom_annotations_dialog
-                                .selected_names
-                                .iter()
-                                .any(|item| item == name);
-                            let mut checked = selected;
-                            if ui
-                                .checkbox(
-                                    &mut checked,
-                                    format!(
-                                        "{}  [{}]{}",
-                                        name,
-                                        definition.symbol,
-                                        definition
-                                            .shortcut
-                                            .as_deref()
-                                            .map(|value| format!("  shortcut: {value}"))
-                                            .unwrap_or_default()
-                                    ),
-                                )
-                                .changed()
-                            {
-                                if checked {
-                                    self.annotation
-                                        .saved_custom_annotations_dialog
-                                        .selected_names
-                                        .push(name.clone());
-                                    self.annotation
-                                        .saved_custom_annotations_dialog
-                                        .selected_names
-                                        .sort();
-                                    self.annotation
-                                        .saved_custom_annotations_dialog
-                                        .selected_names
-                                        .dedup();
-                                } else {
-                                    self.annotation
-                                        .saved_custom_annotations_dialog
-                                        .selected_names
-                                        .retain(|item| item != name);
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for (name, definition) in &saved {
+                                let selected = self
+                                    .annotation
+                                    .saved_custom_annotations_dialog
+                                    .selected_names
+                                    .iter()
+                                    .any(|item| item == name);
+                                let mut checked = selected;
+                                if ui
+                                    .checkbox(
+                                        &mut checked,
+                                        format!(
+                                            "{}  [{}]{}",
+                                            name,
+                                            definition.symbol,
+                                            definition
+                                                .shortcut
+                                                .as_deref()
+                                                .map(|value| format!("  shortcut: {value}"))
+                                                .unwrap_or_default()
+                                        ),
+                                    )
+                                    .changed()
+                                {
+                                    if checked {
+                                        self.annotation
+                                            .saved_custom_annotations_dialog
+                                            .selected_names
+                                            .push(name.clone());
+                                        self.annotation
+                                            .saved_custom_annotations_dialog
+                                            .selected_names
+                                            .sort();
+                                        self.annotation
+                                            .saved_custom_annotations_dialog
+                                            .selected_names
+                                            .dedup();
+                                    } else {
+                                        self.annotation
+                                            .saved_custom_annotations_dialog
+                                            .selected_names
+                                            .retain(|item| item != name);
+                                    }
                                 }
                             }
-                        }
-                    });
+                        });
                 }
 
                 ui.horizontal(|ui| {

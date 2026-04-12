@@ -8,7 +8,9 @@ use cellacdc_rs::{
     CropRoiCoordsTable, CropRoiRect, CropSaveConfig, FrameProjection, FreehandRoiMask,
     SegmInfoEdit, SegmInfoInterpolationMode, ViewPlane, ZProjectionMode,
 };
-use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, RichText, Sense, StrokeKind, TextureOptions};
+use eframe::egui::{
+    self, Color32, ColorImage, Pos2, Rect, RichText, Sense, StrokeKind, TextureOptions,
+};
 
 use super::{draw_logs, draw_workspace_header, viewer::image_pixel_from_pointer};
 
@@ -17,10 +19,7 @@ impl CellAcdcGui {
         if self
             .selected_position()
             .map(|position| {
-                self.data_prep
-                    .last_loaded_position
-                    .as_ref()
-                    != Some(&position.spec.position_dir)
+                self.data_prep.last_loaded_position.as_ref() != Some(&position.spec.position_dir)
             })
             .unwrap_or(false)
         {
@@ -55,7 +54,9 @@ impl CellAcdcGui {
         if self.experiment.is_none() {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Open a structured Cell-ACDC position or experiment to use Data Prep.");
+                    ui.label(
+                        "Open a structured Cell-ACDC position or experiment to use Data Prep.",
+                    );
                 });
             });
             return;
@@ -82,7 +83,10 @@ impl CellAcdcGui {
                     .show_ui(ui, |ui| {
                         for channel in position.channel_names() {
                             if ui
-                                .selectable_label(self.data_prep.active_channel == channel, &channel)
+                                .selectable_label(
+                                    self.data_prep.active_channel == channel,
+                                    &channel,
+                                )
                                 .clicked()
                             {
                                 self.data_prep.active_channel = channel;
@@ -174,9 +178,9 @@ impl CellAcdcGui {
                         }
                     });
                     if ui.button("Interpolate between frames").clicked() {
-                        if let Err(err) = self.propagate_data_prep_segm_info(
-                            SegmInfoInterpolationMode::LinearFrames,
-                        ) {
+                        if let Err(err) = self
+                            .propagate_data_prep_segm_info(SegmInfoInterpolationMode::LinearFrames)
+                        {
                             self.last_error = Some(err.to_string());
                         }
                     }
@@ -222,7 +226,9 @@ impl CellAcdcGui {
                             }
                         }
                     });
-                    ui.small("Left-click to add polygon points. Use Close ROI to persist the mask.");
+                    ui.small(
+                        "Left-click to add polygon points. Use Close ROI to persist the mask.",
+                    );
                 }
 
                 ui.separator();
@@ -260,6 +266,7 @@ impl CellAcdcGui {
                                         ),
                                         reload_session: true,
                                         select_segmentation_endname: None,
+                                        imported_experiment_path: None,
                                     })
                                 },
                             );
@@ -301,6 +308,7 @@ impl CellAcdcGui {
                                 ),
                                 reload_session: true,
                                 select_segmentation_endname: None,
+                                imported_experiment_path: None,
                             })
                         },
                     );
@@ -432,7 +440,9 @@ impl CellAcdcGui {
                         .min(available.y / image_size.y)
                         .max(0.1);
                     let desired = image_size * scale;
-                    let response = ui.add(egui::Image::new((texture.id(), desired)).sense(Sense::click_and_drag()));
+                    let response = ui.add(
+                        egui::Image::new((texture.id(), desired)).sense(Sense::click_and_drag()),
+                    );
                     self.handle_data_prep_canvas_interaction(
                         &response,
                         [texture.size()[0], texture.size()[1]],
@@ -465,12 +475,10 @@ impl CellAcdcGui {
             ViewPlane::XY,
             projection,
         )?;
-        let (min_value, max_value) = frame
-            .pixels
-            .iter()
-            .fold((f32::INFINITY, f32::NEG_INFINITY), |(min_v, max_v), value| {
-                (min_v.min(*value), max_v.max(*value))
-            });
+        let (min_value, max_value) = frame.pixels.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(min_v, max_v), value| (min_v.min(*value), max_v.max(*value)),
+        );
         let denom = if (max_value - min_value).abs() < f32::EPSILON {
             1.0
         } else {
@@ -512,7 +520,11 @@ impl CellAcdcGui {
                 ZProjectionMode::MaxZProjection
             };
         };
-        let Some(filename) = channel.image_path.file_name().and_then(|name| name.to_str()) else {
+        let Some(filename) = channel
+            .image_path
+            .file_name()
+            .and_then(|name| name.to_str())
+        else {
             return ZProjectionMode::SingleZSlice;
         };
         self.data_prep
@@ -543,12 +555,16 @@ impl CellAcdcGui {
             .channels
             .iter()
             .find(|channel| channel.name == self.data_prep.active_channel)
-            .ok_or_else(|| anyhow::anyhow!("Unknown channel {:?}", self.data_prep.active_channel))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unknown channel {:?}", self.data_prep.active_channel)
+            })?;
         let filename = channel
             .image_path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid channel path {}", channel.image_path.display()))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid channel path {}", channel.image_path.display())
+            })?
             .to_string();
         self.data_prep.segm_info = apply_segm_info_edit(
             &self.data_prep.segm_info,
@@ -557,10 +573,7 @@ impl CellAcdcGui {
                 frame_i: self.selected_frame_idx,
                 z_slice_used_data_prep: Some(self.data_prep.z_index),
                 which_z_proj: Some(projection_mode),
-                crop_lower_z_slice: self
-                    .data_prep
-                    .z_range
-                    .map(|range| range.0),
+                crop_lower_z_slice: self.data_prep.z_range.map(|range| range.0),
                 crop_upper_z_slice: self
                     .data_prep
                     .z_range
@@ -582,12 +595,16 @@ impl CellAcdcGui {
             .channels
             .iter()
             .find(|channel| channel.name == self.data_prep.active_channel)
-            .ok_or_else(|| anyhow::anyhow!("Unknown channel {:?}", self.data_prep.active_channel))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unknown channel {:?}", self.data_prep.active_channel)
+            })?;
         let filename = channel
             .image_path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid channel path {}", channel.image_path.display()))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid channel path {}", channel.image_path.display())
+            })?;
         self.data_prep.segm_info = cellacdc_rs::propagate_segm_info_selection(
             &self.data_prep.segm_info,
             filename,
@@ -765,10 +782,13 @@ impl CellAcdcGui {
                 self.save_data_prep_crop_rois()?;
             }
             DataPrepInteractionMode::AddBackgroundRoi => {
-                self.data_prep.background_rois.items.push(BackgroundRoiRect {
-                    pos: [x as f32, y as f32],
-                    size: [width as f32, height as f32],
-                });
+                self.data_prep
+                    .background_rois
+                    .items
+                    .push(BackgroundRoiRect {
+                        pos: [x as f32, y as f32],
+                        size: [width as f32, height as f32],
+                    });
                 self.save_data_prep_background_rois()?;
             }
             DataPrepInteractionMode::DrawFreeRoi | DataPrepInteractionMode::None => {}
@@ -801,12 +821,7 @@ impl CellAcdcGui {
         Ok(())
     }
 
-    fn paint_data_prep_overlays(
-        &self,
-        ui: &egui::Ui,
-        rect: Rect,
-        image_size: [usize; 2],
-    ) {
+    fn paint_data_prep_overlays(&self, ui: &egui::Ui, rect: Rect, image_size: [usize; 2]) {
         let painter = ui.painter_at(rect);
         for roi in &self.data_prep.crop_rois {
             paint_rect_roi(
@@ -970,8 +985,7 @@ fn point_in_polygon(point: (f32, f32), polygon: &[(f32, f32)]) -> bool {
         let (xi, yi) = polygon[i];
         let (xj, yj) = polygon[j];
         let intersect = ((yi > point.1) != (yj > point.1))
-            && (point.0
-                < (xj - xi) * (point.1 - yi) / ((yj - yi).abs().max(f32::EPSILON)) + xi);
+            && (point.0 < (xj - xi) * (point.1 - yi) / ((yj - yi).abs().max(f32::EPSILON)) + xi);
         if intersect {
             inside = !inside;
         }

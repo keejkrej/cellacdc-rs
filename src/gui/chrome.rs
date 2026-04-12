@@ -14,49 +14,65 @@ impl CellAcdcGui {
         egui::TopBottomPanel::top("gui_menu_and_toolbars").show(ctx, |ui| {
             self.draw_gui_menu_bar(ui);
             if self.persisted.display.show_file_toolbar {
-                self.draw_gui_toolbar(ui, "File", &[
-                    GuiActionId::OpenSession,
-                    GuiActionId::Save,
-                    GuiActionId::QuickSave,
-                    GuiActionId::SaveAsVersion,
-                    GuiActionId::LoadOlderVersions,
-                    GuiActionId::ExportImage,
-                    GuiActionId::ExportVideo,
-                ]);
+                self.draw_gui_toolbar(
+                    ui,
+                    "File",
+                    &[
+                        GuiActionId::OpenSession,
+                        GuiActionId::Save,
+                        GuiActionId::QuickSave,
+                        GuiActionId::SaveAsVersion,
+                        GuiActionId::LoadOlderVersions,
+                        GuiActionId::ExportImage,
+                        GuiActionId::ExportVideo,
+                    ],
+                );
             }
             if self.annotation.mode != GuiMode::Snapshot {
-                self.draw_gui_toolbar(ui, "Mode", &[
-                    GuiActionId::ModeViewer,
-                    GuiActionId::ModeSegmentationAndTracking,
-                    GuiActionId::ModeCellCycleAnalysis,
-                    GuiActionId::ModeNormalDivisionLineageTree,
-                    GuiActionId::ModeCustomAnnotations,
-                ]);
+                self.draw_gui_toolbar(
+                    ui,
+                    "Mode",
+                    &[
+                        GuiActionId::ModeViewer,
+                        GuiActionId::ModeSegmentationAndTracking,
+                        GuiActionId::ModeCellCycleAnalysis,
+                        GuiActionId::ModeNormalDivisionLineageTree,
+                        GuiActionId::ModeCustomAnnotations,
+                    ],
+                );
             }
             if self.persisted.display.show_navigation_toolbar {
                 self.draw_navigation_toolbar(ui);
             }
             if self.persisted.display.show_edit_toolbar {
-                self.draw_gui_toolbar(ui, "Edit", &[
-                    GuiActionId::Undo,
-                    GuiActionId::Redo,
-                    GuiActionId::ToolSelect,
-                    GuiActionId::ToolBrush,
-                    GuiActionId::ToolEraser,
-                    GuiActionId::ToolRelabel,
-                    GuiActionId::ToolMerge,
-                    GuiActionId::ToolDelete,
-                ]);
+                self.draw_gui_toolbar(
+                    ui,
+                    "Edit",
+                    &[
+                        GuiActionId::Undo,
+                        GuiActionId::Redo,
+                        GuiActionId::ToolSelect,
+                        GuiActionId::ToolBrush,
+                        GuiActionId::ToolEraser,
+                        GuiActionId::ToolRelabel,
+                        GuiActionId::ToolMerge,
+                        GuiActionId::ToolDelete,
+                    ],
+                );
             }
             if self.persisted.display.show_overlay_toolbar {
-                self.draw_gui_toolbar(ui, "Overlay", &[
-                    GuiActionId::ToggleSegmentationOverlay,
-                    GuiActionId::ToggleOverlayLabels,
-                    GuiActionId::ToggleSingleChannelOverlay,
-                    GuiActionId::ToggleTrueTransparency,
-                    GuiActionId::ToggleScaleBar,
-                    GuiActionId::ToggleTimestamp,
-                ]);
+                self.draw_gui_toolbar(
+                    ui,
+                    "Overlay",
+                    &[
+                        GuiActionId::ToggleSegmentationOverlay,
+                        GuiActionId::ToggleOverlayLabels,
+                        GuiActionId::ToggleSingleChannelOverlay,
+                        GuiActionId::ToggleTrueTransparency,
+                        GuiActionId::ToggleScaleBar,
+                        GuiActionId::ToggleTimestamp,
+                    ],
+                );
             }
             if self.persisted.display.show_highlight_toolbar {
                 self.draw_highlight_toolbar(ui);
@@ -129,7 +145,10 @@ impl CellAcdcGui {
             if include_recent {
                 let open_state = self.gui_action_state(GuiActionId::OpenSession);
                 if ui
-                    .add_enabled(open_state.enabled, Button::new(action_label(GuiActionId::OpenSession)))
+                    .add_enabled(
+                        open_state.enabled,
+                        Button::new(action_label(GuiActionId::OpenSession)),
+                    )
                     .clicked()
                 {
                     self.dispatch_gui_action(GuiActionId::OpenSession);
@@ -156,7 +175,8 @@ impl CellAcdcGui {
             for action in actions {
                 let state = self.gui_action_state(*action);
                 let mut label = action_label(*action).to_string();
-                if let Some(shortcut) = shortcut_label(&self.persisted.shortcut_overrides, *action) {
+                if let Some(shortcut) = shortcut_label(&self.persisted.shortcut_overrides, *action)
+                {
                     label.push_str(&format!("    {shortcut}"));
                 }
                 let button = if state.checked {
@@ -246,12 +266,10 @@ impl CellAcdcGui {
                         }
                     });
                 egui::ComboBox::from_id_salt("gui_segm_combo")
-                    .selected_text(
-                        super::workspaces::selected_segm_label(
-                            &position,
-                            &self.persisted.selected_segmentation_endname,
-                        ),
-                    )
+                    .selected_text(super::workspaces::selected_segm_label(
+                        &position,
+                        &self.persisted.selected_segmentation_endname,
+                    ))
                     .show_ui(ui, |ui| {
                         for asset in &position.segmentations {
                             if ui
@@ -272,7 +290,11 @@ impl CellAcdcGui {
                             .as_ref()
                             .map(|experiment| experiment.positions.len().saturating_sub(1))
                             .unwrap_or(0);
-                        ui.label(format!("Positions: {}/{}", self.selected_position_idx + 1, max_pos + 1));
+                        ui.label(format!(
+                            "Positions: {}/{}",
+                            self.selected_position_idx + 1,
+                            max_pos + 1
+                        ));
                     } else {
                         ui.add(
                             egui::Slider::new(
@@ -296,7 +318,10 @@ impl CellAcdcGui {
                                 (cellacdc_rs::ViewPlane::XZ, "XZ"),
                                 (cellacdc_rs::ViewPlane::YZ, "YZ"),
                             ] {
-                                if ui.selectable_label(self.annotation.view_plane == plane, label).clicked() {
+                                if ui
+                                    .selectable_label(self.annotation.view_plane == plane, label)
+                                    .clicked()
+                                {
                                     self.annotation.view_plane = plane;
                                     self.invalidate_texture();
                                 }
@@ -331,7 +356,9 @@ impl CellAcdcGui {
                             self.invalidate_texture();
                         }
                     });
-                let max_depth = self.current_view_depth_limit().unwrap_or(position.spec.size_z);
+                let max_depth = self
+                    .current_view_depth_limit()
+                    .unwrap_or(position.spec.size_z);
                 if self.persisted.projection_mode == super::state::ProjectionMode::ZSlice
                     && max_depth > 0
                 {
@@ -408,8 +435,12 @@ impl CellAcdcGui {
                 .cloned()
                 .collect::<Vec<_>>();
             for name in annotation_names {
-                let is_active =
-                    self.annotation.active_custom_annotation.active_name.as_deref() == Some(name.as_str());
+                let is_active = self
+                    .annotation
+                    .active_custom_annotation
+                    .active_name
+                    .as_deref()
+                    == Some(name.as_str());
                 let response = ui.add(Button::new(name.clone()).selected(is_active));
                 if response.clicked() {
                     if is_active {
@@ -438,7 +469,13 @@ impl CellAcdcGui {
                         }
                         ui.close_menu();
                     }
-                    if let Some(definition) = self.annotation.custom_annotations.definitions.get(&name).cloned() {
+                    if let Some(definition) = self
+                        .annotation
+                        .custom_annotations
+                        .definitions
+                        .get(&name)
+                        .cloned()
+                    {
                         let keep_label = if definition.keep_active {
                             "Disable keep tool active"
                         } else {

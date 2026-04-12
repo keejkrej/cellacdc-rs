@@ -1,8 +1,9 @@
+mod annotate;
+mod bioformats_bridge;
 mod edit;
 mod image_io;
 mod import;
 mod inspect;
-mod annotate;
 mod layout;
 mod lineage;
 mod mask_io;
@@ -22,10 +23,6 @@ mod utilities;
 mod workflow;
 mod zstack;
 
-pub use edit::{
-    MaskDocumentPaths, MaskEditCommand, MaskEditResult, MaskEditSession, MaskRecoveryState,
-    MaskSaveMode, SelectionState, UndoStack,
-};
 pub use annotate::{
     apply_cell_cycle_edits, apply_custom_annotation_mutation, apply_manual_tracking_edit,
     assign_mother_bud, build_snapshot_profile, derive_custom_annotation_memberships,
@@ -35,16 +32,26 @@ pub use annotate::{
     resolve_snapshot_save_scope, review_lineage_frame, save_cell_cycle_annotations,
     save_custom_annotation_definitions, set_lineage_parent_for_position,
     validate_custom_annotation_definition, write_custom_annotations_to_acdc_output,
-    CellCycleAnnotationRecord,
-    CellCycleAnnotationTable, CellCycleEdit, CellCyclePropagationConfig,
+    CellCycleAnnotationRecord, CellCycleAnnotationTable, CellCycleEdit, CellCyclePropagationConfig,
     CustomAnnotationDefinition, CustomAnnotationKind, CustomAnnotationMutation,
     CustomAnnotationStore, GuiModeKind, LineageEditAction, LineageReview, ManualTrackingEdit,
-    ManualTrackingPreview, SnapshotProfile, SnapshotSaveScope, TrackingRunReport,
-    TrackingRunScope,
+    ManualTrackingPreview, SnapshotProfile, SnapshotSaveScope, TrackingRunReport, TrackingRunScope,
+};
+pub use bioformats_bridge::{
+    run_bioformats_export, run_bioformats_probe, BioFormatsExportRequest, BioFormatsExportResponse,
+    BioFormatsProbeRequest, BioFormatsProbeResponse,
+};
+pub use edit::{
+    MaskDocumentPaths, MaskEditCommand, MaskEditResult, MaskEditSession, MaskRecoveryState,
+    MaskSaveMode, SelectionState, UndoStack,
 };
 pub use import::{
-    detect_import_source_kind, discover_import_sources, import_experiment, ImportExperimentConfig,
-    ImportSource, ImportSourceKind, ImportedExperiment,
+    build_import_plan, classify_import_layout, detect_import_source_kind, discover_import_sources,
+    execute_import_plan, probe_import_source, read_import_sample_planes, ImportChannelPlan,
+    ImportConflictMode, ImportExecutionConfig, ImportExecutionReport, ImportLayoutKind,
+    ImportMetadataDraft, ImportOutputFormat, ImportPlan, ImportPositionPlan, ImportReaderBackend,
+    ImportSamplePlaneSet, ImportSelection, ImportSourceEntry, ImportSourceKind,
+    MetadataReusePolicy,
 };
 pub use inspect::{
     inspect_position_frame, FrameInspection, FrameInspectionConfig, ObjectMeasurementSummary,
@@ -59,8 +66,8 @@ pub use lineage::{
     export_lineage_info_file, load_lineage_state, propagate_lineage, propagate_lineage_file,
     propagate_lineage_from_frame, set_lineage_parent, set_lineage_unknown, update_lineage_frame,
     update_lineage_frame_file, LineageBuildConfig, LineageCandidateSet, LineageFrameEdit,
-    LineageFrameInfo, LineageInfoConfig, LineageOutputPaths, LineagePropagateConfig,
-    LineageState, LineageUpdateConfig,
+    LineageFrameInfo, LineageInfoConfig, LineageOutputPaths, LineagePropagateConfig, LineageState,
+    LineageUpdateConfig,
 };
 pub use mask_io::{
     load_mask_data, save_mask_data, MaskData, MaskDimensionality, MaskPathResolution,
@@ -72,14 +79,14 @@ pub use measure::{
 };
 pub use model::{CellposeModel, Segmenter};
 pub use prep::{
-    apply_alignment, compute_alignment_shifts, compute_background_roi_archives, load_crop_roi_coords_csv,
-    load_data_prep_state, preview_crop, read_background_roi_json, read_background_roi_npz,
-    read_freehand_roi_npz, remove_freehand_roi_npz, save_crop_roi_coords_csv,
-    save_cropped_data, write_background_roi_json, write_background_roi_npz,
-    write_freehand_roi_npz, AlignmentConfig, AlignmentRunConfig, AlignmentRunResult,
-    AlignmentShiftSet, BackgroundRoiArchive, BackgroundRoiRect, BackgroundRoiSet, CropConfig,
-    CropPreview, CropRoiCoordsTable, CropRoiRect, CropSaveConfig, CropSaveResult, DataPrepState,
-    FreehandRoiMask, PrepOutputPaths, TimeCropConfig, ZCropConfig,
+    apply_alignment, compute_alignment_shifts, compute_background_roi_archives,
+    load_crop_roi_coords_csv, load_data_prep_state, preview_crop, read_background_roi_json,
+    read_background_roi_npz, read_freehand_roi_npz, remove_freehand_roi_npz,
+    save_crop_roi_coords_csv, save_cropped_data, write_background_roi_json,
+    write_background_roi_npz, write_freehand_roi_npz, AlignmentConfig, AlignmentRunConfig,
+    AlignmentRunResult, AlignmentShiftSet, BackgroundRoiArchive, BackgroundRoiRect,
+    BackgroundRoiSet, CropConfig, CropPreview, CropRoiCoordsTable, CropRoiRect, CropSaveConfig,
+    CropSaveResult, DataPrepState, FreehandRoiMask, PrepOutputPaths, TimeCropConfig, ZCropConfig,
 };
 pub use render::{
     export_frame_image, export_frame_sequence, render_frame, ImageExportFormat, OverlayMarker,
@@ -90,14 +97,13 @@ pub use runner::{
     OverwritePolicy, RunOutputPaths, RunResult, SegmentationParams, SegmentationRunConfig,
 };
 pub use segm_info::{
-    apply_segm_info_edit, load_segm_info, prepare_zstack_segm_info,
-    propagate_segm_info_selection, save_segm_info, PrepareSegmInfoTarget,
-    PrepareZStackSegmInfoConfig, SegmInfoEdit, SegmInfoInterpolationMode, SegmInfoRecord,
-    SegmInfoTable, ZProjectionMode,
+    apply_segm_info_edit, load_segm_info, prepare_zstack_segm_info, propagate_segm_info_selection,
+    save_segm_info, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, SegmInfoEdit,
+    SegmInfoInterpolationMode, SegmInfoRecord, SegmInfoTable, ZProjectionMode,
 };
 pub use session::{
-    open_experiment_session, open_position_session, ExperimentSession, FrameData, FrameProjection,
-    PositionSession, SegmentationAsset, ViewPlane,
+    open_experiment_session, open_imported_experiment_session, open_position_session,
+    ExperimentSession, FrameData, FrameProjection, PositionSession, SegmentationAsset, ViewPlane,
 };
 pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
 pub use tracking::{manual_track_label, remap_frame_labels, TrackingConfig, TrackingFrameEdit};

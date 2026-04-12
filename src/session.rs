@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::image_io::{load_image_stack_as_f32, load_image_volume_as_f32};
 use crate::layout::{
-    discover_measurement_experiment, resolve_measurement_position, MeasurementExperimentSpec,
-    MeasurementPositionSpec,
+    discover_measurement_experiment, resolve_measurement_position, validate_imported_experiment,
+    MeasurementExperimentSpec, MeasurementPositionSpec,
 };
 use crate::mask_io::{load_mask_data, MaskData, MaskPathResolution, SegmentationLayout};
 
@@ -62,6 +62,11 @@ pub fn open_experiment_session(path: impl AsRef<Path>) -> Result<ExperimentSessi
 
     let experiment = discover_measurement_experiment(path)?;
     experiment_session_from_spec(path, experiment)
+}
+
+pub fn open_imported_experiment_session(path: impl AsRef<Path>) -> Result<ExperimentSession> {
+    validate_imported_experiment(&path)?;
+    open_experiment_session(path)
 }
 
 pub fn open_position_session(path: impl AsRef<Path>) -> Result<PositionSession> {
@@ -134,10 +139,10 @@ impl PositionSession {
         if aligned_h5.exists() {
             return Some(aligned_h5);
         }
-        let aligned_npz = self
-            .spec
-            .images_dir
-            .join(format!("{}{}_aligned.npz", self.spec.basename, channel_name));
+        let aligned_npz = self.spec.images_dir.join(format!(
+            "{}{}_aligned.npz",
+            self.spec.basename, channel_name
+        ));
         aligned_npz.exists().then_some(aligned_npz)
     }
 
@@ -303,14 +308,7 @@ impl PositionSession {
                     );
                 }
                 extract_volume_frame_u32(
-                    values,
-                    shape[1],
-                    shape[2],
-                    1,
-                    shape[0],
-                    0,
-                    view_plane,
-                    projection,
+                    values, shape[1], shape[2], 1, shape[0], 0, view_plane, projection,
                 )?
             }
             SegmentationLayout::TZYX => extract_volume_frame_u32(
@@ -569,7 +567,11 @@ fn extract_oriented_frame_f32(
                 }
                 FrameProjection::ZSlice(z_index) => {
                     if z_index >= size_z {
-                        bail!("Requested z-slice {} but volume has {} slice(s)", z_index, size_z);
+                        bail!(
+                            "Requested z-slice {} but volume has {} slice(s)",
+                            z_index,
+                            size_z
+                        );
                     }
                     let start = z_index * plane_len;
                     values[start..start + plane_len].to_vec()
@@ -586,7 +588,11 @@ fn extract_oriented_frame_f32(
                 FrameProjection::Max => None,
                 FrameProjection::ZSlice(index) => {
                     if index >= size_y {
-                        bail!("Requested y-slice {} but volume has {} row(s)", index, size_y);
+                        bail!(
+                            "Requested y-slice {} but volume has {} row(s)",
+                            index,
+                            size_y
+                        );
                     }
                     Some(index)
                 }
@@ -617,7 +623,11 @@ fn extract_oriented_frame_f32(
                 FrameProjection::Max => None,
                 FrameProjection::ZSlice(index) => {
                     if index >= size_x {
-                        bail!("Requested x-slice {} but volume has {} column(s)", index, size_x);
+                        bail!(
+                            "Requested x-slice {} but volume has {} column(s)",
+                            index,
+                            size_x
+                        );
                     }
                     Some(index)
                 }
@@ -673,7 +683,11 @@ fn extract_oriented_frame_u32(
                 }
                 FrameProjection::ZSlice(z_index) => {
                     if z_index >= size_z {
-                        bail!("Requested z-slice {} but volume has {} slice(s)", z_index, size_z);
+                        bail!(
+                            "Requested z-slice {} but volume has {} slice(s)",
+                            z_index,
+                            size_z
+                        );
                     }
                     let start = z_index * plane_len;
                     values[start..start + plane_len].to_vec()
@@ -690,7 +704,11 @@ fn extract_oriented_frame_u32(
                 FrameProjection::Max => None,
                 FrameProjection::ZSlice(index) => {
                     if index >= size_y {
-                        bail!("Requested y-slice {} but volume has {} row(s)", index, size_y);
+                        bail!(
+                            "Requested y-slice {} but volume has {} row(s)",
+                            index,
+                            size_y
+                        );
                     }
                     Some(index)
                 }
@@ -721,7 +739,11 @@ fn extract_oriented_frame_u32(
                 FrameProjection::Max => None,
                 FrameProjection::ZSlice(index) => {
                     if index >= size_x {
-                        bail!("Requested x-slice {} but volume has {} column(s)", index, size_x);
+                        bail!(
+                            "Requested x-slice {} but volume has {} column(s)",
+                            index,
+                            size_x
+                        );
                     }
                     Some(index)
                 }

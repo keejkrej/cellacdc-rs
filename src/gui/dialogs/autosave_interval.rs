@@ -14,8 +14,7 @@ impl CellAcdcGui {
             .show(ctx, |ui| {
                 ui.label("Set the delay before dirty edits are written to the recovery autosave.");
                 ui.add(
-                    egui::DragValue::new(&mut self.persisted.display.autosave.value)
-                        .range(1..=120),
+                    egui::DragValue::new(&mut self.persisted.display.autosave.value).range(1..=120),
                 );
                 egui::ComboBox::from_label("Unit")
                     .selected_text(match self.persisted.display.autosave.unit {

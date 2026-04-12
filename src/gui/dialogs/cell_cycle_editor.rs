@@ -17,7 +17,9 @@ impl CellAcdcGui {
                         "Apply changes to future frames",
                     );
                     ui.label("End frame");
-                    ui.text_edit_singleline(&mut self.annotation.cell_cycle_dialog.propagate_end_frame);
+                    ui.text_edit_singleline(
+                        &mut self.annotation.cell_cycle_dialog.propagate_end_frame,
+                    );
                     if ui.button("Reload").clicked() {
                         if let Err(err) = self.load_cell_cycle_dialog_state() {
                             self.annotation.cell_cycle_dialog.error = Some(err.to_string());

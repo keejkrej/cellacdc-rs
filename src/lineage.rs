@@ -319,7 +319,10 @@ pub fn lineage_mother_candidates(
     }
     candidates.sort_unstable();
     candidates.dedup();
-    Ok(LineageCandidateSet { cell_id, candidates })
+    Ok(LineageCandidateSet {
+        cell_id,
+        candidates,
+    })
 }
 
 pub fn set_lineage_parent(

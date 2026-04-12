@@ -1,6 +1,4 @@
-use crate::image_io::{
-    load_image_stack_as_f32, load_image_volume_as_f32, StackShape, VolumeShape,
-};
+use crate::image_io::{load_image_stack_as_f32, load_image_volume_as_f32, StackShape, VolumeShape};
 use crate::layout::resolve_measurement_position;
 use crate::metadata::read_metadata_map;
 use crate::segm_info::{
@@ -214,7 +212,9 @@ pub fn load_data_prep_state(
         })
         .collect::<BTreeMap<_, _>>();
     let alignment_shifts_path = {
-        let path = spec.images_dir.join(format!("{}align_shift.npy", spec.basename));
+        let path = spec
+            .images_dir
+            .join(format!("{}align_shift.npy", spec.basename));
         path.exists().then_some(path)
     };
 
@@ -296,8 +296,8 @@ pub fn save_crop_roi_coords_csv(
         .parent()
         .ok_or_else(|| anyhow!("Output path has no parent: {}", path.display()))?;
     fs::create_dir_all(parent)?;
-    let mut writer =
-        Writer::from_path(&tmp_path).with_context(|| format!("Failed to create {}", path.display()))?;
+    let mut writer = Writer::from_path(&tmp_path)
+        .with_context(|| format!("Failed to create {}", path.display()))?;
     writer.write_record(["roi_id", "description", "value"])?;
     for roi in &table.rois {
         let cropped = usize::from(table.cropped_roi_ids.contains(&roi.roi_id));
@@ -401,7 +401,12 @@ pub fn read_freehand_roi_npz(path: impl AsRef<Path>) -> Result<Option<FreehandRo
         .split('_')
         .map(|coord| coord.parse::<usize>())
         .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("Invalid free ROI bbox key {bbox_key:?} in {}", path.display()))?;
+        .with_context(|| {
+            format!(
+                "Invalid free ROI bbox key {bbox_key:?} in {}",
+                path.display()
+            )
+        })?;
     if coords.len() != 4 {
         bail!(
             "Invalid free ROI bbox key {bbox_key:?} in {}",
@@ -415,10 +420,7 @@ pub fn read_freehand_roi_npz(path: impl AsRef<Path>) -> Result<Option<FreehandRo
     }))
 }
 
-pub fn write_freehand_roi_npz(
-    path: impl AsRef<Path>,
-    roi: &FreehandRoiMask,
-) -> Result<PathBuf> {
+pub fn write_freehand_roi_npz(path: impl AsRef<Path>, roi: &FreehandRoiMask) -> Result<PathBuf> {
     let path = path.as_ref().to_path_buf();
     let tmp_path = temp_write_path(&path);
     let parent = path
@@ -449,7 +451,12 @@ pub fn compute_alignment_shifts(config: &AlignmentRunConfig) -> Result<Alignment
         .channels
         .iter()
         .find(|channel| channel.name == config.reference_channel)
-        .ok_or_else(|| anyhow!("Unknown alignment reference channel {:?}", config.reference_channel))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "Unknown alignment reference channel {:?}",
+                config.reference_channel
+            )
+        })?;
     let (frames, _, _, _) = load_channel_cube(&channel.image_path, spec.size_t, spec.size_z)?;
     if frames.is_empty() {
         return Ok(AlignmentShiftSet {
@@ -486,7 +493,9 @@ pub fn apply_alignment(
             spec.position_dir.display()
         );
     }
-    let shifts_path = spec.images_dir.join(format!("{}align_shift.npy", spec.basename));
+    let shifts_path = spec
+        .images_dir
+        .join(format!("{}align_shift.npy", spec.basename));
     if shifts_path.exists() && !config.overwrite {
         bail!(
             "Alignment shifts already exist at {}. Re-run with overwrite enabled to replace them.",
@@ -597,7 +606,9 @@ pub fn save_cropped_data(config: CropSaveConfig) -> Result<CropSaveResult> {
                     .image_path
                     .file_name()
                     .map(|name| name.to_os_string())
-                    .ok_or_else(|| anyhow!("Invalid channel path {}", channel.image_path.display()))?
+                    .ok_or_else(|| {
+                        anyhow!("Invalid channel path {}", channel.image_path.display())
+                    })?
             } else {
                 OsString::from(format!("{}{}.tif", spec.basename, channel.name))
             };
@@ -655,17 +666,22 @@ pub fn save_cropped_data(config: CropSaveConfig) -> Result<CropSaveResult> {
                 for record in segm_info.records.values_mut() {
                     record.crop_lower_z_slice = Some(z_start);
                     record.crop_upper_z_slice = Some(z_end.saturating_sub(1));
-                    record.z_slice_used_data_prep =
-                        record.z_slice_used_data_prep.saturating_sub(z_start).min(size_z - 1);
-                    record.z_slice_used_gui =
-                        record.z_slice_used_gui.saturating_sub(z_start).min(size_z - 1);
+                    record.z_slice_used_data_prep = record
+                        .z_slice_used_data_prep
+                        .saturating_sub(z_start)
+                        .min(size_z - 1);
+                    record.z_slice_used_gui = record
+                        .z_slice_used_gui
+                        .saturating_sub(z_start)
+                        .min(size_z - 1);
                 }
             }
             save_segm_info(&segm_info_path, &segm_info)?;
             written_files.push(segm_info_path);
         }
 
-        let archives = compute_background_roi_archives(target_dir, &config.channels, &adjusted_background)?;
+        let archives =
+            compute_background_roi_archives(target_dir, &config.channels, &adjusted_background)?;
         written_files.extend(archives);
     }
 
@@ -733,10 +749,7 @@ fn parse_pair(value: Option<&Value>) -> Option<[f32; 2]> {
     Some([array[0].as_f64()? as f32, array[1].as_f64()? as f32])
 }
 
-fn normalize_range(
-    range: Option<(usize, usize)>,
-    max_len: usize,
-) -> Result<(usize, usize)> {
+fn normalize_range(range: Option<(usize, usize)>, max_len: usize) -> Result<(usize, usize)> {
     let max_len = max_len.max(1);
     match range {
         Some((start, end)) => {
@@ -764,7 +777,8 @@ fn normalized_crop_rois(
     } else {
         rois.to_vec()
     };
-    let (height, width) = infer_spatial_shape(&spec.channels[0].image_path, spec.size_t, spec.size_z)?;
+    let (height, width) =
+        infer_spatial_shape(&spec.channels[0].image_path, spec.size_t, spec.size_z)?;
     for roi in &mut normalized {
         roi.x = roi.x.min(width);
         roi.y = roi.y.min(height);
@@ -817,7 +831,12 @@ fn load_channel_cube(
             } else {
                 let height = arr.shape()[1];
                 let width = arr.shape()[2];
-                Ok((arr.outer_iter().map(|frame| frame.to_owned()).collect(), arr.shape()[0], height, width))
+                Ok((
+                    arr.outer_iter().map(|frame| frame.to_owned()).collect(),
+                    arr.shape()[0],
+                    height,
+                    width,
+                ))
             }
         }
         4 => {
@@ -843,17 +862,24 @@ fn stack_to_array(values: Vec<f32>, shape: StackShape) -> Result<ArrayD<f32>> {
 
 fn volume_to_array(values: Vec<f32>, shape: VolumeShape) -> Result<ArrayD<f32>> {
     match (shape.size_t > 1, shape.size_z > 1) {
-        (true, true) => Ok(
-            Array4::from_shape_vec((shape.size_t, shape.size_z, shape.height, shape.width), values)?
-                .into_dyn(),
-        ),
-        (true, false) => Ok(
-            Array3::from_shape_vec((shape.size_t, shape.height, shape.width), values)?.into_dyn(),
-        ),
-        (false, true) => Ok(
-            Array3::from_shape_vec((shape.size_z, shape.height, shape.width), values)?.into_dyn(),
-        ),
-        (false, false) => Ok(Array2::from_shape_vec((shape.height, shape.width), values)?.into_dyn()),
+        (true, true) => Ok(Array4::from_shape_vec(
+            (shape.size_t, shape.size_z, shape.height, shape.width),
+            values,
+        )?
+        .into_dyn()),
+        (true, false) => Ok(Array3::from_shape_vec(
+            (shape.size_t, shape.height, shape.width),
+            values,
+        )?
+        .into_dyn()),
+        (false, true) => Ok(Array3::from_shape_vec(
+            (shape.size_z, shape.height, shape.width),
+            values,
+        )?
+        .into_dyn()),
+        (false, false) => {
+            Ok(Array2::from_shape_vec((shape.height, shape.width), values)?.into_dyn())
+        }
     }
 }
 
@@ -889,7 +915,8 @@ fn estimate_xy_shift(reference: &Array2<f32>, moving: &Array2<f32>, max_shift: i
                     if mx < 0 || mx >= width {
                         continue;
                     }
-                    score += reference[(y as usize, x as usize)] * moving[(my as usize, mx as usize)];
+                    score +=
+                        reference[(y as usize, x as usize)] * moving[(my as usize, mx as usize)];
                     count += 1;
                 }
             }
@@ -905,7 +932,10 @@ fn estimate_xy_shift(reference: &Array2<f32>, moving: &Array2<f32>, max_shift: i
     best
 }
 
-fn apply_shift_set_to_array(values: &ArrayD<f32>, shifts: &AlignmentShiftSet) -> Result<ArrayD<f32>> {
+fn apply_shift_set_to_array(
+    values: &ArrayD<f32>,
+    shifts: &AlignmentShiftSet,
+) -> Result<ArrayD<f32>> {
     match values.ndim() {
         2 => Ok(values.clone()),
         3 => {
@@ -914,8 +944,11 @@ fn apply_shift_set_to_array(values: &ArrayD<f32>, shifts: &AlignmentShiftSet) ->
             if shifts.shifts_xy.len() == arr.shape()[0] {
                 for (frame_i, plane) in arr.outer_iter().enumerate() {
                     let [dx, dy] = shifts.shifts_xy[frame_i];
-                    out.slice_mut(s![frame_i, .., ..])
-                        .assign(&shift_plane(&plane.to_owned(), dx, dy));
+                    out.slice_mut(s![frame_i, .., ..]).assign(&shift_plane(
+                        &plane.to_owned(),
+                        dx,
+                        dy,
+                    ));
                 }
             }
             Ok(out.into_dyn())
@@ -969,9 +1002,13 @@ fn crop_array(
         3 => {
             let arr = values.view().into_dimensionality::<Ix3>()?;
             if frame_range.1 - frame_range.0 == 1 && z_range.1 - z_range.0 > 1 {
-                arr.slice(s![z_range.0..z_range.1, roi.y..roi.y + roi.height, roi.x..roi.x + roi.width])
-                    .to_owned()
-                    .into_dyn()
+                arr.slice(s![
+                    z_range.0..z_range.1,
+                    roi.y..roi.y + roi.height,
+                    roi.x..roi.x + roi.width
+                ])
+                .to_owned()
+                .into_dyn()
             } else {
                 arr.slice(s![
                     frame_range.0..frame_range.1,
@@ -1002,7 +1039,10 @@ fn build_crop_targets(position_dir: &Path, roi_count: usize) -> Result<Vec<PathB
         return Ok(vec![position_dir.to_path_buf()]);
     }
     let parent = position_dir.parent().ok_or_else(|| {
-        anyhow!("Position directory has no parent: {}", position_dir.display())
+        anyhow!(
+            "Position directory has no parent: {}",
+            position_dir.display()
+        )
     })?;
     let mut max_index = 0usize;
     for entry in fs::read_dir(parent)? {
@@ -1090,8 +1130,8 @@ fn write_metadata_map(
     values.insert("SizeY".into(), size_y.to_string());
     values.insert("SizeX".into(), size_x.to_string());
     let tmp_path = temp_write_path(path);
-    let mut writer =
-        Writer::from_path(&tmp_path).with_context(|| format!("Failed to create {}", path.display()))?;
+    let mut writer = Writer::from_path(&tmp_path)
+        .with_context(|| format!("Failed to create {}", path.display()))?;
     writer.write_record(["Description", "values"])?;
     let mut ordered = vec![
         "basename".to_string(),
@@ -1124,7 +1164,11 @@ fn write_metadata_map(
     promote_temp_file(&tmp_path, path)
 }
 
-fn write_channel_array_atomic(target_path: &Path, values: &ArrayD<f32>, source_path: &Path) -> Result<()> {
+fn write_channel_array_atomic(
+    target_path: &Path,
+    values: &ArrayD<f32>,
+    source_path: &Path,
+) -> Result<()> {
     match target_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -1253,8 +1297,13 @@ fn promote_temp_file(temp_path: &Path, final_path: &Path) -> Result<()> {
         fs::remove_file(final_path)
             .with_context(|| format!("Failed to replace {}", final_path.display()))?;
     }
-    fs::rename(temp_path, final_path)
-        .with_context(|| format!("Failed to promote {} to {}", temp_path.display(), final_path.display()))
+    fs::rename(temp_path, final_path).with_context(|| {
+        format!(
+            "Failed to promote {} to {}",
+            temp_path.display(),
+            final_path.display()
+        )
+    })
 }
 
 #[derive(Debug)]
@@ -1409,14 +1458,14 @@ mod tests {
         fs::create_dir_all(&images)?;
         write_test_tiff(
             &images.join("demo_phase.tif"),
-            &[
-                vec![1, 2, 3, 4, 5, 6],
-                vec![7, 8, 9, 10, 11, 12],
-            ],
+            &[vec![1, 2, 3, 4, 5, 6], vec![7, 8, 9, 10, 11, 12]],
             2,
             3,
         )?;
-        fs::write(images.join("demo_metadata.csv"), "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n")?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
         let paths = compute_background_roi_archives(
             dir.path().join("Position_1"),
             &[String::from("phase")],
@@ -1447,7 +1496,10 @@ mod tests {
             3,
             3,
         )?;
-        fs::write(images.join("demo_metadata.csv"), "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n")?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
         let shifts = compute_alignment_shifts(&AlignmentRunConfig {
             position_dir: dir.path().join("Position_1"),
             reference_channel: "phase".to_string(),
@@ -1499,11 +1551,22 @@ mod tests {
         })?;
         assert!(!result.written_files.is_empty());
         let spec = resolve_measurement_position(&position)?;
-        assert_eq!(spec.channels[0].image_path.file_name().and_then(|name| name.to_str()), Some("demo_phase.tif"));
+        assert_eq!(
+            spec.channels[0]
+                .image_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("demo_phase.tif")
+        );
         Ok(())
     }
 
-    fn write_test_tiff(path: &Path, planes: &[Vec<u16>], height: usize, width: usize) -> Result<()> {
+    fn write_test_tiff(
+        path: &Path,
+        planes: &[Vec<u16>],
+        height: usize,
+        width: usize,
+    ) -> Result<()> {
         let file = File::create(path)?;
         let mut encoder = TiffEncoder::new(file)?;
         for plane in planes {

@@ -54,7 +54,10 @@ impl CellAcdcGui {
                     ui.colored_label(egui::Color32::from_rgb(200, 60, 60), error);
                 }
                 if let Some(action) = self.annotation.shortcut_editor.capturing {
-                    ui.label(format!("Press a new shortcut for {}...", action_label(action)));
+                    ui.label(format!(
+                        "Press a new shortcut for {}...",
+                        action_label(action)
+                    ));
                 }
                 for action in SHORTCUT_ACTIONS {
                     ui.horizontal(|ui| {

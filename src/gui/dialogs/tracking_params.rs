@@ -22,7 +22,8 @@ impl CellAcdcGui {
                 );
                 if ui.button("Apply").clicked() {
                     self.persisted.track = true;
-                    self.persisted.track_ioa_threshold = self.annotation.tracking_params.ioa_threshold;
+                    self.persisted.track_ioa_threshold =
+                        self.annotation.tracking_params.ioa_threshold;
                     self.annotation.dialogs.tracking_params_open = false;
                 }
             });

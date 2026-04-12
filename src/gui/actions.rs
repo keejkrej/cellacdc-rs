@@ -301,15 +301,15 @@ impl CellAcdcGui {
             | GuiActionId::ToolRelabel
             | GuiActionId::ToolMerge
             | GuiActionId::ToolDelete => {
-                has_document
-                    && (can_edit || has_selection)
-                    && !custom_annotation_mode
+                has_document && (can_edit || has_selection) && !custom_annotation_mode
             }
             GuiActionId::RepeatTracking | GuiActionId::TrackCurrentFrame => {
                 has_session && tracking_mode && !snapshot_mode && !self.annotation_document_dirty()
             }
             GuiActionId::ManualTracking => has_document && tracking_mode && !snapshot_mode,
-            GuiActionId::EditRealTimeTrackerParameters => has_session && tracking_mode && !snapshot_mode,
+            GuiActionId::EditRealTimeTrackerParameters => {
+                has_session && tracking_mode && !snapshot_mode
+            }
             GuiActionId::AssignMotherToBud => {
                 has_session && (cell_cycle_mode || snapshot_mode) && has_selection
             }
@@ -321,7 +321,9 @@ impl CellAcdcGui {
             | GuiActionId::NoLineageTool
             | GuiActionId::PropagateLineage
             | GuiActionId::ViewLineageChanges => has_session && lineage_mode && has_selection,
-            GuiActionId::LoadSavedCustomAnnotations | GuiActionId::AddCustomAnnotation => has_session,
+            GuiActionId::LoadSavedCustomAnnotations | GuiActionId::AddCustomAnnotation => {
+                has_session
+            }
         };
         state.checked = match action {
             GuiActionId::ToggleObjectsDock => self.persisted.display.show_objects_dock,
@@ -357,9 +359,13 @@ impl CellAcdcGui {
             GuiActionId::FindNextPotentialMother => {
                 self.annotation.lineage_tool == LineageTool::FindNextMother
             }
-            GuiActionId::UnknownLineage => self.annotation.lineage_tool == LineageTool::UnknownLineage,
+            GuiActionId::UnknownLineage => {
+                self.annotation.lineage_tool == LineageTool::UnknownLineage
+            }
             GuiActionId::NoLineageTool => self.annotation.lineage_tool == LineageTool::NoTool,
-            GuiActionId::ShowAllCustomAnnotations => self.annotation.custom_annotation_toolbar.show_all,
+            GuiActionId::ShowAllCustomAnnotations => {
+                self.annotation.custom_annotation_toolbar.show_all
+            }
             _ => false,
         };
         if session_is_snapshot {
@@ -372,15 +378,18 @@ impl CellAcdcGui {
                 _ => state.enabled,
             };
         }
-        if matches!(action, GuiActionId::LoadSavedCustomAnnotations | GuiActionId::ShowAllCustomAnnotations)
-        {
+        if matches!(
+            action,
+            GuiActionId::LoadSavedCustomAnnotations | GuiActionId::ShowAllCustomAnnotations
+        ) {
             state.enabled = has_session;
         }
         if action == GuiActionId::AddCustomAnnotation {
             state.enabled = has_session && has_document;
         }
         if action == GuiActionId::ShowAllCustomAnnotations {
-            state.visible = has_session && !self.annotation.custom_annotations.definitions.is_empty();
+            state.visible =
+                has_session && !self.annotation.custom_annotations.definitions.is_empty();
         }
         if matches!(action, GuiActionId::LoadSavedCustomAnnotations) {
             state.visible = has_session;
@@ -456,7 +465,8 @@ impl CellAcdcGui {
                 self.annotation.dialogs.overlay_labels_open = true;
             }
             GuiActionId::ToggleObjectsDock => {
-                self.persisted.display.show_objects_dock = !self.persisted.display.show_objects_dock;
+                self.persisted.display.show_objects_dock =
+                    !self.persisted.display.show_objects_dock;
             }
             GuiActionId::ToggleLogDock => {
                 self.persisted.display.show_log_dock = !self.persisted.display.show_log_dock;
@@ -478,7 +488,8 @@ impl CellAcdcGui {
                 self.invalidate_texture();
             }
             GuiActionId::ToggleSegmentationOverlay => {
-                self.persisted.show_segmentation_overlay = !self.persisted.show_segmentation_overlay;
+                self.persisted.show_segmentation_overlay =
+                    !self.persisted.show_segmentation_overlay;
                 self.invalidate_texture();
             }
             GuiActionId::ToggleSingleChannelOverlay => {
@@ -511,7 +522,9 @@ impl CellAcdcGui {
                 self.persisted.display.show_log_dock = true;
             }
             GuiActionId::AboutRustPort => {
-                self.append_log("Cell-ACDC Rust GUI route: desktop editor parity stage.".to_string());
+                self.append_log(
+                    "Cell-ACDC Rust GUI route: desktop editor parity stage.".to_string(),
+                );
             }
             GuiActionId::CurrentLimitations => {
                 self.append_log(
