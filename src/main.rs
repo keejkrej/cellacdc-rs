@@ -2,16 +2,19 @@ mod gui;
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Parser};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
-    add_lineage_tree, apply_tracking_from_table, connect_3d_segm, count_objects, fill_holes,
-    run_workflow_file, ApplyTrackingConfig, Connect3DSegmConfig, CoordinateFilterConfig,
-    CountObjectsConfig, FillHolesConfig, LineageTreeConfig, MaskPathResolution, SegmentationLayout,
-    Stack2DSegmTo3DConfig, TrackingColumnMap, WorkflowRunOptions,
+    add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
+    connect_3d_segm, count_objects, fill_holes, generate_mother_bud_total, run_workflow_file,
+    ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig, Connect3DSegmConfig,
+    CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
+    LineageTreeConfig, MaskPathResolution, SegmentationLayout, Stack2DSegmTo3DConfig,
+    TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -102,11 +105,23 @@ struct Cli {
     )]
     apply_tracking_from_table: bool,
     #[arg(
+        long = "apply_tracking_from_trackmate_xml",
+        action = ArgAction::SetTrue,
+        help = "Apply tracking IDs from a TrackMate XML file to a position segmentation mask"
+    )]
+    apply_tracking_from_trackmate_xml: bool,
+    #[arg(
         long = "add_lineage_tree",
         action = ArgAction::SetTrue,
         help = "Add lineage-tree columns to an acdc_output table"
     )]
     add_lineage_tree: bool,
+    #[arg(
+        long = "generate_mother_bud_total",
+        action = ArgAction::SetTrue,
+        help = "Generate G1/mother/bud/total rows from an acdc_output table"
+    )]
+    generate_mother_bud_total: bool,
     #[arg(
         long = "segmentation_path",
         value_name = "PATH_TO_SEGM",
@@ -122,9 +137,54 @@ struct Cli {
     #[arg(
         long = "input_path",
         value_name = "PATH_TO_INPUT",
-        help = "Input table path for table utility modes such as --add_lineage_tree"
+        help = "Input table path for table utility modes"
     )]
     input_path: Option<PathBuf>,
+    #[arg(
+        long = "position_dir",
+        value_name = "PATH_TO_POSITION",
+        help = "Position folder path for position-scoped utility modes"
+    )]
+    position_dir: Option<PathBuf>,
+    #[arg(
+        long = "segm_endname",
+        value_name = "ENDNAME",
+        help = "Segmentation endname for position-scoped utility modes"
+    )]
+    segm_endname: Option<String>,
+    #[arg(
+        long = "xml_path",
+        value_name = "PATH_TO_XML",
+        help = "TrackMate XML path for --apply_tracking_from_trackmate_xml"
+    )]
+    xml_path: Option<PathBuf>,
+    #[arg(
+        long = "column_operation",
+        value_name = "COLUMN=OPERATION",
+        action = ArgAction::Append,
+        help = "Column operation for --generate_mother_bud_total, for example cell_area_um2=sum"
+    )]
+    column_operations: Vec<String>,
+    #[arg(
+        long = "grouping_column",
+        value_name = "COLUMN",
+        action = ArgAction::Append,
+        help = "Grouping column for --generate_mother_bud_total"
+    )]
+    grouping_columns: Vec<String>,
+    #[arg(
+        long = "entity_colname",
+        value_name = "COLUMN",
+        default_value = "entity",
+        help = "Entity-label output column for --generate_mother_bud_total"
+    )]
+    entity_colname: String,
+    #[arg(
+        long = "no_copy_all_nonselected_columns",
+        action = ArgAction::SetTrue,
+        help = "Only keep columns named by --column_operation in --generate_mother_bud_total output"
+    )]
+    no_copy_all_nonselected_columns: bool,
     #[arg(
         long = "coords_table_path",
         value_name = "PATH_TO_COORDS_TABLE",
@@ -281,10 +341,12 @@ fn main() -> Result<()> {
         + usize::from(cli.stack_2d_segm_to_3d)
         + usize::from(cli.filter_segm_from_table)
         + usize::from(cli.apply_tracking_from_table)
-        + usize::from(cli.add_lineage_tree);
+        + usize::from(cli.apply_tracking_from_trackmate_xml)
+        + usize::from(cli.add_lineage_tree)
+        + usize::from(cli.generate_mother_bud_total);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, or --add_lineage_tree"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, or --generate_mother_bud_total"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -345,8 +407,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.apply_tracking_from_trackmate_xml {
+        println!("{}", run_apply_tracking_from_trackmate_xml(&cli)?);
+        return Ok(());
+    }
+
     if cli.add_lineage_tree {
         println!("{}", run_add_lineage_tree(&cli)?);
+        return Ok(());
+    }
+
+    if cli.generate_mother_bud_total {
+        println!("{}", run_generate_mother_bud_total(&cli)?);
         return Ok(());
     }
 
@@ -528,6 +600,35 @@ fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_apply_tracking_from_trackmate_xml(cli: &Cli) -> Result<String> {
+    let position_dir = cli.position_dir.clone().ok_or_else(|| {
+        anyhow::anyhow!("--apply_tracking_from_trackmate_xml requires --position_dir")
+    })?;
+    let segm_endname = cli.segm_endname.clone().ok_or_else(|| {
+        anyhow::anyhow!("--apply_tracking_from_trackmate_xml requires --segm_endname")
+    })?;
+    let xml_path = cli.xml_path.clone().ok_or_else(|| {
+        anyhow::anyhow!("--apply_tracking_from_trackmate_xml requires --xml_path")
+    })?;
+    let result = apply_tracking_from_trackmate_xml(ApplyTrackingFromTrackMateXmlConfig {
+        position_dir,
+        segm_endname,
+        xml_path,
+        output_segmentation_path: cli.output_path.clone(),
+        source_acdc_output_path: cli.source_acdc_output_path.clone(),
+        output_acdc_output_path: cli.output_acdc_output_path.clone(),
+        delete_untracked_ids: cli.delete_untracked_ids,
+    })?;
+    let mut lines = vec![format!(
+        "Saved TrackMate-tracked segmentation mask to {}",
+        result.primary_path.display()
+    )];
+    for path in result.secondary_paths {
+        lines.push(format!("Saved tracking sidecar to {}", path.display()));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn run_add_lineage_tree(cli: &Cli) -> Result<String> {
     let input_path = cli
         .input_path
@@ -547,6 +648,45 @@ fn run_add_lineage_tree(cli: &Cli) -> Result<String> {
     ))
 }
 
+fn run_generate_mother_bud_total(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--generate_mother_bud_total requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--generate_mother_bud_total requires --output_path"))?;
+    let result = generate_mother_bud_total(GenerateMotherBudTotalConfig {
+        input_path,
+        output_path,
+        column_operation_mapper: parse_column_operations(&cli.column_operations)?,
+        copy_all_nonselected_columns: !cli.no_copy_all_nonselected_columns,
+        grouping_columns: cli.grouping_columns.clone(),
+        entity_colname: cli.entity_colname.clone(),
+    })?;
+    Ok(format!(
+        "Saved mother-bud-total table to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn parse_column_operations(values: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut mapper = BTreeMap::new();
+    for value in values {
+        let Some((column, operation)) = value.split_once('=') else {
+            bail!("--column_operation must use COLUMN=OPERATION syntax");
+        };
+        let column = column.trim();
+        let operation = operation.trim();
+        if column.is_empty() || operation.is_empty() {
+            bail!("--column_operation must use non-empty COLUMN=OPERATION values");
+        }
+        mapper.insert(column.to_string(), operation.to_string());
+    }
+    Ok(mapper)
+}
+
 fn utility_mask_resolution(cli: &Cli) -> Option<MaskPathResolution> {
     if cli.size_t.is_none() && cli.size_z.is_none() && cli.segm_layout.is_none() {
         return None;
@@ -562,6 +702,13 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
     if cli.segmentation_path.is_some()
         || cli.output_path.is_some()
         || cli.input_path.is_some()
+        || cli.position_dir.is_some()
+        || cli.segm_endname.is_some()
+        || cli.xml_path.is_some()
+        || !cli.column_operations.is_empty()
+        || !cli.grouping_columns.is_empty()
+        || cli.entity_colname != "entity"
+        || cli.no_copy_all_nonselected_columns
         || cli.size_t.is_some()
         || cli.size_z.is_some()
         || cli.segm_layout.is_some()
@@ -584,7 +731,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, or --add_lineage_tree");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, or --generate_mother_bud_total");
     }
     Ok(())
 }

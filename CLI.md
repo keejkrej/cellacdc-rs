@@ -15,7 +15,9 @@ cellacdc-rs --connect_3d_segm --segmentation_path demo_segm3d.npz --output_path 
 cellacdc-rs --stack_2d_segm_to_3d --segmentation_path demo_segm2d.npz --output_path demo_segm3d.npz --size_z 5
 cellacdc-rs --filter_segm_from_table --segmentation_path demo_segm.npz --coords_table_path coords.csv --output_path demo_segm_filtered.npz
 cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
+cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
+cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --output_path demo_mother_bud_total.csv --column_operation cell_area_um2=sum
 ```
 
 - No arguments: launch the desktop GUI.
@@ -55,8 +57,22 @@ cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path d
   inputs include `--mask_ids_col`, centroid columns, `--first_frame_one`, and
   `--delete_untracked_ids`. Optional `--source_acdc_output_path` and
   `--output_acdc_output_path` remap a matching `acdc_output` table.
+- `--apply_tracking_from_trackmate_xml`: apply tracking IDs from a TrackMate XML
+  file to a position segmentation mask. Required arguments are `--position_dir`,
+  `--segm_endname`, and `--xml_path`; `--output_path` optionally overrides the
+  tracked segmentation output path. `--delete_untracked_ids` and the optional
+  `--source_acdc_output_path`/`--output_acdc_output_path` table remapping flags
+  are also supported.
 - `--add_lineage_tree`: add lineage-tree columns to an `acdc_output` CSV/XLSX
   table. Required arguments are `--input_path` and `--output_path`.
+- `--generate_mother_bud_total`: generate G1, mother, bud, and total rows from
+  an `acdc_output` CSV/XLSX table. Required arguments are `--input_path` and
+  `--output_path`. Repeat `--column_operation COLUMN=OPERATION` for columns that
+  should be combined; operations containing `sum` add mother and bud values.
+  Repeat `--grouping_column COLUMN` when mother/bud matching needs extra keys.
+  The entity label column defaults to `entity` and can be changed with
+  `--entity_colname`; use `--no_copy_all_nonselected_columns` to keep only
+  columns named by `--column_operation`.
 
 ## Supported Workflow INI Subset
 

@@ -24,7 +24,9 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--stack_2d_segm_to_3d"));
     assert!(stdout.contains("--filter_segm_from_table"));
     assert!(stdout.contains("--apply_tracking_from_table"));
+    assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
+    assert!(stdout.contains("--generate_mother_bud_total"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -372,6 +374,61 @@ fn apply_tracking_from_table_utility_writes_tracked_mask() {
 }
 
 #[test]
+fn apply_tracking_from_trackmate_xml_utility_writes_tracked_mask() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    let segm_path = images_dir.join("demo_segm.npz");
+    let output_path = temp.path().join("tracked.npz");
+    let xml_path = temp.path().join("tracks.xml");
+    let file = File::create(&segm_path).expect("segm npz");
+    let mut writer = NpzWriter::new(file);
+    let masks = Array3::from_shape_vec(
+        (2, 2, 2),
+        vec![
+            1u32, 1, 0, 0, //
+            2, 2, 0, 0,
+        ],
+    )
+    .expect("mask shape");
+    writer.add_array("arr_0", &masks).expect("write mask");
+    writer.finish().expect("finish npz");
+    fs::write(
+        &xml_path,
+        r#"<Tracks>
+<particle>
+  <detection t="0" x="0" y="0" z="0"/>
+  <detection t="1" x="0" y="0" z="0"/>
+</particle>
+</Tracks>"#,
+    )
+    .expect("trackmate xml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--apply_tracking_from_trackmate_xml")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--segm_endname")
+        .arg("segm")
+        .arg("--xml_path")
+        .arg(&xml_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved TrackMate-tracked segmentation mask"));
+    assert!(stdout.contains("Saved tracking sidecar"));
+    let mut npz = NpzReader::new(File::open(output_path).expect("tracked npz")).expect("read npz");
+    let tracked: Array3<u32> = npz.by_name("arr_0.npy").expect("tracked array");
+    assert!(tracked.iter().all(|value| *value == 0 || *value == 1));
+    assert!(tracked.iter().any(|value| *value == 1));
+}
+
+#[test]
 fn add_lineage_tree_utility_writes_tree_table() {
     let temp = tempfile::tempdir().expect("temp dir");
     let input_path = temp.path().join("acdc_output.csv");
@@ -402,6 +459,42 @@ fn add_lineage_tree_utility_writes_tree_table() {
     assert!(csv.contains("Cell_ID_tree"));
     assert!(csv.contains("root_ID_tree"));
     assert!(csv.contains("sister_ID_tree"));
+}
+
+#[test]
+fn generate_mother_bud_total_utility_writes_total_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("mother_bud_total.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,relative_ID,cell_cycle_stage,relationship,cell_area_um2\n",
+            "0,1,-1,G1,mother,10\n",
+            "1,1,2,S,mother,10\n",
+            "1,2,1,S,bud,5\n",
+        ),
+    )
+    .expect("acdc output csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--generate_mother_bud_total")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--column_operation")
+        .arg("cell_area_um2=sum")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved mother-bud-total table"));
+    let csv = fs::read_to_string(output_path).expect("mother bud total csv");
+    assert!(csv.contains("entity"));
+    assert!(csv.contains("Total"));
+    assert!(csv.contains(",15"));
 }
 
 #[test]
