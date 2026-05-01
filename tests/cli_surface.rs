@@ -268,6 +268,55 @@ fn to_obj_coords_utility_writes_coordinate_table() {
 }
 
 #[test]
+fn to_obj_coords_utility_writes_experiment_position_tables() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        let segm_path = images_dir.join("demo_segm.npz");
+        let file = File::create(segm_path).expect("segm npz");
+        let mut writer = NpzWriter::new(file);
+        let masks = Array3::from_shape_vec(
+            (2, 2, 2),
+            vec![
+                0u32, 1, //
+                2, 2, //
+                3, 0, //
+                3, 0,
+            ],
+        )
+        .expect("mask shape");
+        writer.add_array("arr_0", &masks).expect("write mask");
+        writer.finish().expect("finish npz");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--to_obj_coords")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--segm_endname")
+        .arg("segm")
+        .arg("--segm_layout")
+        .arg("TYX")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved object-coordinate tables for 2 position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let output_path = temp
+            .path()
+            .join(pos)
+            .join("Images")
+            .join("demo_objects_coordinates.csv");
+        let csv = fs::read_to_string(output_path).expect("object coordinate csv");
+        assert!(csv.contains("frame_i,Cell_ID,y,x"));
+        assert!(csv.contains("1,3,1,0"));
+    }
+}
+
+#[test]
 fn convert_file_format_utility_converts_npz_to_npy_with_segm_cast() {
     let temp = tempfile::tempdir().expect("temp dir");
     let input_path = temp.path().join("segm_float.npz");

@@ -123,6 +123,14 @@ pub struct ObjectCoordinatesConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectCoordinatesBatchConfig {
+    pub position_dir: Option<PathBuf>,
+    pub experiment_dir: Option<PathBuf>,
+    pub segm_endname: String,
+    pub resolution: Option<MaskPathResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectsCountSummary {
     pub counts: BTreeMap<String, usize>,
     pub output_path: PathBuf,
@@ -643,6 +651,43 @@ pub fn segmentation_to_object_coords(
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
+    })
+}
+
+pub fn segmentation_to_object_coords_in_positions(
+    config: ObjectCoordinatesBatchConfig,
+) -> Result<UtilityOutputPaths> {
+    let images_dirs = collect_images_dirs_from_scope(
+        config.position_dir.as_deref(),
+        config.experiment_dir.as_deref(),
+    )?;
+    let mut output_paths = Vec::new();
+    for images_dir in images_dirs {
+        let Some(segmentation_path) = find_file_by_endname(
+            &images_dir,
+            &config.segm_endname,
+            &["npz", "tif", "tiff", "h5"],
+        )?
+        else {
+            continue;
+        };
+        let output_path = derive_object_coordinates_path(&segmentation_path)?;
+        segmentation_to_object_coords(ObjectCoordinatesConfig {
+            segmentation_path,
+            output_path: output_path.clone(),
+            resolution: config.resolution.clone(),
+        })?;
+        output_paths.push(output_path);
+    }
+    if output_paths.is_empty() {
+        bail!(
+            "No segmentation files ending with {:?} were found in the selected scope",
+            config.segm_endname
+        );
+    }
+    Ok(UtilityOutputPaths {
+        primary_path: output_paths[0].clone(),
+        secondary_paths: output_paths.into_iter().skip(1).collect(),
     })
 }
 
@@ -3501,6 +3546,20 @@ fn derive_objects_count_path(segmentation_path: &Path) -> Result<PathBuf> {
     let stem = without_ext.replacen("segm", "acdc_objects_count", 1);
     let output_name = if stem == without_ext {
         format!("{without_ext}_acdc_objects_count.csv")
+    } else {
+        format!("{stem}.csv")
+    };
+    Ok(segmentation_path.with_file_name(output_name))
+}
+
+fn derive_object_coordinates_path(segmentation_path: &Path) -> Result<PathBuf> {
+    let without_ext = segmentation_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("Invalid segmentation path {}", segmentation_path.display()))?;
+    let stem = without_ext.replacen("_segm", "_objects_coordinates", 1);
+    let output_name = if stem == without_ext {
+        format!("{without_ext}_objects_coordinates.csv")
     } else {
         format!("{stem}.csv")
     };

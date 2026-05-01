@@ -12,6 +12,7 @@ cellacdc-rs -info
 cellacdc-rs --count_objects --segmentation_path demo_segm.npz --output_path demo_acdc_objects_count.csv
 cellacdc-rs --count_objects --experiment_dir Experiment_1 --segm_endname segm
 cellacdc-rs --to_obj_coords --segmentation_path demo_segm.npz --output_path demo_objects_coordinates.csv --segm_layout TYX
+cellacdc-rs --to_obj_coords --experiment_dir Experiment_1 --segm_endname segm --segm_layout TYX
 cellacdc-rs --fill_holes --segmentation_path demo_segm.npz --output_path demo_segm_filled.npz
 cellacdc-rs --fill_holes --experiment_dir Experiment_1 --segm_endname segm --segm_append_name filled
 cellacdc-rs --connect_3d_segm --segmentation_path demo_segm3d.npz --output_path demo_segm3d_connected.npz --segm_layout ZYX
@@ -53,10 +54,12 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   `*_acdc_objects_count*.csv` tables next to them. Optional layout hints
   `--size_t`, `--size_z`, and `--segm_layout` resolve ambiguous 3D masks.
 - `--to_obj_coords`: convert every non-zero segmentation pixel/voxel to an
-  object-coordinate table. Required arguments are `--segmentation_path` and
-  `--output_path`. Output columns are `frame_i`, `Cell_ID`, `y`, and `x`, with
-  `z` included for 3D masks. It uses the same optional layout-hint flags as
-  `--count_objects`.
+  object-coordinate table. Use `--segmentation_path` and `--output_path` for one
+  explicit mask, or pass exactly one of `--position_dir` and `--experiment_dir`
+  with `--segm_endname` to write Python-style `*_objects_coordinates.csv`
+  tables next to matching segmentation files. Output columns are `frame_i`,
+  `Cell_ID`, `y`, and `x`, with `z` included for 3D masks. It uses the same
+  optional layout-hint flags as `--count_objects`.
 - `--fill_holes`: fill holes in a segmentation mask. Use `--segmentation_path`
   and `--output_path` for one explicit mask, or pass exactly one of
   `--position_dir` and `--experiment_dir` with `--segm_endname` to fill matching
