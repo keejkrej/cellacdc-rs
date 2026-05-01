@@ -21,6 +21,7 @@ cellacdc-rs --stack_2d_segm_to_3d --segmentation_path demo_segm2d.npz --output_p
 cellacdc-rs --stack_2d_segm_to_3d --experiment_dir Experiment_1 --segm_endname segm --segm_append_name stacked3d --size_z 5
 cellacdc-rs --filter_segm_from_table --segmentation_path demo_segm.npz --coords_table_path coords.csv --output_path demo_segm_filtered.npz
 cellacdc-rs --filter_segm_from_table --experiment_dir Experiment_1 --segm_endname segm --coords_table_path coords.csv --segm_append_name filtered --frame_col frame_i --position_col Position_n
+cellacdc-rs --align_frames --experiment_dir Experiment_1 --reference_channel phase --channel_name phase --channel_name GFP
 cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
@@ -89,6 +90,11 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   `--position_col`, and `--position_value`. In batch mode, `--position_col`
   defaults to each current `Position_n` folder unless `--position_value` is
   provided.
+- `--align_frames`: compute frame-alignment shifts from `--reference_channel`
+  and write `*_aligned.npz` outputs plus `*align_shift.npy` for exactly one of
+  `--position_dir` or `--experiment_dir`. Repeat `--channel_name` to align a
+  subset of channels; when omitted, all discovered channels are aligned.
+  Existing aligned outputs are protected unless `--yes` is provided.
 - `--apply_tracking_from_table`: apply tracking IDs from a CSV/XLSX table to a
   time-series segmentation mask. Required arguments are `--segmentation_path`,
   `--tracking_table_path`, and `--output_path`. Tracking columns default to

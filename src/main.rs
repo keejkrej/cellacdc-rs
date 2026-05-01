@@ -9,22 +9,23 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
-    add_lineage_tree, add_lineage_tree_to_tables, apply_tracking_from_table,
-    apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_multi_channel,
-    concat_acdc_outputs, connect_3d_segm, connect_3d_segm_in_positions, convert_file_format,
-    count_objects, count_objects_in_positions, fill_holes, fill_holes_in_positions,
+    add_lineage_tree, add_lineage_tree_to_tables, apply_alignment, apply_tracking_from_table,
+    apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_alignment_shifts,
+    compute_multi_channel, concat_acdc_outputs, connect_3d_segm, connect_3d_segm_in_positions,
+    convert_file_format, count_objects, count_objects_in_positions,
+    discover_measurement_experiment, fill_holes, fill_holes_in_positions,
     filter_segm_from_table_in_positions, generate_mother_bud_total, images_to_positions,
-    move_channel_tiffs_to_positions, rename_files, run_workflow_file,
+    move_channel_tiffs_to_positions, rename_files, resolve_measurement_position, run_workflow_file,
     segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
-    stack_2d_segm_to_3d_in_positions, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
-    CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
-    Connect3DSegmBatchConfig, Connect3DSegmConfig, ConvertFileFormatConfig,
-    CoordinateFilterBatchConfig, CoordinateFilterConfig, CountObjectsBatchConfig,
-    CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
-    ImagesToPositionsConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
-    MoveChannelTiffsConfig, ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig,
-    RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig,
-    TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    stack_2d_segm_to_3d_in_positions, AlignmentRunConfig, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
+    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
+    ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
+    CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig,
+    GenerateMotherBudTotalConfig, ImagesToPositionsConfig, LineageTreeBatchConfig,
+    LineageTreeConfig, MaskPathResolution, MoveChannelTiffsConfig, ObjectCoordinatesBatchConfig,
+    ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
+    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -114,6 +115,12 @@ struct Cli {
         help = "Keep only segmentation labels touched by coordinates in a table"
     )]
     filter_segm_from_table: bool,
+    #[arg(
+        long = "align_frames",
+        action = ArgAction::SetTrue,
+        help = "Align position image frames and write aligned channel NPZ files"
+    )]
+    align_frames: bool,
     #[arg(
         long = "apply_tracking_from_table",
         action = ArgAction::SetTrue,
@@ -377,9 +384,15 @@ struct Cli {
         long = "channel_name",
         value_name = "CHANNEL",
         action = ArgAction::Append,
-        help = "Channel name for --move_channel_tiffs_to_positions; repeat for multiple channels"
+        help = "Channel name for channel-scoped utility modes; repeat for multiple channels"
     )]
     channel_names: Vec<String>,
+    #[arg(
+        long = "reference_channel",
+        value_name = "CHANNEL",
+        help = "Reference channel for --align_frames"
+    )]
+    reference_channel: Option<String>,
     #[arg(
         long = "tiff_extension",
         value_name = "EXT",
@@ -549,6 +562,7 @@ fn main() -> Result<()> {
         + usize::from(cli.connect_3d_segm)
         + usize::from(cli.stack_2d_segm_to_3d)
         + usize::from(cli.filter_segm_from_table)
+        + usize::from(cli.align_frames)
         + usize::from(cli.apply_tracking_from_table)
         + usize::from(cli.apply_tracking_from_trackmate_xml)
         + usize::from(cli.add_lineage_tree)
@@ -563,7 +577,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -621,6 +635,11 @@ fn main() -> Result<()> {
 
     if cli.filter_segm_from_table {
         println!("{}", run_filter_segm_from_table(&cli)?);
+        return Ok(());
+    }
+
+    if cli.align_frames {
+        println!("{}", run_align_frames(&cli)?);
         return Ok(());
     }
 
@@ -1044,6 +1063,63 @@ fn run_filter_segm_from_table(cli: &Cli) -> Result<String> {
     }
 }
 
+fn run_align_frames(cli: &Cli) -> Result<String> {
+    let reference_channel = cli
+        .reference_channel
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--align_frames requires --reference_channel"))?;
+    let position_dirs = match (cli.position_dir.clone(), cli.experiment_dir.clone()) {
+        (Some(position_dir), None) => {
+            vec![resolve_measurement_position(&position_dir)?.position_dir]
+        }
+        (None, Some(experiment_dir)) => discover_measurement_experiment(&experiment_dir)?
+            .positions
+            .into_iter()
+            .map(|position| position.position_dir)
+            .collect(),
+        _ => bail!("--align_frames requires exactly one of --position_dir and --experiment_dir"),
+    };
+    let mut aligned_count = 0usize;
+    let mut lines = Vec::new();
+    for position_dir in position_dirs {
+        let position = resolve_measurement_position(&position_dir)?;
+        let channels_to_align = if cli.channel_names.is_empty() {
+            position
+                .channels
+                .iter()
+                .map(|channel| channel.name.clone())
+                .collect::<Vec<_>>()
+        } else {
+            cli.channel_names.clone()
+        };
+        let config = AlignmentRunConfig {
+            position_dir: position.position_dir.clone(),
+            reference_channel: reference_channel.clone(),
+            channels_to_align,
+            frame_range: None,
+            overwrite: cli.yes,
+        };
+        let shifts = compute_alignment_shifts(&config)?;
+        let result = apply_alignment(config, &shifts)?;
+        aligned_count += result.aligned_outputs.len();
+        lines.push(format!(
+            "Saved alignment shifts to {}",
+            result.shifts_path.display()
+        ));
+        for path in result.aligned_outputs {
+            lines.push(format!("Saved aligned channel to {}", path.display()));
+        }
+    }
+    lines.insert(
+        0,
+        format!(
+            "Aligned {} channel output(s) across selected position(s)",
+            aligned_count
+        ),
+    );
+    Ok(lines.join("\n"))
+}
+
 fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {
     let segmentation_path = cli.segmentation_path.clone().ok_or_else(|| {
         anyhow::anyhow!("--apply_tracking_from_table requires --segmentation_path")
@@ -1433,6 +1509,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.target_dir.is_some()
         || cli.images_append_text.is_some()
         || !cli.channel_names.is_empty()
+        || cli.reference_channel.is_some()
         || cli.tiff_extension != "tif"
         || cli.segm_append_name.is_some()
         || cli.size_t.is_some()
@@ -1457,7 +1534,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }

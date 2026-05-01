@@ -19,6 +19,16 @@ fn write_test_tiff(path: &std::path::Path, values: &[u16], width: u32, height: u
         .expect("write tiff image");
 }
 
+fn write_test_tiff_stack(path: &std::path::Path, frames: &[Vec<u16>], width: u32, height: u32) {
+    let file = File::create(path).expect("tiff file");
+    let mut encoder = TiffEncoder::new(file).expect("tiff encoder");
+    for frame in frames {
+        encoder
+            .write_image::<colortype::Gray16>(width, height, frame)
+            .expect("write tiff image");
+    }
+}
+
 #[test]
 fn help_shows_flat_cli_without_subcommands() {
     let output = run_bin(&["--help"]);
@@ -33,6 +43,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--connect_3d_segm"));
     assert!(stdout.contains("--stack_2d_segm_to_3d"));
     assert!(stdout.contains("--filter_segm_from_table"));
+    assert!(stdout.contains("--align_frames"));
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
@@ -858,6 +869,63 @@ fn filter_segm_from_table_utility_filters_experiment_positions() {
             NpzReader::new(File::open(output_path).expect("filtered npz")).expect("read npz");
         let filtered: Array3<u32> = npz.by_name("arr_0.npy").expect("filtered array");
         assert_eq!(filtered.iter().copied().collect::<Vec<_>>(), values);
+    }
+}
+
+#[test]
+fn align_frames_utility_writes_experiment_aligned_outputs() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        fs::write(
+            images_dir.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )
+        .expect("metadata csv");
+        for channel in ["phase", "GFP"] {
+            let path = images_dir.join(format!("demo_{channel}.tif"));
+            write_test_tiff_stack(
+                &path,
+                &[
+                    vec![
+                        0, 1, //
+                        0, 0,
+                    ],
+                    vec![
+                        1, 0, //
+                        0, 0,
+                    ],
+                ],
+                2,
+                2,
+            );
+        }
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--align_frames")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--reference_channel")
+        .arg("phase")
+        .arg("--channel_name")
+        .arg("phase")
+        .arg("--channel_name")
+        .arg("GFP")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Aligned 4 channel output(s) across selected position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        assert!(images_dir.join("demo_phase_aligned.npz").exists());
+        assert!(images_dir.join("demo_GFP_aligned.npz").exists());
+        let shifts: Array2<i32> =
+            read_npy(images_dir.join("demo_align_shift.npy")).expect("alignment shifts");
+        assert_eq!(shifts.shape(), &[2, 2]);
     }
 }
 
