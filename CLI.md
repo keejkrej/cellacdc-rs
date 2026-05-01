@@ -20,6 +20,7 @@ cellacdc-rs --connect_3d_segm --experiment_dir Experiment_1 --segm_endname segm 
 cellacdc-rs --stack_2d_segm_to_3d --segmentation_path demo_segm2d.npz --output_path demo_segm3d.npz --size_z 5
 cellacdc-rs --stack_2d_segm_to_3d --experiment_dir Experiment_1 --segm_endname segm --segm_append_name stacked3d --size_z 5
 cellacdc-rs --filter_segm_from_table --segmentation_path demo_segm.npz --coords_table_path coords.csv --output_path demo_segm_filtered.npz
+cellacdc-rs --filter_segm_from_table --experiment_dir Experiment_1 --segm_endname segm --coords_table_path coords.csv --segm_append_name filtered --frame_col frame_i --position_col Position_n
 cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
@@ -79,10 +80,15 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   `--segm_append_name`, and `--size_z` to write appended outputs for matching
   segmentation files.
 - `--filter_segm_from_table`: keep only segmentation labels touched by
-  coordinates in a CSV/XLSX table. Required arguments are `--segmentation_path`,
-  `--coords_table_path`, and `--output_path`. Coordinate columns default to
-  `--x_col x` and `--y_col y`; time-series/3D masks can also use
-  `--frame_col`, `--z_col`, `--position_col`, and `--position_value`.
+  coordinates in a CSV/XLSX table. Use `--segmentation_path`,
+  `--coords_table_path`, and `--output_path` for one explicit mask, or pass
+  exactly one of `--position_dir` and `--experiment_dir` with `--segm_endname`,
+  `--coords_table_path`, and `--segm_append_name` to write appended outputs for
+  matching segmentation files. Coordinate columns default to `--x_col x` and
+  `--y_col y`; time-series/3D masks can also use `--frame_col`, `--z_col`,
+  `--position_col`, and `--position_value`. In batch mode, `--position_col`
+  defaults to each current `Position_n` folder unless `--position_value` is
+  provided.
 - `--apply_tracking_from_table`: apply tracking IDs from a CSV/XLSX table to a
   time-series segmentation mask. Required arguments are `--segmentation_path`,
   `--tracking_table_path`, and `--output_path`. Tracking columns default to

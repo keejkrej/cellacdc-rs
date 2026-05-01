@@ -794,6 +794,74 @@ fn filter_segm_from_table_utility_writes_filtered_mask() {
 }
 
 #[test]
+fn filter_segm_from_table_utility_filters_experiment_positions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let coords_path = temp.path().join("coords.csv");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        let segm_path = images_dir.join("demo_segm.npz");
+        let file = File::create(segm_path).expect("segm npz");
+        let mut writer = NpzWriter::new(file);
+        let masks = Array3::from_shape_vec(
+            (2, 2, 3),
+            vec![
+                1u32, 1, 0, //
+                2, 2, 0, //
+                3, 3, 0, //
+                4, 4, 0,
+            ],
+        )
+        .expect("mask shape");
+        writer.add_array("arr_0", &masks).expect("write mask");
+        writer.finish().expect("finish npz");
+    }
+    fs::write(
+        &coords_path,
+        "Position_n,frame_i,x,y\nPosition_1,0,0,0\nPosition_1,1,0,0\nPosition_2,0,0,1\nPosition_2,1,0,1\n",
+    )
+    .expect("coords csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--filter_segm_from_table")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--segm_endname")
+        .arg("segm")
+        .arg("--coords_table_path")
+        .arg(&coords_path)
+        .arg("--segm_append_name")
+        .arg("filtered")
+        .arg("--segm_layout")
+        .arg("TYX")
+        .arg("--frame_col")
+        .arg("frame_i")
+        .arg("--position_col")
+        .arg("Position_n")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved coordinate-filtered segmentation masks for 2 position(s)"));
+    let expected = [
+        ("Position_1", vec![1u32, 1, 0, 0, 0, 0, 3, 3, 0, 0, 0, 0]),
+        ("Position_2", vec![0u32, 0, 0, 2, 2, 0, 0, 0, 0, 4, 4, 0]),
+    ];
+    for (pos, values) in expected {
+        let output_path = temp
+            .path()
+            .join(pos)
+            .join("Images")
+            .join("demo_segm_filtered.npz");
+        let mut npz =
+            NpzReader::new(File::open(output_path).expect("filtered npz")).expect("read npz");
+        let filtered: Array3<u32> = npz.by_name("arr_0.npy").expect("filtered array");
+        assert_eq!(filtered.iter().copied().collect::<Vec<_>>(), values);
+    }
+}
+
+#[test]
 fn apply_tracking_from_table_utility_writes_tracked_mask() {
     let temp = tempfile::tempdir().expect("temp dir");
     let segm_path = temp.path().join("segm.npz");

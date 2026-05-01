@@ -13,16 +13,18 @@ use cellacdc_rs::{
     apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_multi_channel,
     concat_acdc_outputs, connect_3d_segm, connect_3d_segm_in_positions, convert_file_format,
     count_objects, count_objects_in_positions, fill_holes, fill_holes_in_positions,
-    generate_mother_bud_total, images_to_positions, move_channel_tiffs_to_positions, rename_files,
-    run_workflow_file, segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
+    filter_segm_from_table_in_positions, generate_mother_bud_total, images_to_positions,
+    move_channel_tiffs_to_positions, rename_files, run_workflow_file,
+    segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
     stack_2d_segm_to_3d_in_positions, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
     CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
-    Connect3DSegmBatchConfig, Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterConfig,
-    CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig,
-    GenerateMotherBudTotalConfig, ImagesToPositionsConfig, LineageTreeBatchConfig,
-    LineageTreeConfig, MaskPathResolution, MoveChannelTiffsConfig, ObjectCoordinatesBatchConfig,
-    ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
-    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    Connect3DSegmBatchConfig, Connect3DSegmConfig, ConvertFileFormatConfig,
+    CoordinateFilterBatchConfig, CoordinateFilterConfig, CountObjectsBatchConfig,
+    CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
+    ImagesToPositionsConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
+    MoveChannelTiffsConfig, ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig,
+    RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig,
+    TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -969,34 +971,77 @@ fn run_stack_2d_segm_to_3d(cli: &Cli) -> Result<String> {
 }
 
 fn run_filter_segm_from_table(cli: &Cli) -> Result<String> {
-    let segmentation_path = cli
-        .segmentation_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--filter_segm_from_table requires --segmentation_path"))?;
-    let coords_table_path = cli
-        .coords_table_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--filter_segm_from_table requires --coords_table_path"))?;
-    let output_path = cli
-        .output_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--filter_segm_from_table requires --output_path"))?;
-    let result = cellacdc_rs::filter_segm_from_table(CoordinateFilterConfig {
-        segmentation_path,
-        coords_table_path,
-        output_path,
-        x_col: cli.x_col.clone(),
-        y_col: cli.y_col.clone(),
-        z_col: cli.z_col.clone(),
-        frame_col: cli.frame_col.clone(),
-        position_col: cli.position_col.clone(),
-        position_value: cli.position_value.clone(),
-        resolution: utility_mask_resolution(cli),
-    })?;
-    Ok(format!(
-        "Saved coordinate-filtered segmentation mask to {}",
-        result.primary_path.display()
-    ))
+    match (
+        cli.segmentation_path.clone(),
+        cli.output_path.clone(),
+        cli.position_dir.clone(),
+        cli.experiment_dir.clone(),
+    ) {
+        (Some(segmentation_path), Some(output_path), None, None) => {
+            let coords_table_path = cli.coords_table_path.clone().ok_or_else(|| {
+                anyhow::anyhow!("--filter_segm_from_table requires --coords_table_path")
+            })?;
+            let result = cellacdc_rs::filter_segm_from_table(CoordinateFilterConfig {
+                segmentation_path,
+                coords_table_path,
+                output_path,
+                x_col: cli.x_col.clone(),
+                y_col: cli.y_col.clone(),
+                z_col: cli.z_col.clone(),
+                frame_col: cli.frame_col.clone(),
+                position_col: cli.position_col.clone(),
+                position_value: cli.position_value.clone(),
+                resolution: utility_mask_resolution(cli),
+            })?;
+            Ok(format!(
+                "Saved coordinate-filtered segmentation mask to {}",
+                result.primary_path.display()
+            ))
+        }
+        (None, None, position_dir, experiment_dir)
+            if position_dir.is_some() ^ experiment_dir.is_some() =>
+        {
+            let coords_table_path = cli.coords_table_path.clone().ok_or_else(|| {
+                anyhow::anyhow!("--filter_segm_from_table batch mode requires --coords_table_path")
+            })?;
+            let segm_endname = cli.segm_endname.clone().ok_or_else(|| {
+                anyhow::anyhow!("--filter_segm_from_table batch mode requires --segm_endname")
+            })?;
+            let append_name = cli.segm_append_name.clone().ok_or_else(|| {
+                anyhow::anyhow!("--filter_segm_from_table batch mode requires --segm_append_name")
+            })?;
+            let result = filter_segm_from_table_in_positions(CoordinateFilterBatchConfig {
+                position_dir,
+                experiment_dir,
+                segm_endname,
+                coords_table_path,
+                append_name,
+                x_col: cli.x_col.clone(),
+                y_col: cli.y_col.clone(),
+                z_col: cli.z_col.clone(),
+                frame_col: cli.frame_col.clone(),
+                position_col: cli.position_col.clone(),
+                position_value: cli.position_value.clone(),
+                resolution: utility_mask_resolution(cli),
+            })?;
+            let mut outputs = vec![result.primary_path];
+            outputs.extend(result.secondary_paths);
+            let mut lines = vec![format!(
+                "Saved coordinate-filtered segmentation masks for {} position(s)",
+                outputs.len()
+            )];
+            for path in outputs {
+                lines.push(format!(
+                    "Saved coordinate-filtered segmentation mask to {}",
+                    path.display()
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        _ => bail!(
+            "--filter_segm_from_table requires either --segmentation_path, --coords_table_path, and --output_path, or exactly one of --position_dir and --experiment_dir with --segm_endname, --coords_table_path, and --segm_append_name"
+        ),
+    }
 }
 
 fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {

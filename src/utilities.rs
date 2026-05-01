@@ -206,6 +206,22 @@ pub struct CoordinateFilterConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoordinateFilterBatchConfig {
+    pub position_dir: Option<PathBuf>,
+    pub experiment_dir: Option<PathBuf>,
+    pub segm_endname: String,
+    pub coords_table_path: PathBuf,
+    pub append_name: String,
+    pub x_col: String,
+    pub y_col: String,
+    pub z_col: Option<String>,
+    pub frame_col: Option<String>,
+    pub position_col: Option<String>,
+    pub position_value: Option<String>,
+    pub resolution: Option<MaskPathResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackingColumnMap {
     pub frame_index_col: String,
     pub is_first_frame_one: bool,
@@ -939,6 +955,57 @@ pub fn filter_segm_from_table(config: CoordinateFilterConfig) -> Result<UtilityO
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
+    })
+}
+
+pub fn filter_segm_from_table_in_positions(
+    config: CoordinateFilterBatchConfig,
+) -> Result<UtilityOutputPaths> {
+    if config.append_name.trim().is_empty() {
+        bail!("filter_segm_from_table batch mode requires a non-empty append name");
+    }
+    let images_dirs = collect_images_dirs_from_scope(
+        config.position_dir.as_deref(),
+        config.experiment_dir.as_deref(),
+    )?;
+    let mut output_paths = Vec::new();
+    for images_dir in images_dirs {
+        let Some(segmentation_path) = find_file_by_endname(
+            &images_dir,
+            &config.segm_endname,
+            &["npz", "tif", "tiff", "h5"],
+        )?
+        else {
+            continue;
+        };
+        let output_path = append_text_to_filename(&segmentation_path, &config.append_name)?;
+        let position_value = config
+            .position_value
+            .clone()
+            .or_else(|| position_folder_name_from_images_dir(&images_dir));
+        filter_segm_from_table(CoordinateFilterConfig {
+            segmentation_path,
+            coords_table_path: config.coords_table_path.clone(),
+            output_path: output_path.clone(),
+            x_col: config.x_col.clone(),
+            y_col: config.y_col.clone(),
+            z_col: config.z_col.clone(),
+            frame_col: config.frame_col.clone(),
+            position_col: config.position_col.clone(),
+            position_value,
+            resolution: config.resolution.clone(),
+        })?;
+        output_paths.push(output_path);
+    }
+    if output_paths.is_empty() {
+        bail!(
+            "No segmentation files ending with {:?} were found in the selected scope",
+            config.segm_endname
+        );
+    }
+    Ok(UtilityOutputPaths {
+        primary_path: output_paths[0].clone(),
+        secondary_paths: output_paths.into_iter().skip(1).collect(),
     })
 }
 
@@ -3443,6 +3510,14 @@ fn normalize_images_dir(path: &Path) -> Result<PathBuf> {
         "Expected a Cell-ACDC position directory or Images directory, got {}",
         path.display()
     )
+}
+
+fn position_folder_name_from_images_dir(images_dir: &Path) -> Option<String> {
+    images_dir
+        .parent()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
 }
 
 fn find_table_by_endname(images_dir: &Path, endname: &str) -> Result<Option<PathBuf>> {
