@@ -29,6 +29,7 @@ cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --trac
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
 cellacdc-rs --add_lineage_tree --experiment_dir Experiment_1 --table_endname acdc_output
+cellacdc-rs --build_lineage_state --input_path demo_acdc_output.csv --output_path demo_lineage_state.csv
 cellacdc-rs --export_lineage_info --input_path demo_acdc_output.csv --output_path frame1_lineage_info.json --frame_i 1
 cellacdc-rs --propagate_lineage --input_path edited_acdc_output.csv --output_path propagated_acdc_output.csv --frame_i 0 --cell_id 1
 cellacdc-rs --update_lineage_frame --input_path demo_acdc_output.csv --output_path updated_acdc_output.csv --frame_i 0 --edits_json_path lineage_edits.json
@@ -134,6 +135,9 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   pass exactly one of `--position_dir` and `--experiment_dir` to update matching
   position tables in place. `--table_endname` defaults to `acdc_output` for
   batch operation.
+- `--build_lineage_state`: build or normalize lineage-tree columns in an
+  `acdc_output` table. Required arguments are `--input_path` and
+  `--output_path`.
 - `--export_lineage_info`: export a JSON summary of cells with parents, orphan
   cells, and lost cells for one lineage frame. Required arguments are
   `--input_path`, `--output_path`, and `--frame_i`.

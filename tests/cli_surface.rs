@@ -1,3 +1,4 @@
+use cellacdc_rs::read_table;
 use ndarray::{Array2, Array3, ArrayD};
 use ndarray_npy::{read_npy, NpzReader, NpzWriter};
 use std::fs::{self, File};
@@ -50,6 +51,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
+    assert!(stdout.contains("--build_lineage_state"));
     assert!(stdout.contains("--export_lineage_info"));
     assert!(stdout.contains("--propagate_lineage"));
     assert!(stdout.contains("--update_lineage_frame"));
@@ -1218,6 +1220,50 @@ fn add_lineage_tree_utility_writes_tree_table() {
     assert!(csv.contains("Cell_ID_tree"));
     assert!(csv.contains("root_ID_tree"));
     assert!(csv.contains("sister_ID_tree"));
+}
+
+#[test]
+fn build_lineage_state_utility_writes_tree_columns() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("lineage_state.csv");
+    fs::write(&input_path, "frame_i,Cell_ID,value\n0,1,10\n0,2,20\n").expect("acdc output csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--build_lineage_state")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved lineage-state table to"));
+    let table = read_table(&output_path).expect("lineage state csv");
+    for column in [
+        "Cell_ID_tree",
+        "generation_num_tree",
+        "parent_ID_tree",
+        "root_ID_tree",
+        "is_history_known",
+    ] {
+        assert!(table.headers.iter().any(|header| header == column));
+    }
+    let row = table.row_map(0);
+    assert_eq!(row["frame_i"].as_i64(), Some(0));
+    assert_eq!(row["Cell_ID"].as_i64(), Some(1));
+    assert_eq!(row["value"].as_i64(), Some(10));
+    assert_eq!(row["Cell_ID_tree"].as_i64(), Some(1));
+    assert_eq!(row["generation_num_tree"].as_i64(), Some(1));
+    assert_eq!(row["parent_ID_tree"].as_i64(), Some(-1));
+    assert_eq!(row["root_ID_tree"].as_i64(), Some(1));
+    assert_eq!(row["is_history_known"].as_string_lossy(), "false");
 }
 
 #[test]
