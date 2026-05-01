@@ -27,6 +27,8 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
     assert!(stdout.contains("--generate_mother_bud_total"));
+    assert!(stdout.contains("--combine_metrics"));
+    assert!(stdout.contains("--compute_multi_channel"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -495,6 +497,80 @@ fn generate_mother_bud_total_utility_writes_total_table() {
     assert!(csv.contains("entity"));
     assert!(csv.contains("Total"));
     assert!(csv.contains(",15"));
+}
+
+#[test]
+fn combine_metrics_utility_writes_formula_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source1 = temp.path().join("source1.csv");
+    let source2 = temp.path().join("source2.csv");
+    let output_path = temp.path().join("combined.csv");
+    fs::write(&source1, "frame_i,Cell_ID,signal\n0,1,2\n").expect("source1 csv");
+    fs::write(&source2, "frame_i,Cell_ID,signal\n0,1,3\n").expect("source2 csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--combine_metrics")
+        .arg("--source_path")
+        .arg(&source1)
+        .arg("--source_path")
+        .arg(&source2)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--formula")
+        .arg("sum_signal=table1_signal + table2_signal")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved combined metrics table"));
+    assert!(stdout.contains("Saved combined metrics equations"));
+    let csv = fs::read_to_string(output_path).expect("combined csv");
+    assert!(csv.contains("sum_signal"));
+    assert!(csv.contains(",5"));
+}
+
+#[test]
+fn compute_multi_channel_utility_writes_position_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let images_dir = temp.path().join("Position_1").join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_acdc_output_first.csv"),
+        "frame_i,Cell_ID,signal\n0,1,2\n",
+    )
+    .expect("first csv");
+    fs::write(
+        images_dir.join("demo_acdc_output_second.csv"),
+        "frame_i,Cell_ID,signal\n0,1,3\n",
+    )
+    .expect("second csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--compute_multi_channel")
+        .arg("--position_dir")
+        .arg(temp.path().join("Position_1"))
+        .arg("--source_endname")
+        .arg("acdc_output_first")
+        .arg("--source_endname")
+        .arg("acdc_output_second")
+        .arg("--formula")
+        .arg("sum_signal=signal_table1 + signal_table2")
+        .arg("--append_name")
+        .arg("combined_metrics")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Computed multi-channel metrics for 1 position(s)"));
+    let csv = fs::read_to_string(images_dir.join("demo_acdc_output_combined_metrics.csv"))
+        .expect("combined metrics csv");
+    assert!(csv.contains("sum_signal"));
+    assert!(csv.contains(",5"));
+    assert!(images_dir
+        .join("demo_equations_combined_metrics.ini")
+        .exists());
 }
 
 #[test]

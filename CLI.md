@@ -18,6 +18,8 @@ cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --trac
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
 cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --output_path demo_mother_bud_total.csv --column_operation cell_area_um2=sum
+cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.csv --output_path combined.csv --formula "sum_signal=table1_signal + table2_signal"
+cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
 ```
 
 - No arguments: launch the desktop GUI.
@@ -73,6 +75,18 @@ cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --outp
   The entity label column defaults to `entity` and can be changed with
   `--entity_colname`; use `--no_copy_all_nonselected_columns` to keep only
   columns named by `--column_operation`.
+- `--combine_metrics`: combine metrics from two or more CSV/XLSX tables using
+  formulas. Repeat `--source_path PATH` for each table, pass `--output_path`,
+  and repeat `--formula COLUMN=EXPRESSION` for each output metric. Expressions
+  can use aliases such as `table1_signal` and `signal_table1`. The equations INI
+  path defaults next to the output table and can be changed with
+  `--equations_path`.
+- `--compute_multi_channel`: compute combined metric tables for a Cell-ACDC
+  position or experiment. Provide exactly one of `--position_dir` or
+  `--experiment_dir`, repeat `--source_endname ENDNAME` for the source tables,
+  and repeat `--formula COLUMN=EXPRESSION`. Outputs are written into each
+  position `Images` folder using `--append_name`, which defaults to
+  `combined_metrics`.
 
 ## Supported Workflow INI Subset
 

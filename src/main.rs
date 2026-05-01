@@ -10,11 +10,12 @@ use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
-    connect_3d_segm, count_objects, fill_holes, generate_mother_bud_total, run_workflow_file,
-    ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig, Connect3DSegmConfig,
-    CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
-    LineageTreeConfig, MaskPathResolution, SegmentationLayout, Stack2DSegmTo3DConfig,
-    TrackingColumnMap, WorkflowRunOptions,
+    combine_metrics, compute_multi_channel, connect_3d_segm, count_objects, fill_holes,
+    generate_mother_bud_total, run_workflow_file, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineMetricsConfig, ComputeMultiChannelConfig,
+    Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig,
+    GenerateMotherBudTotalConfig, LineageTreeConfig, MaskPathResolution, SegmentationLayout,
+    Stack2DSegmTo3DConfig, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -123,6 +124,18 @@ struct Cli {
     )]
     generate_mother_bud_total: bool,
     #[arg(
+        long = "combine_metrics",
+        action = ArgAction::SetTrue,
+        help = "Combine metrics from two or more tables using formulas"
+    )]
+    combine_metrics: bool,
+    #[arg(
+        long = "compute_multi_channel",
+        action = ArgAction::SetTrue,
+        help = "Compute combined multi-channel metric tables for a position or experiment"
+    )]
+    compute_multi_channel: bool,
+    #[arg(
         long = "segmentation_path",
         value_name = "PATH_TO_SEGM",
         help = "Segmentation mask path for utility modes"
@@ -147,6 +160,12 @@ struct Cli {
     )]
     position_dir: Option<PathBuf>,
     #[arg(
+        long = "experiment_dir",
+        value_name = "PATH_TO_EXPERIMENT",
+        help = "Experiment folder path for experiment-scoped utility modes"
+    )]
+    experiment_dir: Option<PathBuf>,
+    #[arg(
         long = "segm_endname",
         value_name = "ENDNAME",
         help = "Segmentation endname for position-scoped utility modes"
@@ -165,6 +184,40 @@ struct Cli {
         help = "Column operation for --generate_mother_bud_total, for example cell_area_um2=sum"
     )]
     column_operations: Vec<String>,
+    #[arg(
+        long = "source_path",
+        value_name = "PATH_TO_TABLE",
+        action = ArgAction::Append,
+        help = "Source table path for --combine_metrics"
+    )]
+    source_paths: Vec<PathBuf>,
+    #[arg(
+        long = "source_endname",
+        value_name = "ENDNAME",
+        action = ArgAction::Append,
+        help = "Source table endname for --compute_multi_channel"
+    )]
+    source_endnames: Vec<String>,
+    #[arg(
+        long = "formula",
+        value_name = "COLUMN=EXPRESSION",
+        action = ArgAction::Append,
+        help = "Formula for metric-combination modes, for example sum_signal=table1_signal+table2_signal"
+    )]
+    formulas: Vec<String>,
+    #[arg(
+        long = "equations_path",
+        value_name = "PATH_TO_INI",
+        help = "Optional equations INI output path for --combine_metrics"
+    )]
+    equations_path: Option<PathBuf>,
+    #[arg(
+        long = "append_name",
+        value_name = "NAME",
+        default_value = "combined_metrics",
+        help = "Append name for position-scoped computed metric outputs"
+    )]
+    append_name: String,
     #[arg(
         long = "grouping_column",
         value_name = "COLUMN",
@@ -343,10 +396,12 @@ fn main() -> Result<()> {
         + usize::from(cli.apply_tracking_from_table)
         + usize::from(cli.apply_tracking_from_trackmate_xml)
         + usize::from(cli.add_lineage_tree)
-        + usize::from(cli.generate_mother_bud_total);
+        + usize::from(cli.generate_mother_bud_total)
+        + usize::from(cli.combine_metrics)
+        + usize::from(cli.compute_multi_channel);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, or --generate_mother_bud_total"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, or --compute_multi_channel"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -419,6 +474,16 @@ fn main() -> Result<()> {
 
     if cli.generate_mother_bud_total {
         println!("{}", run_generate_mother_bud_total(&cli)?);
+        return Ok(());
+    }
+
+    if cli.combine_metrics {
+        println!("{}", run_combine_metrics(&cli)?);
+        return Ok(());
+    }
+
+    if cli.compute_multi_channel {
+        println!("{}", run_compute_multi_channel(&cli)?);
         return Ok(());
     }
 
@@ -671,16 +736,63 @@ fn run_generate_mother_bud_total(cli: &Cli) -> Result<String> {
     ))
 }
 
+fn run_combine_metrics(cli: &Cli) -> Result<String> {
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--combine_metrics requires --output_path"))?;
+    let result = combine_metrics(CombineMetricsConfig {
+        source_paths: cli.source_paths.clone(),
+        formulas: parse_name_value_pairs(&cli.formulas, "--formula")?,
+        output_path,
+        equations_path: cli.equations_path.clone(),
+    })?;
+    Ok(format!(
+        "Saved combined metrics table to {}\nSaved combined metrics equations to {}",
+        result.output_path.display(),
+        result.equations_path.display()
+    ))
+}
+
+fn run_compute_multi_channel(cli: &Cli) -> Result<String> {
+    let result = compute_multi_channel(ComputeMultiChannelConfig {
+        position_dir: cli.position_dir.clone(),
+        experiment_dir: cli.experiment_dir.clone(),
+        source_endnames: cli.source_endnames.clone(),
+        formulas: parse_name_value_pairs(&cli.formulas, "--formula")?,
+        append_name: cli.append_name.clone(),
+    })?;
+    let mut lines = vec![format!(
+        "Computed multi-channel metrics for {} position(s)",
+        result.outputs.len()
+    )];
+    for output in result.outputs {
+        lines.push(format!(
+            "Saved combined metrics table to {}",
+            output.output_path.display()
+        ));
+        lines.push(format!(
+            "Saved combined metrics equations to {}",
+            output.equations_path.display()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn parse_column_operations(values: &[String]) -> Result<BTreeMap<String, String>> {
+    parse_name_value_pairs(values, "--column_operation")
+}
+
+fn parse_name_value_pairs(values: &[String], flag_name: &str) -> Result<BTreeMap<String, String>> {
     let mut mapper = BTreeMap::new();
     for value in values {
         let Some((column, operation)) = value.split_once('=') else {
-            bail!("--column_operation must use COLUMN=OPERATION syntax");
+            bail!("{flag_name} must use NAME=VALUE syntax");
         };
         let column = column.trim();
         let operation = operation.trim();
         if column.is_empty() || operation.is_empty() {
-            bail!("--column_operation must use non-empty COLUMN=OPERATION values");
+            bail!("{flag_name} must use non-empty NAME=VALUE values");
         }
         mapper.insert(column.to_string(), operation.to_string());
     }
@@ -703,9 +815,15 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.output_path.is_some()
         || cli.input_path.is_some()
         || cli.position_dir.is_some()
+        || cli.experiment_dir.is_some()
         || cli.segm_endname.is_some()
         || cli.xml_path.is_some()
         || !cli.column_operations.is_empty()
+        || !cli.source_paths.is_empty()
+        || !cli.source_endnames.is_empty()
+        || !cli.formulas.is_empty()
+        || cli.equations_path.is_some()
+        || cli.append_name != "combined_metrics"
         || !cli.grouping_columns.is_empty()
         || cli.entity_colname != "entity"
         || cli.no_copy_all_nonselected_columns
@@ -731,7 +849,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, or --generate_mother_bud_total");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, or --compute_multi_channel");
     }
     Ok(())
 }
