@@ -26,6 +26,7 @@ cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_e
 cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_channels_recipe.json --append_name combined
 cellacdc-rs --convert_file_format --input_path demo_segm.npz --output_path demo_segm.npy --cast_segm_uint32
 cellacdc-rs --rename_files --file_path Position_1/Images/demo_phase.tif --rename_append_text aligned
+cellacdc-rs --images_to_positions --source_dir raw_images --target_dir Experiment_1 --images_append_text GFP
 ```
 
 - No arguments: launch the desktop GUI.
@@ -122,6 +123,11 @@ cellacdc-rs --rename_files --file_path Position_1/Images/demo_phase.tif --rename
 - `--rename_files`: append text to one or more filenames. Repeat
   `--file_path PATH` for each file and pass `--rename_append_text TEXT`. The
   output filename is `stem_TEXT.ext`; existing target files are not overwritten.
+- `--images_to_positions`: convert a flat folder of image files into Cell-ACDC
+  `Position_n/Images` folders. Required arguments are `--source_dir`,
+  `--target_dir`, and `--images_append_text`; output filenames follow the Python
+  utility pattern `sXX_STEM_TEXT.tif`. Invalid image files and directories are
+  skipped.
 
 ## Supported Workflow INI Subset
 

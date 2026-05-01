@@ -43,6 +43,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--combine_channels"));
     assert!(stdout.contains("--convert_file_format"));
     assert!(stdout.contains("--rename_files"));
+    assert!(stdout.contains("--images_to_positions"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -276,6 +277,42 @@ fn rename_files_utility_appends_text_to_selected_files() {
         fs::read(&output_path).expect("renamed content"),
         b"not really a tiff"
     );
+}
+
+#[test]
+fn images_to_positions_utility_creates_position_folders() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_dir = temp.path().join("raw");
+    let target_dir = temp.path().join("experiment");
+    fs::create_dir_all(&source_dir).expect("source dir");
+    write_test_tiff(&source_dir.join("first.tif"), &[1, 2, 3, 4], 2, 2);
+    write_test_tiff(&source_dir.join("second.tif"), &[5, 6, 7, 8], 2, 2);
+    fs::write(source_dir.join("notes.txt"), b"skip me").expect("invalid file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--images_to_positions")
+        .arg("--source_dir")
+        .arg(&source_dir)
+        .arg("--target_dir")
+        .arg(&target_dir)
+        .arg("--images_append_text")
+        .arg("GFP")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Converted 2 image file(s) to Position folders"));
+    assert!(target_dir
+        .join("Position_1")
+        .join("Images")
+        .join("s01_first_GFP.tif")
+        .exists());
+    assert!(target_dir
+        .join("Position_2")
+        .join("Images")
+        .join("s02_second_GFP.tif")
+        .exists());
 }
 
 #[test]

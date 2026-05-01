@@ -230,6 +230,13 @@ pub struct RenameFilesConfig {
     pub append_text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImagesToPositionsConfig {
+    pub source_dir: PathBuf,
+    pub target_dir: PathBuf,
+    pub append_text: String,
+}
+
 pub fn concat_acdc_outputs(config: ConcatConfig) -> Result<ConcatResult> {
     if config.experiment_dirs.is_empty() {
         bail!("concat_acdc_outputs requires at least one experiment directory");
@@ -907,6 +914,70 @@ pub fn rename_files(config: RenameFilesConfig) -> Result<UtilityOutputPaths> {
     Ok(UtilityOutputPaths {
         primary_path,
         secondary_paths: renamed_paths.into_iter().skip(1).collect(),
+    })
+}
+
+pub fn images_to_positions(config: ImagesToPositionsConfig) -> Result<UtilityOutputPaths> {
+    let append_text = config.append_text.trim();
+    if append_text.is_empty() {
+        bail!("images_to_positions requires non-empty append text");
+    }
+    if !config.source_dir.is_dir() {
+        bail!(
+            "Source directory does not exist: {}",
+            config.source_dir.display()
+        );
+    }
+    fs::create_dir_all(&config.target_dir)
+        .with_context(|| format!("Failed to create {}", config.target_dir.display()))?;
+
+    let mut entries = fs::read_dir(&config.source_dir)
+        .with_context(|| format!("Failed to read {}", config.source_dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect::<Vec<_>>();
+    entries.sort();
+    let num_pos_digits = entries.len().to_string().len().max(2);
+
+    let mut output_paths = Vec::new();
+    let mut pos = 1usize;
+    for path in entries {
+        if path.is_dir() {
+            continue;
+        }
+        let Ok(array) =
+            load_convertible_array(&path).or_else(|_| load_raster_image_as_array(&path))
+        else {
+            continue;
+        };
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("Invalid source filename {}", path.display()))?;
+        let position_name = format!("Position_{pos}");
+        let images_dir = config.target_dir.join(&position_name).join("Images");
+        fs::create_dir_all(&images_dir)
+            .with_context(|| format!("Failed to create {}", images_dir.display()))?;
+        let filename = format!(
+            "s{:0width$}_{stem}_{append_text}.tif",
+            pos,
+            width = num_pos_digits
+        );
+        let output_path = images_dir.join(filename);
+        save_convertible_tiff(&output_path, &array)?;
+        output_paths.push(output_path);
+        pos += 1;
+    }
+
+    if output_paths.is_empty() {
+        bail!(
+            "No valid image files were found in {}",
+            config.source_dir.display()
+        );
+    }
+
+    Ok(UtilityOutputPaths {
+        primary_path: output_paths[0].clone(),
+        secondary_paths: output_paths.into_iter().skip(1).collect(),
     })
 }
 
@@ -1608,6 +1679,55 @@ fn load_convertible_tiff(path: &Path) -> Result<ConvertibleArray> {
         values,
         scalar_type: scalar_type.unwrap_or(ImageScalarType::F32),
     })
+}
+
+fn load_raster_image_as_array(path: &Path) -> Result<ConvertibleArray> {
+    let image = image::ImageReader::open(path)
+        .with_context(|| format!("Failed to open raster image {}", path.display()))?
+        .decode()
+        .with_context(|| format!("Failed to decode raster image {}", path.display()))?;
+    match image {
+        image::DynamicImage::ImageLuma8(gray) => {
+            let (width, height) = gray.dimensions();
+            let values = gray
+                .into_raw()
+                .into_iter()
+                .map(|value| value as f32)
+                .collect();
+            Ok(ConvertibleArray {
+                values: ArrayD::from_shape_vec(IxDyn(&[height as usize, width as usize]), values)
+                    .with_context(|| format!("Failed to shape image {}", path.display()))?,
+                scalar_type: ImageScalarType::U8,
+            })
+        }
+        image::DynamicImage::ImageLuma16(gray) => {
+            let (width, height) = gray.dimensions();
+            let values = gray
+                .into_raw()
+                .into_iter()
+                .map(|value| value as f32)
+                .collect();
+            Ok(ConvertibleArray {
+                values: ArrayD::from_shape_vec(IxDyn(&[height as usize, width as usize]), values)
+                    .with_context(|| format!("Failed to shape image {}", path.display()))?,
+                scalar_type: ImageScalarType::U16,
+            })
+        }
+        other => {
+            let gray = other.to_luma8();
+            let (width, height) = gray.dimensions();
+            let values = gray
+                .into_raw()
+                .into_iter()
+                .map(|value| value as f32)
+                .collect();
+            Ok(ConvertibleArray {
+                values: ArrayD::from_shape_vec(IxDyn(&[height as usize, width as usize]), values)
+                    .with_context(|| format!("Failed to shape image {}", path.display()))?,
+                scalar_type: ImageScalarType::U8,
+            })
+        }
+    }
 }
 
 fn save_convertible_npz(path: &Path, array: &ConvertibleArray) -> Result<()> {
