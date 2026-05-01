@@ -24,6 +24,7 @@ cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname a
 cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_endname acdc_output --output_format csv
 cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_channels_recipe.json --append_name combined
 cellacdc-rs --convert_file_format --input_path demo_segm.npz --output_path demo_segm.npy --cast_segm_uint32
+cellacdc-rs --rename_files --file_path Position_1/Images/demo_phase.tif --rename_append_text aligned
 ```
 
 - No arguments: launch the desktop GUI.
@@ -114,6 +115,9 @@ cellacdc-rs --convert_file_format --input_path demo_segm.npz --output_path demo_
   inferred from extensions. Inputs support `.npz`, `.npy`, `.tif`, `.tiff`, and
   `.h5`; outputs support `.npz`, `.npy`, `.tif`, and `.tiff`. Use
   `--cast_segm_uint32` to match the Python converter's segmentation cast.
+- `--rename_files`: append text to one or more filenames. Repeat
+  `--file_path PATH` for each file and pass `--rename_append_text TEXT`. The
+  output filename is `stem_TEXT.ext`; existing target files are not overwritten.
 
 ## Supported Workflow INI Subset
 

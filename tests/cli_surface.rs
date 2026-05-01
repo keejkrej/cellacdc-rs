@@ -42,6 +42,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--concat_acdc_outputs"));
     assert!(stdout.contains("--combine_channels"));
     assert!(stdout.contains("--convert_file_format"));
+    assert!(stdout.contains("--rename_files"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -247,6 +248,33 @@ fn convert_file_format_utility_converts_npz_to_npy_with_segm_cast() {
     assert_eq!(
         converted.iter().copied().collect::<Vec<_>>(),
         vec![0, 1, 2, 0]
+    );
+}
+
+#[test]
+fn rename_files_utility_appends_text_to_selected_files() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("demo_phase.tif");
+    fs::write(&input_path, b"not really a tiff").expect("input file");
+    let output_path = temp.path().join("demo_phase_aligned.tif");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--rename_files")
+        .arg("--file_path")
+        .arg(&input_path)
+        .arg("--rename_append_text")
+        .arg("aligned")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Renamed 1 file(s)"));
+    assert!(!input_path.exists());
+    assert!(output_path.exists());
+    assert_eq!(
+        fs::read(&output_path).expect("renamed content"),
+        b"not really a tiff"
     );
 }
 

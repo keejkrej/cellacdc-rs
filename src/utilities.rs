@@ -217,6 +217,12 @@ pub struct ConvertFileFormatConfig {
     pub cast_segm_uint32: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameFilesConfig {
+    pub file_paths: Vec<PathBuf>,
+    pub append_text: String,
+}
+
 pub fn concat_acdc_outputs(config: ConcatConfig) -> Result<ConcatResult> {
     if config.experiment_dirs.is_empty() {
         bail!("concat_acdc_outputs requires at least one experiment directory");
@@ -823,6 +829,48 @@ pub fn convert_file_format(config: ConvertFileFormatConfig) -> Result<UtilityOut
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
+    })
+}
+
+pub fn rename_files(config: RenameFilesConfig) -> Result<UtilityOutputPaths> {
+    if config.file_paths.is_empty() {
+        bail!("rename_files requires at least one file path");
+    }
+    let append_text = config.append_text.trim();
+    if append_text.is_empty() {
+        bail!("rename_files requires non-empty append text");
+    }
+
+    let mut renamed_paths = Vec::new();
+    for path in config.file_paths {
+        if !path.is_file() {
+            bail!("Cannot rename missing file {}", path.display());
+        }
+        let target_path = append_text_to_filename(&path, append_text)?;
+        if target_path.exists() {
+            bail!(
+                "Cannot rename {} because target already exists: {}",
+                path.display(),
+                target_path.display()
+            );
+        }
+        fs::rename(&path, &target_path).with_context(|| {
+            format!(
+                "Failed to rename {} to {}",
+                path.display(),
+                target_path.display()
+            )
+        })?;
+        renamed_paths.push(target_path);
+    }
+
+    let primary_path = renamed_paths
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow!("rename_files produced no output paths"))?;
+    Ok(UtilityOutputPaths {
+        primary_path,
+        secondary_paths: renamed_paths.into_iter().skip(1).collect(),
     })
 }
 
@@ -2922,6 +2970,27 @@ fn append_to_file_stem(path: &Path, suffix: &str) -> PathBuf {
         path.with_file_name(format!("{stem}{suffix}"))
     } else {
         path.with_file_name(format!("{stem}{suffix}.{ext}"))
+    }
+}
+
+fn append_text_to_filename(path: &Path, append_text: &str) -> Result<PathBuf> {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("Invalid file path {}", path.display()))?;
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let suffix = if append_text.starts_with('_') {
+        append_text.to_string()
+    } else {
+        format!("_{append_text}")
+    };
+    if ext.is_empty() {
+        Ok(path.with_file_name(format!("{stem}{suffix}")))
+    } else {
+        Ok(path.with_file_name(format!("{stem}{suffix}.{ext}")))
     }
 }
 
