@@ -453,6 +453,55 @@ fn fill_holes_utility_writes_corrected_mask() {
 }
 
 #[test]
+fn fill_holes_utility_fills_experiment_positions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images).expect("images dir");
+        let segm_path = images.join("demo_segm.npz");
+        let file = File::create(&segm_path).expect("segm npz");
+        let mut writer = NpzWriter::new(file);
+        let masks = Array2::from_shape_vec(
+            (3, 3),
+            vec![
+                1u32, 1, 1, //
+                1, 0, 1, //
+                1, 1, 1,
+            ],
+        )
+        .expect("mask shape");
+        writer.add_array("arr_0", &masks).expect("write mask");
+        writer.finish().expect("finish npz");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--fill_holes")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--segm_endname")
+        .arg("segm")
+        .arg("--segm_append_name")
+        .arg("filled")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved hole-filled segmentation masks for 2 position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let output_path = temp
+            .path()
+            .join(pos)
+            .join("Images")
+            .join("demo_segm_filled.npz");
+        let mut npz =
+            NpzReader::new(File::open(output_path).expect("filled npz")).expect("read npz");
+        let filled: Array2<u32> = npz.by_name("arr_0.npy").expect("filled array");
+        assert_eq!(filled[[1, 1]], 1);
+    }
+}
+
+#[test]
 fn connect_3d_segm_utility_writes_connected_mask() {
     let temp = tempfile::tempdir().expect("temp dir");
     let segm_path = temp.path().join("segm.npz");

@@ -12,15 +12,15 @@ use cellacdc_rs::{
     add_lineage_tree, add_lineage_tree_to_tables, apply_tracking_from_table,
     apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_multi_channel,
     concat_acdc_outputs, connect_3d_segm, convert_file_format, count_objects,
-    count_objects_in_positions, fill_holes, generate_mother_bud_total, images_to_positions,
-    move_channel_tiffs_to_positions, rename_files, run_workflow_file,
+    count_objects_in_positions, fill_holes, fill_holes_in_positions, generate_mother_bud_total,
+    images_to_positions, move_channel_tiffs_to_positions, rename_files, run_workflow_file,
     segmentation_to_object_coords, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
     CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
     Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterConfig, CountObjectsBatchConfig,
-    CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig, ImagesToPositionsConfig,
-    LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution, MoveChannelTiffsConfig,
-    ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DConfig,
-    TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
+    ImagesToPositionsConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
+    MoveChannelTiffsConfig, ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout,
+    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -383,6 +383,12 @@ struct Cli {
         help = "TIFF extension for --move_channel_tiffs_to_positions"
     )]
     tiff_extension: String,
+    #[arg(
+        long = "segm_append_name",
+        value_name = "TEXT",
+        help = "Text to append to segmentation output filenames for batch segmentation utilities"
+    )]
+    segm_append_name: Option<String>,
     #[arg(
         long = "coords_table_path",
         value_name = "PATH_TO_COORDS_TABLE",
@@ -766,23 +772,55 @@ fn run_to_obj_coords(cli: &Cli) -> Result<String> {
 }
 
 fn run_fill_holes(cli: &Cli) -> Result<String> {
-    let segmentation_path = cli
-        .segmentation_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--fill_holes requires --segmentation_path"))?;
-    let output_path = cli
-        .output_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--fill_holes requires --output_path"))?;
-    let result = fill_holes(FillHolesConfig {
-        segmentation_path,
-        output_path,
-        resolution: utility_mask_resolution(cli),
-    })?;
-    Ok(format!(
-        "Saved hole-filled segmentation mask to {}",
-        result.primary_path.display()
-    ))
+    match (
+        cli.segmentation_path.clone(),
+        cli.output_path.clone(),
+        cli.position_dir.clone(),
+        cli.experiment_dir.clone(),
+    ) {
+        (Some(segmentation_path), Some(output_path), None, None) => {
+            let result = fill_holes(FillHolesConfig {
+                segmentation_path,
+                output_path,
+                resolution: utility_mask_resolution(cli),
+            })?;
+            Ok(format!(
+                "Saved hole-filled segmentation mask to {}",
+                result.primary_path.display()
+            ))
+        }
+        (None, None, position_dir, experiment_dir)
+            if position_dir.is_some() ^ experiment_dir.is_some() =>
+        {
+            let segm_endname = cli
+                .segm_endname
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--fill_holes batch mode requires --segm_endname"))?;
+            let result = fill_holes_in_positions(FillHolesBatchConfig {
+                position_dir,
+                experiment_dir,
+                segm_endname,
+                append_name: cli.segm_append_name.clone(),
+                resolution: utility_mask_resolution(cli),
+            })?;
+            let mut outputs = vec![result.primary_path];
+            outputs.extend(result.secondary_paths);
+            let mut lines = vec![format!(
+                "Saved hole-filled segmentation masks for {} position(s)",
+                outputs.len()
+            )];
+            for path in outputs {
+                lines.push(format!(
+                    "Saved hole-filled segmentation mask to {}",
+                    path.display()
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        _ => bail!(
+            "--fill_holes requires either --segmentation_path and --output_path, or exactly one of --position_dir and --experiment_dir with --segm_endname"
+        ),
+    }
 }
 
 fn run_connect_3d_segm(cli: &Cli) -> Result<String> {
@@ -1250,6 +1288,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.images_append_text.is_some()
         || !cli.channel_names.is_empty()
         || cli.tiff_extension != "tif"
+        || cli.segm_append_name.is_some()
         || cli.size_t.is_some()
         || cli.size_z.is_some()
         || cli.segm_layout.is_some()

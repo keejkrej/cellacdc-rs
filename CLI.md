@@ -13,6 +13,7 @@ cellacdc-rs --count_objects --segmentation_path demo_segm.npz --output_path demo
 cellacdc-rs --count_objects --experiment_dir Experiment_1 --segm_endname segm
 cellacdc-rs --to_obj_coords --segmentation_path demo_segm.npz --output_path demo_objects_coordinates.csv --segm_layout TYX
 cellacdc-rs --fill_holes --segmentation_path demo_segm.npz --output_path demo_segm_filled.npz
+cellacdc-rs --fill_holes --experiment_dir Experiment_1 --segm_endname segm --segm_append_name filled
 cellacdc-rs --connect_3d_segm --segmentation_path demo_segm3d.npz --output_path demo_segm3d_connected.npz --segm_layout ZYX
 cellacdc-rs --stack_2d_segm_to_3d --segmentation_path demo_segm2d.npz --output_path demo_segm3d.npz --size_z 5
 cellacdc-rs --filter_segm_from_table --segmentation_path demo_segm.npz --coords_table_path coords.csv --output_path demo_segm_filtered.npz
@@ -54,9 +55,12 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   `--output_path`. Output columns are `frame_i`, `Cell_ID`, `y`, and `x`, with
   `z` included for 3D masks. It uses the same optional layout-hint flags as
   `--count_objects`.
-- `--fill_holes`: fill holes in a segmentation mask and write the corrected
-  mask to `--output_path`. It uses the same `--segmentation_path` and optional
-  layout-hint flags as `--count_objects`.
+- `--fill_holes`: fill holes in a segmentation mask. Use `--segmentation_path`
+  and `--output_path` for one explicit mask, or pass exactly one of
+  `--position_dir` and `--experiment_dir` with `--segm_endname` to fill matching
+  segmentation files. Batch mode overwrites in place by default; use
+  `--segm_append_name TEXT` to save appended output files instead. It uses the
+  same optional layout-hint flags as `--count_objects`.
 - `--connect_3d_segm`: connect labels across z-slice boundaries in a 3D
   segmentation mask and write the corrected mask to `--output_path`. Use
   `--segm_layout ZYX` or `--segm_layout TZYX` when metadata does not make the
