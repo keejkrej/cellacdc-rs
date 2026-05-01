@@ -20,23 +20,24 @@ use cellacdc_rs::{
     images_to_positions, inspect_position_frame, measure_experiment, measure_position,
     move_channel_tiffs_to_positions, open_position_session, prepare_zstack_segm_info,
     probe_import_source, propagate_lineage_file, read_background_roi_json, rename_files,
-    resolve_measurement_position, run_workflow_file, segmentation_to_object_coords,
-    segmentation_to_object_coords_in_positions, stack_2d_segm_to_3d_in_positions,
-    update_lineage_frame_file, AlignmentRunConfig, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
-    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
-    ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
-    CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig,
-    FrameInspection, FrameInspectionConfig, FrameProjection, GenerateMotherBudTotalConfig,
-    ImageExportFormat, ImagesToPositionsConfig, ImportConflictMode, ImportExecutionConfig,
-    ImportLayoutKind, ImportOutputFormat, ImportReaderBackend, ImportSelection, LineageBuildConfig,
-    LineageInfoConfig, LineagePropagateConfig, LineageTreeBatchConfig, LineageTreeConfig,
-    LineageUpdateConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
-    MetadataReusePolicy, MoveChannelTiffsConfig, ObjectCoordinatesBatchConfig,
-    ObjectCoordinatesConfig, OverlayRenderStyle, OverwritePolicy, PrepareSegmInfoTarget,
-    PrepareZStackSegmInfoConfig, RenameFilesConfig, RenderFrameRequest, ScaleBarStyle,
-    SegmentationLayout, Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig, TableFormat,
-    TimestampStyle, TrackingColumnMap, WorkflowRunOptions,
+    repeat_tracking_current_position, resolve_measurement_position, run_workflow_file,
+    segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
+    stack_2d_segm_to_3d_in_positions, update_lineage_frame_file, AlignmentRunConfig,
+    ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig,
+    CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig,
+    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterBatchConfig,
+    CoordinateFilterConfig, CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig,
+    FillHolesConfig, FrameInspection, FrameInspectionConfig, FrameProjection,
+    GenerateMotherBudTotalConfig, ImageExportFormat, ImagesToPositionsConfig, ImportConflictMode,
+    ImportExecutionConfig, ImportLayoutKind, ImportOutputFormat, ImportReaderBackend,
+    ImportSelection, LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig,
+    LineageTreeBatchConfig, LineageTreeConfig, LineageUpdateConfig, MaskPathResolution,
+    MeasurementExperimentConfig, MeasurementRunConfig, MetadataReusePolicy, MoveChannelTiffsConfig,
+    ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverlapDenominator, OverlayRenderStyle,
+    OverwritePolicy, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, RenameFilesConfig,
+    RenderFrameRequest, ScaleBarStyle, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
+    Stack2DSegmTo3DConfig, TableFormat, TimestampStyle, TrackingColumnMap, TrackingConfig,
+    TrackingRunScope, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -174,6 +175,12 @@ struct Cli {
         help = "Apply tracking IDs from a table to a time-series segmentation mask"
     )]
     apply_tracking_from_table: bool,
+    #[arg(
+        long = "repeat_tracking",
+        action = ArgAction::SetTrue,
+        help = "Repeat overlap tracking for a position segmentation and update measurements"
+    )]
+    repeat_tracking: bool,
     #[arg(
         long = "apply_tracking_from_trackmate_xml",
         action = ArgAction::SetTrue,
@@ -638,6 +645,27 @@ struct Cli {
     )]
     end_frame: Option<usize>,
     #[arg(
+        long = "ioa_threshold",
+        value_name = "FLOAT",
+        default_value_t = 0.6,
+        help = "Intersection-over-area threshold for --repeat_tracking"
+    )]
+    ioa_threshold: f32,
+    #[arg(
+        long = "overlap_denominator",
+        value_name = "area_prev|union",
+        default_value = "area_prev",
+        value_parser = parse_overlap_denominator,
+        help = "Overlap denominator for --repeat_tracking"
+    )]
+    overlap_denominator: OverlapDenominator,
+    #[arg(
+        long = "no_assign_unique_new_ids",
+        action = ArgAction::SetTrue,
+        help = "Do not assign unique IDs to new labels during --repeat_tracking"
+    )]
+    no_assign_unique_new_ids: bool,
+    #[arg(
         long = "cell_id",
         value_name = "ID",
         action = ArgAction::Append,
@@ -788,6 +816,7 @@ fn main() -> Result<()> {
         + usize::from(cli.export_frame_image)
         + usize::from(cli.export_frame_sequence)
         + usize::from(cli.apply_tracking_from_table)
+        + usize::from(cli.repeat_tracking)
         + usize::from(cli.apply_tracking_from_trackmate_xml)
         + usize::from(cli.add_lineage_tree)
         + usize::from(cli.build_lineage_state)
@@ -806,7 +835,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -904,6 +933,11 @@ fn main() -> Result<()> {
 
     if cli.apply_tracking_from_table {
         println!("{}", run_apply_tracking_from_table(&cli)?);
+        return Ok(());
+    }
+
+    if cli.repeat_tracking {
+        println!("{}", run_repeat_tracking(&cli)?);
         return Ok(());
     }
 
@@ -1779,6 +1813,51 @@ fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_repeat_tracking(cli: &Cli) -> Result<String> {
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--repeat_tracking requires --position_dir"))?;
+    if cli.experiment_dir.is_some() {
+        bail!("--repeat_tracking supports --position_dir, not --experiment_dir");
+    }
+    if cli.frame_i.is_some() {
+        bail!("--repeat_tracking uses --start_frame, not --frame_i");
+    }
+    if cli.end_frame.is_some() {
+        bail!("--repeat_tracking does not support --end_frame");
+    }
+    if !(0.0..=1.0).contains(&cli.ioa_threshold) {
+        bail!("--ioa_threshold must be between 0 and 1");
+    }
+    let scope = cli
+        .start_frame
+        .map(|start_frame| TrackingRunScope::CurrentFrameToEnd { start_frame })
+        .unwrap_or(TrackingRunScope::CurrentPosition);
+    let report = repeat_tracking_current_position(
+        &position_dir,
+        cli.segm_endname.as_deref(),
+        &TrackingConfig {
+            ioa_threshold: cli.ioa_threshold,
+            assign_unique_new_ids: !cli.no_assign_unique_new_ids,
+            overlap_denominator: cli.overlap_denominator,
+        },
+        scope,
+    )?;
+    let mut lines = vec![format!(
+        "Repeat tracking updated {} frame(s)",
+        report.frames_processed
+    )];
+    lines.push(format!(
+        "Saved tracked segmentation to {}",
+        report.output_segmentation_path.display()
+    ));
+    if let Some(path) = report.measurement_table_path {
+        lines.push(format!("Saved measurement table to {}", path.display()));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn run_apply_tracking_from_trackmate_xml(cli: &Cli) -> Result<String> {
     let position_dir = cli.position_dir.clone().ok_or_else(|| {
         anyhow::anyhow!("--apply_tracking_from_trackmate_xml requires --position_dir")
@@ -2318,6 +2397,9 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.timestamp
         || cli.start_frame.is_some()
         || cli.end_frame.is_some()
+        || cli.ioa_threshold != 0.6
+        || cli.overlap_denominator != OverlapDenominator::AreaPrev
+        || cli.no_assign_unique_new_ids
         || !cli.cell_ids.is_empty()
         || cli.edits_table_path.is_some()
         || cli.edits_json_path.is_some()
@@ -2335,9 +2417,17 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
+}
+
+fn parse_overlap_denominator(value: &str) -> Result<OverlapDenominator, String> {
+    match normalize_choice(value).as_str() {
+        "areaprev" | "prev" | "previous" => Ok(OverlapDenominator::AreaPrev),
+        "union" => Ok(OverlapDenominator::Union),
+        _ => Err("expected one of area_prev or union".to_string()),
+    }
 }
 
 fn parse_import_layout_kind(value: &str) -> Result<ImportLayoutKind, String> {

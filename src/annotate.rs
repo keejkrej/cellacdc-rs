@@ -3,7 +3,7 @@ use crate::lineage::{
     propagate_lineage_from_frame, set_lineage_parent, set_lineage_unknown, LineageFrameEdit,
     LineageState,
 };
-use crate::mask_io::{load_mask_data, save_mask_data, SegmentationLayout};
+use crate::mask_io::{load_mask_data, save_mask_data, MaskPathResolution, SegmentationLayout};
 use crate::measure::{measure_position, MeasurementRunConfig};
 use crate::runner::OverwritePolicy;
 use crate::session::{open_position_session, ViewPlane};
@@ -530,7 +530,12 @@ pub fn repeat_tracking_current_position(
     let asset = position
         .segmentation_asset(segm_endname)
         .ok_or_else(|| anyhow!("No segmentation selected for tracking"))?;
-    let mut mask_data = load_mask_data(&asset.path, None)?;
+    let resolution = MaskPathResolution {
+        size_t: Some(position.spec.size_t),
+        size_z: Some(position.spec.size_z),
+        layout: Some(SegmentationLayout::TYX),
+    };
+    let mut mask_data = load_mask_data(&asset.path, Some(&resolution))?;
     if mask_data.layout != SegmentationLayout::TYX {
         bail!(
             "Interactive repeat tracking currently supports TYX segmentations, got {:?}",

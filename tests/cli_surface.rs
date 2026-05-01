@@ -52,6 +52,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--export_frame_image"));
     assert!(stdout.contains("--export_frame_sequence"));
     assert!(stdout.contains("--apply_tracking_from_table"));
+    assert!(stdout.contains("--repeat_tracking"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
     assert!(stdout.contains("--build_lineage_state"));
@@ -1350,6 +1351,72 @@ fn apply_tracking_from_table_utility_writes_tracked_mask() {
     let tracked: Array3<u32> = npz.by_name("arr_0.npy").expect("tracked array");
     assert!(tracked.iter().all(|value| *value == 0 || *value == 5));
     assert!(tracked.iter().any(|value| *value == 5));
+}
+
+#[test]
+fn repeat_tracking_utility_updates_position_mask_and_measurements() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\nPhysicalSizeX,1\nPhysicalSizeY,1\n",
+    )
+    .expect("metadata csv");
+    write_test_tiff_stack(
+        &images_dir.join("demo_phase.tif"),
+        &[vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
+        2,
+        2,
+    );
+    let file = File::create(images_dir.join("demo_segm.npz")).expect("segm npz");
+    let mut writer = NpzWriter::new(file);
+    let masks = Array3::from_shape_vec(
+        (2, 2, 2),
+        vec![
+            5u32, 5, 0, 0, //
+            2, 2, 0, 0,
+        ],
+    )
+    .expect("mask shape");
+    writer.add_array("arr_0", &masks).expect("write mask");
+    writer.finish().expect("finish npz");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--repeat_tracking")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--start_frame")
+        .arg("1")
+        .arg("--ioa_threshold")
+        .arg("0.1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Repeat tracking updated 1 frame(s)"));
+    let mut npz =
+        NpzReader::new(File::open(images_dir.join("demo_segm.npz")).expect("tracked npz"))
+            .expect("read tracked npz");
+    let tracked: Array3<u32> = npz.by_name("arr_0.npy").expect("tracked array");
+    assert_eq!(tracked.shape(), &[2, 2, 2]);
+    let values = tracked.as_slice_memory_order().expect("contiguous mask");
+    assert_eq!(&values[4..8], &[5, 5, 0, 0]);
+    let acdc_output = images_dir.join("demo_acdc_output.csv");
+    assert!(acdc_output.exists());
+    let table = read_table(&acdc_output).expect("acdc output");
+    let frame_col = table.header_index("frame_i").expect("frame_i column");
+    let cell_col = table.header_index("Cell_ID").expect("Cell_ID column");
+    assert!(table
+        .rows
+        .iter()
+        .any(|row| row[frame_col].as_i64() == Some(1) && row[cell_col].as_i64() == Some(5)));
 }
 
 #[test]

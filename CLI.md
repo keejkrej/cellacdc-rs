@@ -29,6 +29,7 @@ cellacdc-rs --inspect_frame --position_dir Position_1 --frame_i 0 --selected_lab
 cellacdc-rs --export_frame_image --position_dir Position_1 --frame_i 0 --channel_name phase --output_path frame.png --selected_label 2 --show_labels
 cellacdc-rs --export_frame_sequence --position_dir Position_1 --channel_name phase --output_path frames --start_frame 0 --end_frame 10 --no_overlay
 cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
+cellacdc-rs --repeat_tracking --position_dir Position_1 --segm_endname segm --start_frame 5 --ioa_threshold 0.6
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
 cellacdc-rs --add_lineage_tree --experiment_dir Experiment_1 --table_endname acdc_output
@@ -149,6 +150,13 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   inputs include `--mask_ids_col`, centroid columns, `--first_frame_one`, and
   `--delete_untracked_ids`. Optional `--source_acdc_output_path` and
   `--output_acdc_output_path` remap a matching `acdc_output` table.
+- `--repeat_tracking`: repeat overlap tracking for a position segmentation and
+  refresh its measurement table. Required argument is `--position_dir`;
+  `--segm_endname` selects a non-default segmentation. By default tracking runs
+  over the whole position; `--start_frame` repeats tracking from one frame to
+  the end while preserving the previous frame as the anchor. `--ioa_threshold`
+  defaults to `0.6`, `--overlap_denominator` accepts `area_prev` or `union`,
+  and `--no_assign_unique_new_ids` disables unique ID assignment for new labels.
 - `--apply_tracking_from_trackmate_xml`: apply tracking IDs from a TrackMate XML
   file to a position segmentation mask. Required arguments are `--position_dir`,
   `--segm_endname`, and `--xml_path`; `--output_path` optionally overrides the
