@@ -11,13 +11,13 @@ use std::path::{Path, PathBuf};
 use cellacdc_rs::{
     add_lineage_tree, add_lineage_tree_to_tables, apply_alignment, apply_tracking_from_table,
     apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_alignment_shifts,
-    compute_multi_channel, concat_acdc_outputs, connect_3d_segm, connect_3d_segm_in_positions,
-    convert_file_format, count_objects, count_objects_in_positions,
+    compute_background_roi_archives, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
+    connect_3d_segm_in_positions, convert_file_format, count_objects, count_objects_in_positions,
     discover_measurement_experiment, fill_holes, fill_holes_in_positions,
     filter_segm_from_table_in_positions, generate_mother_bud_total, images_to_positions,
     measure_experiment, measure_position, move_channel_tiffs_to_positions,
-    prepare_zstack_segm_info, rename_files, resolve_measurement_position, run_workflow_file,
-    segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
+    prepare_zstack_segm_info, read_background_roi_json, rename_files, resolve_measurement_position,
+    run_workflow_file, segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
     stack_2d_segm_to_3d_in_positions, AlignmentRunConfig, ApplyTrackingConfig,
     ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
     ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
@@ -136,6 +136,12 @@ struct Cli {
         help = "Write default z-stack segmInfo.csv files for positions"
     )]
     prepare_zstack_segm_info: bool,
+    #[arg(
+        long = "compute_background_roi_data",
+        action = ArgAction::SetTrue,
+        help = "Write background ROI data archives from Data Prep ROI sidecars"
+    )]
+    compute_background_roi_data: bool,
     #[arg(
         long = "apply_tracking_from_table",
         action = ArgAction::SetTrue,
@@ -592,6 +598,7 @@ fn main() -> Result<()> {
         + usize::from(cli.align_frames)
         + usize::from(cli.measure)
         + usize::from(cli.prepare_zstack_segm_info)
+        + usize::from(cli.compute_background_roi_data)
         + usize::from(cli.apply_tracking_from_table)
         + usize::from(cli.apply_tracking_from_trackmate_xml)
         + usize::from(cli.add_lineage_tree)
@@ -606,7 +613,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -679,6 +686,11 @@ fn main() -> Result<()> {
 
     if cli.prepare_zstack_segm_info {
         println!("{}", run_prepare_zstack_segm_info(&cli)?);
+        return Ok(());
+    }
+
+    if cli.compute_background_roi_data {
+        println!("{}", run_compute_background_roi_data(&cli)?);
         return Ok(());
     }
 
@@ -1235,6 +1247,81 @@ fn run_prepare_zstack_segm_info(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_compute_background_roi_data(cli: &Cli) -> Result<String> {
+    let paths = match (cli.position_dir.clone(), cli.experiment_dir.clone()) {
+        (Some(position_dir), None) => {
+            compute_background_roi_data_for_position(&position_dir, &cli.channel_names)?
+        }
+        (None, Some(experiment_dir)) => {
+            let experiment = discover_measurement_experiment(experiment_dir)?;
+            let mut paths = Vec::new();
+            for position in experiment.positions {
+                paths.extend(compute_background_roi_data_for_position(
+                    &position.position_dir,
+                    &cli.channel_names,
+                )?);
+            }
+            paths
+        }
+        _ => bail!(
+            "--compute_background_roi_data requires exactly one of --position_dir and --experiment_dir"
+        ),
+    };
+    if paths.is_empty() {
+        bail!("No background ROI data archives were written");
+    }
+    let mut lines = vec![format!(
+        "Computed background ROI data for {} channel output(s)",
+        paths.len()
+    )];
+    for path in paths {
+        lines.push(format!(
+            "Saved background ROI data archive to {}",
+            path.display()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn compute_background_roi_data_for_position(
+    position_dir: &Path,
+    selected_channels: &[String],
+) -> Result<Vec<PathBuf>> {
+    let spec = resolve_measurement_position(position_dir)?;
+    let background_rois_path = spec
+        .data_prep_background_rois_path
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--compute_background_roi_data requires an existing *dataPrep_bkgrROIs.json under {}",
+                spec.images_dir.display()
+            )
+        })?;
+    let rois = read_background_roi_json(background_rois_path)?;
+    let channel_names = if selected_channels.is_empty() {
+        spec.channels
+            .iter()
+            .map(|channel| channel.name.clone())
+            .collect::<Vec<_>>()
+    } else {
+        for channel_name in selected_channels {
+            if !spec
+                .channels
+                .iter()
+                .any(|channel| channel.name == *channel_name)
+            {
+                bail!(
+                    "No supported file found for channel {:?} under {}",
+                    channel_name,
+                    spec.images_dir.display()
+                );
+            }
+        }
+        selected_channels.to_vec()
+    };
+    compute_background_roi_archives(position_dir, &channel_names, &rois)
+}
+
 fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {
     let segmentation_path = cli.segmentation_path.clone().ok_or_else(|| {
         anyhow::anyhow!("--apply_tracking_from_table requires --segmentation_path")
@@ -1651,7 +1738,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }

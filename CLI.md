@@ -24,6 +24,7 @@ cellacdc-rs --filter_segm_from_table --experiment_dir Experiment_1 --segm_endnam
 cellacdc-rs --align_frames --experiment_dir Experiment_1 --reference_channel phase --channel_name phase --channel_name GFP
 cellacdc-rs --measure --experiment_dir Experiment_1 --segm_endname segm --channel_name phase --save_object_counts
 cellacdc-rs --prepare_zstack_segm_info --experiment_dir Experiment_1
+cellacdc-rs --compute_background_roi_data --position_dir Position_1 --channel_name phase
 cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
@@ -107,6 +108,11 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   `*segmInfo.csv` tables for z-stack positions under exactly one of
   `--position_dir` or `--experiment_dir`. Existing files are protected unless
   `--yes` is provided.
+- `--compute_background_roi_data`: write Python-compatible
+  `*_bkgrRoiData.npz` archives from an existing `*dataPrep_bkgrROIs.json` under
+  exactly one of `--position_dir` or `--experiment_dir`. Repeat
+  `--channel_name` to restrict channels; when omitted, all discovered channels
+  are processed.
 - `--apply_tracking_from_table`: apply tracking IDs from a CSV/XLSX table to a
   time-series segmentation mask. Required arguments are `--segmentation_path`,
   `--tracking_table_path`, and `--output_path`. Tracking columns default to

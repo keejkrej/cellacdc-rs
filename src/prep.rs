@@ -995,43 +995,47 @@ fn crop_array(
     z_range: (usize, usize),
 ) -> Result<ArrayD<f32>> {
     Ok(match values.ndim() {
-        2 => values
-            .slice(s![roi.y..roi.y + roi.height, roi.x..roi.x + roi.width])
-            .to_owned()
-            .into_dyn(),
+        2 => {
+            let y_range = clamped_range(roi.y, roi.height, values.shape()[0]);
+            let x_range = clamped_range(roi.x, roi.width, values.shape()[1]);
+            values.slice(s![y_range, x_range]).to_owned().into_dyn()
+        }
         3 => {
             let arr = values.view().into_dimensionality::<Ix3>()?;
+            let y_range = clamped_range(roi.y, roi.height, arr.shape()[1]);
+            let x_range = clamped_range(roi.x, roi.width, arr.shape()[2]);
             if frame_range.1 - frame_range.0 == 1 && z_range.1 - z_range.0 > 1 {
-                arr.slice(s![
-                    z_range.0..z_range.1,
-                    roi.y..roi.y + roi.height,
-                    roi.x..roi.x + roi.width
-                ])
-                .to_owned()
-                .into_dyn()
+                let z_range = clamped_range(z_range.0, z_range.1 - z_range.0, arr.shape()[0]);
+                arr.slice(s![z_range, y_range, x_range])
+                    .to_owned()
+                    .into_dyn()
             } else {
-                arr.slice(s![
-                    frame_range.0..frame_range.1,
-                    roi.y..roi.y + roi.height,
-                    roi.x..roi.x + roi.width
-                ])
-                .to_owned()
-                .into_dyn()
+                let frame_range =
+                    clamped_range(frame_range.0, frame_range.1 - frame_range.0, arr.shape()[0]);
+                arr.slice(s![frame_range, y_range, x_range])
+                    .to_owned()
+                    .into_dyn()
             }
         }
         4 => {
             let arr = values.view().into_dimensionality::<Ix4>()?;
-            arr.slice(s![
-                frame_range.0..frame_range.1,
-                z_range.0..z_range.1,
-                roi.y..roi.y + roi.height,
-                roi.x..roi.x + roi.width
-            ])
-            .to_owned()
-            .into_dyn()
+            let frame_range =
+                clamped_range(frame_range.0, frame_range.1 - frame_range.0, arr.shape()[0]);
+            let z_range = clamped_range(z_range.0, z_range.1 - z_range.0, arr.shape()[1]);
+            let y_range = clamped_range(roi.y, roi.height, arr.shape()[2]);
+            let x_range = clamped_range(roi.x, roi.width, arr.shape()[3]);
+            arr.slice(s![frame_range, z_range, y_range, x_range])
+                .to_owned()
+                .into_dyn()
         }
         ndim => bail!("Unsupported image ndim {} for crop", ndim),
     })
+}
+
+fn clamped_range(start: usize, len: usize, limit: usize) -> std::ops::Range<usize> {
+    let start = start.min(limit);
+    let end = start.saturating_add(len).min(limit);
+    start..end
 }
 
 fn build_crop_targets(position_dir: &Path, roi_count: usize) -> Result<Vec<PathBuf>> {

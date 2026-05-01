@@ -1,4 +1,4 @@
-use ndarray::{Array2, Array3};
+use ndarray::{Array2, Array3, ArrayD};
 use ndarray_npy::{read_npy, NpzReader, NpzWriter};
 use std::fs::{self, File};
 use std::process::Command;
@@ -46,6 +46,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--align_frames"));
     assert!(stdout.contains("--measure"));
     assert!(stdout.contains("--prepare_zstack_segm_info"));
+    assert!(stdout.contains("--compute_background_roi_data"));
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
@@ -1036,6 +1037,52 @@ fn prepare_zstack_segm_info_utility_writes_experiment_tables() {
         assert!(csv.contains("demo_phase.tif,0,2,single z-slice,1,2"));
         assert!(csv.contains("demo_phase.tif,1,2,single z-slice,1,2"));
     }
+}
+
+#[test]
+fn compute_background_roi_data_utility_writes_npz_archive() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let images_dir = temp.path().join("Position_1").join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+    )
+    .expect("metadata csv");
+    write_test_tiff_stack(
+        &images_dir.join("demo_phase.tif"),
+        &[vec![1, 2, 3, 4, 5, 6], vec![7, 8, 9, 10, 11, 12]],
+        2,
+        3,
+    );
+    fs::write(
+        images_dir.join("demo_dataPrep_bkgrROIs.json"),
+        r#"[{"pos":[1,0],"size":[2,2]}]"#,
+    )
+    .expect("background roi json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--compute_background_roi_data")
+        .arg("--position_dir")
+        .arg(temp.path().join("Position_1"))
+        .arg("--channel_name")
+        .arg("phase")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Computed background ROI data for 1 channel output(s)"));
+    let output_path = images_dir.join("demo_phase_bkgrRoiData.npz");
+    assert!(output_path.exists());
+    let file = File::open(output_path).expect("background roi npz");
+    let mut npz = NpzReader::new(file).expect("read background roi npz");
+    let roi_data: ArrayD<f32> = npz.by_name("roi0_data.npy").expect("roi0 data");
+    assert_eq!(roi_data.shape(), &[2, 2, 1]);
 }
 
 #[test]
