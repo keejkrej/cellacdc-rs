@@ -50,6 +50,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--compute_background_roi_data"));
     assert!(stdout.contains("--inspect_frame"));
     assert!(stdout.contains("--export_frame_image"));
+    assert!(stdout.contains("--export_frame_sequence"));
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
@@ -1255,6 +1256,56 @@ fn export_frame_image_utility_writes_rendered_png() {
     assert!(image
         .pixels()
         .any(|pixel| pixel[0] != pixel[1] || pixel[1] != pixel[2]));
+}
+
+#[test]
+fn export_frame_sequence_utility_writes_png_frames() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    let output_dir = temp.path().join("frames");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\nPhysicalSizeX,1\nPhysicalSizeY,1\nTimeIncrement,3\n",
+    )
+    .expect("metadata csv");
+    write_test_tiff_stack(
+        &images_dir.join("demo_phase.tif"),
+        &[vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
+        2,
+        2,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--export_frame_sequence")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--output_path")
+        .arg(&output_dir)
+        .arg("--channel_name")
+        .arg("phase")
+        .arg("--start_frame")
+        .arg("0")
+        .arg("--end_frame")
+        .arg("1")
+        .arg("--no_overlay")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Exported 2 frame image(s)"));
+    for frame_name in ["frame_0000.png", "frame_0001.png"] {
+        let image = image::open(output_dir.join(frame_name))
+            .expect("exported sequence frame")
+            .to_rgba8();
+        assert_eq!(image.dimensions(), (2, 2));
+    }
 }
 
 #[test]

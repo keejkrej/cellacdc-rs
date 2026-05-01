@@ -27,6 +27,7 @@ cellacdc-rs --prepare_zstack_segm_info --experiment_dir Experiment_1
 cellacdc-rs --compute_background_roi_data --position_dir Position_1 --channel_name phase
 cellacdc-rs --inspect_frame --position_dir Position_1 --frame_i 0 --selected_label 2
 cellacdc-rs --export_frame_image --position_dir Position_1 --frame_i 0 --channel_name phase --output_path frame.png --selected_label 2 --show_labels
+cellacdc-rs --export_frame_sequence --position_dir Position_1 --channel_name phase --output_path frames --start_frame 0 --end_frame 10 --no_overlay
 cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
@@ -135,6 +136,12 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   instead of the default max projection. The segmentation overlay is enabled by
   default when available; use `--no_overlay`, `--show_labels`, `--scale_bar`,
   and `--timestamp` to control rendered annotations.
+- `--export_frame_sequence`: export a rendered position frame range as PNG
+  images named `frame_0000.png`, `frame_0001.png`, and so on under
+  `--output_path`. Required arguments are `--position_dir` and `--output_path`;
+  `--start_frame` and `--end_frame` are inclusive and default to the full time
+  range. The channel, segmentation, z-slice, overlay, label, scale bar, and
+  timestamp options match `--export_frame_image`.
 - `--apply_tracking_from_table`: apply tracking IDs from a CSV/XLSX table to a
   time-series segmentation mask. Required arguments are `--segmentation_path`,
   `--tracking_table_path`, and `--output_path`. Tracking columns default to
