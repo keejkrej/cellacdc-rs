@@ -49,6 +49,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--prepare_zstack_segm_info"));
     assert!(stdout.contains("--compute_background_roi_data"));
     assert!(stdout.contains("--inspect_frame"));
+    assert!(stdout.contains("--export_frame_image"));
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
@@ -1192,6 +1193,68 @@ fn inspect_frame_utility_prints_frame_json() {
     assert_eq!(object["bbox_max_y"].as_u64(), Some(2));
     assert_eq!(object["channel_sum"]["phase"].as_f64(), Some(19.0));
     assert_eq!(object["channel_mean"]["phase"].as_f64(), Some(19.0 / 3.0));
+}
+
+#[test]
+fn export_frame_image_utility_writes_rendered_png() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    let output_path = temp.path().join("frame.png");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\nPhysicalSizeX,0.5\nPhysicalSizeY,0.25\nTimeIncrement,12\n",
+    )
+    .expect("metadata csv");
+    write_test_tiff(
+        &images_dir.join("demo_phase.tif"),
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+        3,
+        3,
+    );
+    let file = File::create(images_dir.join("demo_segm.npz")).expect("segm npz");
+    let mut writer = NpzWriter::new(file);
+    let masks = Array2::from_shape_vec(
+        (3, 3),
+        vec![
+            0u32, 1, 1, //
+            0, 2, 2, //
+            0, 2, 0,
+        ],
+    )
+    .expect("mask shape");
+    writer.add_array("arr_0", &masks).expect("write mask");
+    writer.finish().expect("finish npz");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--export_frame_image")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--channel_name")
+        .arg("phase")
+        .arg("--selected_label")
+        .arg("2")
+        .arg("--show_labels")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Exported frame image to"));
+    let image = image::open(&output_path).expect("exported png").to_rgba8();
+    assert_eq!(image.dimensions(), (3, 3));
+    assert!(image
+        .pixels()
+        .any(|pixel| pixel[0] != pixel[1] || pixel[1] != pixel[2]));
 }
 
 #[test]

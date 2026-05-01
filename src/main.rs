@@ -15,10 +15,10 @@ use cellacdc_rs::{
     compute_background_roi_archives, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
     connect_3d_segm_in_positions, convert_file_format, count_objects, count_objects_in_positions,
     discover_import_sources, discover_measurement_experiment, execute_import_plan,
-    export_lineage_info_file, fill_holes, fill_holes_in_positions,
+    export_frame_image, export_lineage_info_file, fill_holes, fill_holes_in_positions,
     filter_segm_from_table_in_positions, generate_mother_bud_total, images_to_positions,
     inspect_position_frame, measure_experiment, measure_position, move_channel_tiffs_to_positions,
-    prepare_zstack_segm_info, probe_import_source, propagate_lineage_file,
+    open_position_session, prepare_zstack_segm_info, probe_import_source, propagate_lineage_file,
     read_background_roi_json, rename_files, resolve_measurement_position, run_workflow_file,
     segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
     stack_2d_segm_to_3d_in_positions, update_lineage_frame_file, AlignmentRunConfig,
@@ -32,9 +32,10 @@ use cellacdc_rs::{
     ImportSelection, LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig,
     LineageTreeBatchConfig, LineageTreeConfig, LineageUpdateConfig, MaskPathResolution,
     MeasurementExperimentConfig, MeasurementRunConfig, MetadataReusePolicy, MoveChannelTiffsConfig,
-    ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverwritePolicy, PrepareSegmInfoTarget,
-    PrepareZStackSegmInfoConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
-    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverlayRenderStyle, OverwritePolicy,
+    PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, RenameFilesConfig, RenderFrameRequest,
+    ScaleBarStyle, SegmentationLayout, Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig,
+    TableFormat, TimestampStyle, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -154,6 +155,12 @@ struct Cli {
         help = "Inspect labels and optional object measurements for one position frame"
     )]
     inspect_frame: bool,
+    #[arg(
+        long = "export_frame_image",
+        action = ArgAction::SetTrue,
+        help = "Export one rendered position frame as PNG or TIFF"
+    )]
+    export_frame_image: bool,
     #[arg(
         long = "apply_tracking_from_table",
         action = ArgAction::SetTrue,
@@ -578,15 +585,39 @@ struct Cli {
     #[arg(
         long = "selected_label",
         value_name = "LABEL",
-        help = "Segmentation label to summarize for --inspect_frame"
+        help = "Segmentation label to summarize or highlight for frame utility modes"
     )]
     selected_label: Option<u32>,
     #[arg(
         long = "z_slice",
         value_name = "INDEX",
-        help = "Z-slice index for --inspect_frame; defaults to max projection"
+        help = "Z-slice index for frame utility modes; defaults to max projection"
     )]
     z_slice: Option<usize>,
+    #[arg(
+        long = "no_overlay",
+        action = ArgAction::SetTrue,
+        help = "Disable segmentation overlay for --export_frame_image"
+    )]
+    no_overlay: bool,
+    #[arg(
+        long = "show_labels",
+        action = ArgAction::SetTrue,
+        help = "Draw segmentation label text for --export_frame_image"
+    )]
+    show_labels: bool,
+    #[arg(
+        long = "scale_bar",
+        action = ArgAction::SetTrue,
+        help = "Draw a scale bar for --export_frame_image"
+    )]
+    scale_bar: bool,
+    #[arg(
+        long = "timestamp",
+        action = ArgAction::SetTrue,
+        help = "Draw a timestamp for --export_frame_image"
+    )]
+    timestamp: bool,
     #[arg(
         long = "cell_id",
         value_name = "ID",
@@ -735,6 +766,7 @@ fn main() -> Result<()> {
         + usize::from(cli.prepare_zstack_segm_info)
         + usize::from(cli.compute_background_roi_data)
         + usize::from(cli.inspect_frame)
+        + usize::from(cli.export_frame_image)
         + usize::from(cli.apply_tracking_from_table)
         + usize::from(cli.apply_tracking_from_trackmate_xml)
         + usize::from(cli.add_lineage_tree)
@@ -754,7 +786,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -837,6 +869,11 @@ fn main() -> Result<()> {
 
     if cli.inspect_frame {
         println!("{}", run_inspect_frame(&cli)?);
+        return Ok(());
+    }
+
+    if cli.export_frame_image {
+        println!("{}", run_export_frame_image(&cli)?);
         return Ok(());
     }
 
@@ -1501,21 +1538,12 @@ fn run_inspect_frame(cli: &Cli) -> Result<String> {
     if cli.experiment_dir.is_some() {
         bail!("--inspect_frame supports --position_dir, not --experiment_dir");
     }
-    let frame_i = cli
-        .frame_i
-        .ok_or_else(|| anyhow::anyhow!("--inspect_frame requires --frame_i"))?;
-    if frame_i < 0 {
-        bail!("--inspect_frame requires a non-negative --frame_i");
-    }
-    let projection = cli
-        .z_slice
-        .map(FrameProjection::ZSlice)
-        .unwrap_or(FrameProjection::Max);
+    let frame_i = required_nonnegative_frame_i(cli, "--inspect_frame")?;
     let inspection = inspect_position_frame(FrameInspectionConfig {
         position_path,
         segm_endname: cli.segm_endname.clone(),
-        frame_index: frame_i as usize,
-        projection,
+        frame_index: frame_i,
+        projection: frame_projection(cli),
         selected_label: cli.selected_label,
     })?;
     let payload = frame_inspection_to_json(&inspection);
@@ -1528,6 +1556,78 @@ fn run_inspect_frame(cli: &Cli) -> Result<String> {
         ));
     }
     Ok(json)
+}
+
+fn run_export_frame_image(cli: &Cli) -> Result<String> {
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--export_frame_image requires --position_dir"))?;
+    if cli.experiment_dir.is_some() {
+        bail!("--export_frame_image supports --position_dir, not --experiment_dir");
+    }
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--export_frame_image requires --output_path"))?;
+    let frame_i = required_nonnegative_frame_i(cli, "--export_frame_image")?;
+    let position = open_position_session(&position_dir)?;
+    let channel_name = match cli.channel_names.as_slice() {
+        [] => position
+            .default_phase_channel_name()
+            .ok_or_else(|| anyhow::anyhow!("--export_frame_image found no channel to export"))?,
+        [channel_name] => channel_name.clone(),
+        _ => bail!("--export_frame_image accepts at most one --channel_name"),
+    };
+    let projection = frame_projection(cli);
+    let frame = position.load_channel_frame(&channel_name, frame_i, projection)?;
+    let segmentation = if cli.no_overlay {
+        None
+    } else {
+        position.load_segmentation_frame(cli.segm_endname.as_deref(), frame_i, projection)?
+    };
+    let exported = export_frame_image(
+        &RenderFrameRequest {
+            frame,
+            segmentation,
+            overlay: OverlayRenderStyle {
+                enabled: !cli.no_overlay,
+                selected_label: cli.selected_label,
+                show_labels: cli.show_labels,
+                ..Default::default()
+            },
+            markers: Vec::new(),
+            scale_bar: ScaleBarStyle {
+                enabled: cli.scale_bar,
+                ..Default::default()
+            },
+            timestamp: TimestampStyle {
+                enabled: cli.timestamp,
+                ..Default::default()
+            },
+            frame_index: frame_i,
+            time_seconds: Some(position.spec.time_increment * frame_i as f64),
+            physical_size_x: Some(position.spec.physical_size_x),
+        },
+        &output_path,
+    )?;
+    Ok(format!("Exported frame image to {}", exported.display()))
+}
+
+fn required_nonnegative_frame_i(cli: &Cli, mode: &str) -> Result<usize> {
+    let frame_i = cli
+        .frame_i
+        .ok_or_else(|| anyhow::anyhow!("{mode} requires --frame_i"))?;
+    if frame_i < 0 {
+        bail!("{mode} requires a non-negative --frame_i");
+    }
+    Ok(frame_i as usize)
+}
+
+fn frame_projection(cli: &Cli) -> FrameProjection {
+    cli.z_slice
+        .map(FrameProjection::ZSlice)
+        .unwrap_or(FrameProjection::Max)
 }
 
 fn frame_inspection_to_json(inspection: &FrameInspection) -> serde_json::Value {
@@ -2131,6 +2231,10 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.frame_i.is_some()
         || cli.selected_label.is_some()
         || cli.z_slice.is_some()
+        || cli.no_overlay
+        || cli.show_labels
+        || cli.scale_bar
+        || cli.timestamp
         || !cli.cell_ids.is_empty()
         || cli.edits_table_path.is_some()
         || cli.edits_json_path.is_some()
@@ -2148,7 +2252,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }
