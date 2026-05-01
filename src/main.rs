@@ -9,15 +9,16 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
-    add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
-    combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
-    convert_file_format, count_objects, fill_holes, generate_mother_bud_total, rename_files,
-    run_workflow_file, segmentation_to_object_coords, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
-    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmConfig, ConvertFileFormatConfig,
-    CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
-    LineageTreeConfig, MaskPathResolution, ObjectCoordinatesConfig, RenameFilesConfig,
-    SegmentationLayout, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    add_lineage_tree, add_lineage_tree_to_tables, apply_tracking_from_table,
+    apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_multi_channel,
+    concat_acdc_outputs, connect_3d_segm, convert_file_format, count_objects, fill_holes,
+    generate_mother_bud_total, rename_files, run_workflow_file, segmentation_to_object_coords,
+    ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig,
+    CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmConfig,
+    ConvertFileFormatConfig, CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig,
+    GenerateMotherBudTotalConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
+    ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DConfig,
+    TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -843,22 +844,42 @@ fn run_apply_tracking_from_trackmate_xml(cli: &Cli) -> Result<String> {
 }
 
 fn run_add_lineage_tree(cli: &Cli) -> Result<String> {
-    let input_path = cli
-        .input_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--add_lineage_tree requires --input_path"))?;
-    let output_path = cli
-        .output_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--add_lineage_tree requires --output_path"))?;
-    let result = add_lineage_tree(LineageTreeConfig {
-        input_path,
-        output_path,
-    })?;
-    Ok(format!(
-        "Saved lineage-tree table to {}",
-        result.primary_path.display()
-    ))
+    match (
+        cli.input_path.clone(),
+        cli.output_path.clone(),
+        cli.position_dir.clone(),
+        cli.experiment_dir.clone(),
+    ) {
+        (Some(input_path), Some(output_path), None, None) => {
+            let result = add_lineage_tree(LineageTreeConfig {
+                input_path,
+                output_path,
+            })?;
+            Ok(format!(
+                "Saved lineage-tree table to {}",
+                result.primary_path.display()
+            ))
+        }
+        (None, None, position_dir, experiment_dir)
+            if position_dir.is_some() ^ experiment_dir.is_some() =>
+        {
+            let result = add_lineage_tree_to_tables(LineageTreeBatchConfig {
+                position_dir,
+                experiment_dir,
+                table_endname: cli.table_endname.clone(),
+            })?;
+            let mut outputs = vec![result.primary_path];
+            outputs.extend(result.secondary_paths);
+            let mut lines = vec![format!("Added lineage-tree columns to {} table(s)", outputs.len())];
+            for path in outputs {
+                lines.push(format!("Saved lineage-tree table to {}", path.display()));
+            }
+            Ok(lines.join("\n"))
+        }
+        _ => bail!(
+            "--add_lineage_tree requires either --input_path and --output_path, or exactly one of --position_dir and --experiment_dir"
+        ),
+    }
 }
 
 fn run_generate_mother_bud_total(cli: &Cli) -> Result<String> {

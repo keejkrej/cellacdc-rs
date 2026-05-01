@@ -18,6 +18,7 @@ cellacdc-rs --filter_segm_from_table --segmentation_path demo_segm.npz --coords_
 cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
+cellacdc-rs --add_lineage_tree --experiment_dir Experiment_1 --table_endname acdc_output
 cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --output_path demo_mother_bud_total.csv --column_operation cell_area_um2=sum
 cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.csv --output_path combined.csv --formula "sum_signal=table1_signal + table2_signal"
 cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
@@ -75,8 +76,11 @@ cellacdc-rs --rename_files --file_path Position_1/Images/demo_phase.tif --rename
   tracked segmentation output path. `--delete_untracked_ids` and the optional
   `--source_acdc_output_path`/`--output_acdc_output_path` table remapping flags
   are also supported.
-- `--add_lineage_tree`: add lineage-tree columns to an `acdc_output` CSV/XLSX
-  table. Required arguments are `--input_path` and `--output_path`.
+- `--add_lineage_tree`: add lineage-tree columns to `acdc_output` CSV/XLSX
+  tables. Use `--input_path` and `--output_path` for one explicit table, or
+  pass exactly one of `--position_dir` and `--experiment_dir` to update matching
+  position tables in place. `--table_endname` defaults to `acdc_output` for
+  batch operation.
 - `--generate_mother_bud_total`: generate G1, mother, bud, and total rows from
   an `acdc_output` CSV/XLSX table. Required arguments are `--input_path` and
   `--output_path`. Repeat `--column_operation COLUMN=OPERATION` for columns that

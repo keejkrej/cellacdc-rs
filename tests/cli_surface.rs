@@ -576,6 +576,48 @@ fn add_lineage_tree_utility_writes_tree_table() {
 }
 
 #[test]
+fn add_lineage_tree_utility_updates_position_tables_in_experiment() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images).expect("images dir");
+        fs::write(
+            images.join("demo_acdc_output.csv"),
+            concat!(
+                "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+                "0,1,G1,1,-1,mother,1\n",
+                "1,1,S,1,-1,mother,1\n",
+            ),
+        )
+        .expect("acdc output csv");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--add_lineage_tree")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--table_endname")
+        .arg("acdc_output")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Added lineage-tree columns to 2 table(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let csv = fs::read_to_string(
+            temp.path()
+                .join(pos)
+                .join("Images")
+                .join("demo_acdc_output.csv"),
+        )
+        .expect("updated acdc output");
+        assert!(csv.contains("Cell_ID_tree"));
+        assert!(csv.contains("root_ID_tree"));
+    }
+}
+
+#[test]
 fn generate_mother_bud_total_utility_writes_total_table() {
     let temp = tempfile::tempdir().expect("temp dir");
     let input_path = temp.path().join("acdc_output.csv");

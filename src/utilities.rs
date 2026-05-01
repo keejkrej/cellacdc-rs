@@ -201,6 +201,13 @@ pub struct LineageTreeConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineageTreeBatchConfig {
+    pub position_dir: Option<PathBuf>,
+    pub experiment_dir: Option<PathBuf>,
+    pub table_endname: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerateMotherBudTotalConfig {
     pub input_path: PathBuf,
     pub output_path: PathBuf,
@@ -786,6 +793,35 @@ pub fn add_lineage_tree(config: LineageTreeConfig) -> Result<UtilityOutputPaths>
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
+    })
+}
+
+pub fn add_lineage_tree_to_tables(config: LineageTreeBatchConfig) -> Result<UtilityOutputPaths> {
+    let images_dirs = collect_images_dirs_from_scope(
+        config.position_dir.as_deref(),
+        config.experiment_dir.as_deref(),
+    )?;
+    let mut output_paths = Vec::new();
+    for images_dir in images_dirs {
+        let Some(table_path) = find_table_by_endname(&images_dir, &config.table_endname)? else {
+            continue;
+        };
+        add_lineage_tree(LineageTreeConfig {
+            input_path: table_path.clone(),
+            output_path: table_path.clone(),
+        })?;
+        output_paths.push(table_path);
+    }
+    if output_paths.is_empty() {
+        bail!(
+            "No tables ending with {}.csv or {}.xlsx were found in the selected scope",
+            config.table_endname,
+            config.table_endname
+        );
+    }
+    Ok(UtilityOutputPaths {
+        primary_path: output_paths[0].clone(),
+        secondary_paths: output_paths.into_iter().skip(1).collect(),
     })
 }
 
