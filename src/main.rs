@@ -17,16 +17,17 @@ use cellacdc_rs::{
     discover_import_sources, discover_measurement_experiment, execute_import_plan,
     export_frame_image, export_frame_sequence, export_lineage_info_file, fill_holes,
     fill_holes_in_positions, filter_segm_from_table_in_positions, generate_mother_bud_total,
-    images_to_positions, inspect_position_frame, measure_experiment, measure_position,
-    move_channel_tiffs_to_positions, open_position_session, prepare_zstack_segm_info,
-    probe_import_source, propagate_lineage_file, read_background_roi_json, rename_files,
-    repeat_tracking_current_position, resolve_measurement_position, run_workflow_file,
-    segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
-    stack_2d_segm_to_3d_in_positions, update_lineage_frame_file, AlignmentRunConfig,
-    ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig,
-    CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig,
-    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterBatchConfig,
-    CoordinateFilterConfig, CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig,
+    images_to_positions, inspect_position_frame, load_data_prep_state, measure_experiment,
+    measure_position, move_channel_tiffs_to_positions, open_position_session,
+    prepare_zstack_segm_info, probe_import_source, propagate_lineage_file,
+    read_background_roi_json, rename_files, repeat_tracking_current_position,
+    resolve_measurement_position, run_workflow_file, segmentation_to_object_coords,
+    segmentation_to_object_coords_in_positions, stack_2d_segm_to_3d_in_positions,
+    update_lineage_frame_file, AlignmentRunConfig, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
+    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
+    ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
+    CountObjectsBatchConfig, CountObjectsConfig, DataPrepState, FillHolesBatchConfig,
     FillHolesConfig, FrameInspection, FrameInspectionConfig, FrameProjection,
     GenerateMotherBudTotalConfig, ImageExportFormat, ImagesToPositionsConfig, ImportConflictMode,
     ImportExecutionConfig, ImportLayoutKind, ImportOutputFormat, ImportReaderBackend,
@@ -151,6 +152,12 @@ struct Cli {
         help = "Write background ROI data archives from Data Prep ROI sidecars"
     )]
     compute_background_roi_data: bool,
+    #[arg(
+        long = "data_prep_state",
+        action = ArgAction::SetTrue,
+        help = "Export Data Prep sidecar state for a position as JSON"
+    )]
+    data_prep_state: bool,
     #[arg(
         long = "inspect_frame",
         action = ArgAction::SetTrue,
@@ -812,6 +819,7 @@ fn main() -> Result<()> {
         + usize::from(cli.measure)
         + usize::from(cli.prepare_zstack_segm_info)
         + usize::from(cli.compute_background_roi_data)
+        + usize::from(cli.data_prep_state)
         + usize::from(cli.inspect_frame)
         + usize::from(cli.export_frame_image)
         + usize::from(cli.export_frame_sequence)
@@ -835,7 +843,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --data_prep_state, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -913,6 +921,11 @@ fn main() -> Result<()> {
 
     if cli.compute_background_roi_data {
         println!("{}", run_compute_background_roi_data(&cli)?);
+        return Ok(());
+    }
+
+    if cli.data_prep_state {
+        println!("{}", run_data_prep_state(&cli)?);
         return Ok(());
     }
 
@@ -1587,6 +1600,90 @@ fn compute_background_roi_data_for_position(
         selected_channels.to_vec()
     };
     compute_background_roi_archives(position_dir, &channel_names, &rois)
+}
+
+fn run_data_prep_state(cli: &Cli) -> Result<String> {
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--data_prep_state requires --position_dir"))?;
+    if cli.experiment_dir.is_some() {
+        bail!("--data_prep_state supports --position_dir, not --experiment_dir");
+    }
+    let active_channel = match cli.channel_names.as_slice() {
+        [] => None,
+        [channel_name] => Some(channel_name.as_str()),
+        _ => bail!("--data_prep_state accepts at most one --channel_name"),
+    };
+    let state = load_data_prep_state(position_dir, active_channel)?;
+    let json = serde_json::to_string_pretty(&data_prep_state_to_json(&state))?;
+    if let Some(output_path) = cli.output_path.as_ref() {
+        fs::write(output_path, json)?;
+        return Ok(format!(
+            "Saved Data Prep state to {}",
+            output_path.display()
+        ));
+    }
+    Ok(json)
+}
+
+fn data_prep_state_to_json(state: &DataPrepState) -> serde_json::Value {
+    let crop_rois = state
+        .crop_rois
+        .iter()
+        .map(|roi| {
+            serde_json::json!({
+                "roi_id": roi.roi_id,
+                "x": roi.x,
+                "y": roi.y,
+                "width": roi.width,
+                "height": roi.height,
+            })
+        })
+        .collect::<Vec<_>>();
+    let free_roi = state.free_roi.as_ref().map(|roi| {
+        let mask_shape = roi.local_mask.shape();
+        let pixel_count = roi.local_mask.iter().filter(|value| **value).count();
+        serde_json::json!({
+            "bbox_yxxy": roi.bbox_yxxy,
+            "height": mask_shape[0],
+            "width": mask_shape[1],
+            "pixel_count": pixel_count,
+        })
+    });
+    let segm_info_records = state
+        .segm_info
+        .records
+        .values()
+        .map(|record| {
+            serde_json::json!({
+                "filename": &record.filename,
+                "frame_i": record.frame_i,
+                "z_slice_used_data_prep": record.z_slice_used_data_prep,
+                "which_z_proj": record.which_z_proj.as_str(),
+                "is_from_data_prep": record.is_from_data_prep,
+                "z_slice_used_gui": record.z_slice_used_gui,
+                "which_z_proj_gui": record.which_z_proj_gui.as_str(),
+                "resegmented_in_gui": record.resegmented_in_gui,
+                "crop_lower_z_slice": record.crop_lower_z_slice,
+                "crop_upper_z_slice": record.crop_upper_z_slice,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "position_dir": state.position_dir.display().to_string(),
+        "images_dir": state.images_dir.display().to_string(),
+        "available_channels": &state.available_channels,
+        "active_channel": &state.active_channel,
+        "crop_rois": crop_rois,
+        "background_rois": &state.background_rois,
+        "free_roi": free_roi,
+        "segm_info_records": segm_info_records,
+        "aligned_channel_paths": state.aligned_channel_paths.iter().map(|(channel, path)| {
+            (channel.clone(), path.display().to_string())
+        }).collect::<BTreeMap<_, _>>(),
+        "alignment_shifts_path": state.alignment_shifts_path.as_ref().map(|path| path.display().to_string()),
+    })
 }
 
 fn run_inspect_frame(cli: &Cli) -> Result<String> {
@@ -2417,7 +2514,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --data_prep_state, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }

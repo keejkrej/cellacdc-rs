@@ -25,6 +25,7 @@ cellacdc-rs --align_frames --experiment_dir Experiment_1 --reference_channel pha
 cellacdc-rs --measure --experiment_dir Experiment_1 --segm_endname segm --channel_name phase --save_object_counts
 cellacdc-rs --prepare_zstack_segm_info --experiment_dir Experiment_1
 cellacdc-rs --compute_background_roi_data --position_dir Position_1 --channel_name phase
+cellacdc-rs --data_prep_state --position_dir Position_1 --channel_name phase
 cellacdc-rs --inspect_frame --position_dir Position_1 --frame_i 0 --selected_label 2
 cellacdc-rs --export_frame_image --position_dir Position_1 --frame_i 0 --channel_name phase --output_path frame.png --selected_label 2 --show_labels
 cellacdc-rs --export_frame_sequence --position_dir Position_1 --channel_name phase --output_path frames --start_frame 0 --end_frame 10 --no_overlay
@@ -122,6 +123,11 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   exactly one of `--position_dir` or `--experiment_dir`. Repeat
   `--channel_name` to restrict channels; when omitted, all discovered channels
   are processed.
+- `--data_prep_state`: print a JSON summary of Data Prep sidecars for one
+  position, including crop ROIs, background ROIs, free ROI metadata, segmInfo
+  records, aligned channel paths, and alignment shifts. Required argument is
+  `--position_dir`; pass one `--channel_name` to choose the active channel and
+  `--output_path` to write JSON to a file.
 - `--inspect_frame`: inspect one Cell-ACDC position frame and print a JSON
   summary of segmentation labels. Required arguments are `--position_dir` and
   `--frame_i`; `--segm_endname` selects a non-default segmentation,

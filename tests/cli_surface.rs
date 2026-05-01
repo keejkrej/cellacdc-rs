@@ -48,6 +48,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--measure"));
     assert!(stdout.contains("--prepare_zstack_segm_info"));
     assert!(stdout.contains("--compute_background_roi_data"));
+    assert!(stdout.contains("--data_prep_state"));
     assert!(stdout.contains("--inspect_frame"));
     assert!(stdout.contains("--export_frame_image"));
     assert!(stdout.contains("--export_frame_sequence"));
@@ -1130,6 +1131,70 @@ fn compute_background_roi_data_utility_writes_npz_archive() {
     let mut npz = NpzReader::new(file).expect("read background roi npz");
     let roi_data: ArrayD<f32> = npz.by_name("roi0_data.npy").expect("roi0 data");
     assert_eq!(roi_data.shape(), &[2, 2, 1]);
+}
+
+#[test]
+fn data_prep_state_utility_prints_position_sidecars_json() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata csv");
+    write_test_tiff(&images_dir.join("demo_phase.tif"), &[1, 2, 3, 4], 2, 2);
+    fs::write(
+        images_dir.join("demo_dataPrepROIs_coords.csv"),
+        concat!(
+            "roi_id,description,value\n",
+            "3,x_left,1\n",
+            "3,x_right,2\n",
+            "3,y_top,0\n",
+            "3,y_bottom,2\n",
+            "3,cropped,0\n",
+        ),
+    )
+    .expect("crop roi csv");
+    fs::write(
+        images_dir.join("demo_dataPrep_bkgrROIs.json"),
+        r#"[{"pos":[1,0],"size":[1,2]}]"#,
+    )
+    .expect("background roi json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--data_prep_state")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--channel_name")
+        .arg("phase")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("data prep state json");
+    assert_eq!(payload["active_channel"].as_str(), Some("phase"));
+    assert_eq!(payload["available_channels"], serde_json::json!(["phase"]));
+    assert_eq!(payload["crop_rois"][0]["roi_id"].as_u64(), Some(3));
+    assert_eq!(payload["crop_rois"][0]["x"].as_u64(), Some(1));
+    assert_eq!(payload["crop_rois"][0]["height"].as_u64(), Some(2));
+    assert_eq!(
+        payload["background_rois"]["items"][0]["pos"][0].as_f64(),
+        Some(1.0)
+    );
+    assert_eq!(
+        payload["segm_info_records"]
+            .as_array()
+            .expect("segm info records")
+            .len(),
+        0
+    );
 }
 
 #[test]
