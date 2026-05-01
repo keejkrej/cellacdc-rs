@@ -29,6 +29,7 @@ cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --trac
 cellacdc-rs --apply_tracking_from_trackmate_xml --position_dir Position_1 --segm_endname segm --xml_path tracks.xml --output_path demo_segm_tracked.npz
 cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
 cellacdc-rs --add_lineage_tree --experiment_dir Experiment_1 --table_endname acdc_output
+cellacdc-rs --export_lineage_info --input_path demo_acdc_output.csv --output_path frame1_lineage_info.json --frame_i 1
 cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --output_path demo_mother_bud_total.csv --column_operation cell_area_um2=sum
 cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.csv --output_path combined.csv --formula "sum_signal=table1_signal + table2_signal"
 cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
@@ -131,6 +132,9 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   pass exactly one of `--position_dir` and `--experiment_dir` to update matching
   position tables in place. `--table_endname` defaults to `acdc_output` for
   batch operation.
+- `--export_lineage_info`: export a JSON summary of cells with parents, orphan
+  cells, and lost cells for one lineage frame. Required arguments are
+  `--input_path`, `--output_path`, and `--frame_i`.
 - `--generate_mother_bud_total`: generate G1, mother, bud, and total rows from
   an `acdc_output` CSV/XLSX table. Required arguments are `--input_path` and
   `--output_path`. Repeat `--column_operation COLUMN=OPERATION` for columns that
@@ -317,6 +321,6 @@ The workflow parser is intentionally strict:
 - Python trackers other than Cell-ACDC overlap/IoA tracking
 - Python custom measurement functions and mixed-channel combine metrics when
   requested
-- public CLI access to Rust-only utilities and lineage helpers
+- public CLI access to remaining Rust-only utilities and lineage helpers
 
 Those remain available through the Rust library and, where already wired, the GUI.

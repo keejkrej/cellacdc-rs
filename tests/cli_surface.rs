@@ -50,6 +50,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
+    assert!(stdout.contains("--export_lineage_info"));
     assert!(stdout.contains("--generate_mother_bud_total"));
     assert!(stdout.contains("--combine_metrics"));
     assert!(stdout.contains("--compute_multi_channel"));
@@ -1215,6 +1216,53 @@ fn add_lineage_tree_utility_writes_tree_table() {
     assert!(csv.contains("Cell_ID_tree"));
     assert!(csv.contains("root_ID_tree"));
     assert!(csv.contains("sister_ID_tree"));
+}
+
+#[test]
+fn export_lineage_info_utility_writes_frame_json() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("frame1_lineage_info.json");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,Cell_ID_tree,generation_num_tree,parent_ID_tree,root_ID_tree,sister_ID_tree,is_history_known\n",
+            "0,1,1,1,-1,1,-1,false\n",
+            "0,2,2,1,-1,2,-1,false\n",
+            "1,2,2,1,-1,2,-1,false\n",
+            "1,3,3,2,1,1,-1,true\n",
+            "1,4,4,1,-1,4,-1,false\n",
+        ),
+    )
+    .expect("acdc output csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--export_lineage_info")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--frame_i")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved lineage frame info to"));
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output_path).expect("lineage json"))
+            .expect("parse lineage json");
+    assert_eq!(
+        json["cells_with_parent"],
+        serde_json::json!([{"cell_id": 3, "parent_id": 1}])
+    );
+    assert_eq!(json["orphan_cells"], serde_json::json!([4]));
+    assert_eq!(json["lost_cells"], serde_json::json!([]));
 }
 
 #[test]
