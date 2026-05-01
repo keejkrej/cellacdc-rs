@@ -44,6 +44,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--stack_2d_segm_to_3d"));
     assert!(stdout.contains("--filter_segm_from_table"));
     assert!(stdout.contains("--align_frames"));
+    assert!(stdout.contains("--measure"));
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
@@ -926,6 +927,70 @@ fn align_frames_utility_writes_experiment_aligned_outputs() {
         let shifts: Array2<i32> =
             read_npy(images_dir.join("demo_align_shift.npy")).expect("alignment shifts");
         assert_eq!(shifts.shape(), &[2, 2]);
+    }
+}
+
+#[test]
+fn measure_utility_writes_experiment_acdc_outputs() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        fs::write(
+            images_dir.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\nTimeIncrement,15\nPhysicalSizeX,1\nPhysicalSizeY,1\n",
+        )
+        .expect("metadata csv");
+        write_test_tiff_stack(
+            &images_dir.join("demo_phase.tif"),
+            &[vec![10, 10, 0, 0], vec![20, 20, 0, 0]],
+            2,
+            2,
+        );
+        write_test_tiff_stack(
+            &images_dir.join("demo_gfp.tif"),
+            &[vec![30, 30, 0, 0], vec![40, 40, 0, 0]],
+            2,
+            2,
+        );
+        let file = File::create(images_dir.join("demo_segm.npz")).expect("segm npz");
+        let mut writer = NpzWriter::new(file);
+        let masks = Array3::from_shape_vec(
+            (2, 2, 2),
+            vec![
+                1u32, 1, //
+                0, 0, //
+                1, 1, //
+                0, 0,
+            ],
+        )
+        .expect("mask shape");
+        writer.add_array("arr_0", &masks).expect("write mask");
+        writer.finish().expect("finish npz");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--measure")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--segm_endname")
+        .arg("segm")
+        .arg("--channel_name")
+        .arg("phase")
+        .arg("--save_object_counts")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Computed measurements for 2 position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        let csv =
+            fs::read_to_string(images_dir.join("demo_acdc_output.csv")).expect("acdc output csv");
+        assert!(csv.contains("phase_mean"));
+        assert!(!csv.contains("gfp_mean"));
+        assert!(images_dir.join("demo_acdc_objects_count.csv").exists());
     }
 }
 
