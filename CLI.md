@@ -23,6 +23,7 @@ cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.
 cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
 cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_endname acdc_output --output_format csv
 cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_channels_recipe.json --append_name combined
+cellacdc-rs --convert_file_format --input_path demo_segm.npz --output_path demo_segm.npy --cast_segm_uint32
 ```
 
 - No arguments: launch the desktop GUI.
@@ -108,6 +109,11 @@ cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_c
   numeric step entries with `name`, `channel`, `binarize`, `min_val`, and
   `max_val`, plus top-level `formula`, `keep_input_data_type`, and
   `save_as_segm` fields.
+- `--convert_file_format`: convert a single Cell-ACDC-compatible image/array
+  file. Required arguments are `--input_path` and `--output_path`; formats are
+  inferred from extensions. Inputs support `.npz`, `.npy`, `.tif`, `.tiff`, and
+  `.h5`; outputs support `.npz`, `.npy`, `.tif`, and `.tiff`. Use
+  `--cast_segm_uint32` to match the Python converter's segmentation cast.
 
 ## Supported Workflow INI Subset
 

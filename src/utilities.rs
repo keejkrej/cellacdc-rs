@@ -7,7 +7,9 @@ use crate::tabular::{read_table, write_table, Table, TableFormat, TableValue};
 use crate::zstack::{connect_3d_lab_z_boundaries, stack_2d_lab_to_3d};
 use anyhow::{anyhow, bail, Context, Result};
 use evalexpr::{ContextWithMutableVariables, HashMapContext, Value as EvalValue};
+use hdf5_reader::Hdf5File;
 use ndarray::{ArrayD, IxDyn};
+use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use roxmltree::Document;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -206,6 +208,13 @@ pub struct GenerateMotherBudTotalConfig {
     pub copy_all_nonselected_columns: bool,
     pub grouping_columns: Vec<String>,
     pub entity_colname: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConvertFileFormatConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub cast_segm_uint32: bool,
 }
 
 pub fn concat_acdc_outputs(config: ConcatConfig) -> Result<ConcatResult> {
@@ -804,6 +813,19 @@ pub fn generate_mother_bud_total(
     })
 }
 
+pub fn convert_file_format(config: ConvertFileFormatConfig) -> Result<UtilityOutputPaths> {
+    let mut array = load_convertible_array(&config.input_path)?;
+    if config.cast_segm_uint32 {
+        array.scalar_type = ImageScalarType::U32;
+        array.values.mapv_inplace(|value| value.max(0.0).round());
+    }
+    save_convertible_array(&config.output_path, &array)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArrayLayout {
     YX,
@@ -824,6 +846,12 @@ enum ImageScalarType {
 struct LoadedChannelArray {
     values: ArrayD<f32>,
     layout: ArrayLayout,
+    scalar_type: ImageScalarType,
+}
+
+#[derive(Debug, Clone)]
+struct ConvertibleArray {
+    values: ArrayD<f32>,
     scalar_type: ImageScalarType,
 }
 
@@ -1306,6 +1334,352 @@ fn rescale_array(values: &ArrayD<f32>, out_min: f32, out_max: f32) -> ArrayD<f32
     }
     let scale = (out_max - out_min) / (max - min);
     values.mapv(|value| (value - min) * scale + out_min)
+}
+
+fn load_convertible_array(path: &Path) -> Result<ConvertibleArray> {
+    match path_extension(path).as_deref() {
+        Some("npz") => load_convertible_npz(path),
+        Some("npy") => load_convertible_npy(path),
+        Some("tif") | Some("tiff") => load_convertible_tiff(path),
+        Some("h5") => load_convertible_h5(path),
+        other => bail!(
+            "Unsupported input format {:?} for {}. Supported formats are npz, npy, tif, tiff, and h5.",
+            other,
+            path.display()
+        ),
+    }
+}
+
+fn save_convertible_array(path: &Path, array: &ConvertibleArray) -> Result<()> {
+    ensure_output_parent(path)?;
+    match path_extension(path).as_deref() {
+        Some("npz") => save_convertible_npz(path, array),
+        Some("npy") => save_convertible_npy(path, array),
+        Some("tif") | Some("tiff") => save_convertible_tiff(path, array),
+        other => bail!(
+            "Unsupported output format {:?} for {}. Supported formats are npz, npy, tif, and tiff.",
+            other,
+            path.display()
+        ),
+    }
+}
+
+fn load_convertible_npz(path: &Path) -> Result<ConvertibleArray> {
+    macro_rules! try_npz {
+        ($ty:ty, $scalar_type:expr) => {{
+            let file = File::open(path)
+                .with_context(|| format!("Failed to open NPZ {}", path.display()))?;
+            let mut reader = NpzReader::new(file)
+                .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+            if let Ok(values) = reader.by_name::<ndarray::OwnedRepr<$ty>, IxDyn>("arr_0") {
+                return Ok(ConvertibleArray {
+                    values: values.mapv(|value| value as f32),
+                    scalar_type: $scalar_type,
+                });
+            }
+        }};
+    }
+
+    try_npz!(f32, ImageScalarType::F32);
+    try_npz!(f64, ImageScalarType::F32);
+    try_npz!(u8, ImageScalarType::U8);
+    try_npz!(u16, ImageScalarType::U16);
+    try_npz!(u32, ImageScalarType::U32);
+    try_npz!(u64, ImageScalarType::F32);
+    try_npz!(i8, ImageScalarType::F32);
+    try_npz!(i16, ImageScalarType::F32);
+    try_npz!(i32, ImageScalarType::F32);
+    try_npz!(i64, ImageScalarType::F32);
+    bail!(
+        "Unsupported NPZ arr_0 element type in {}. The Cell-ACDC converter expects an arr_0 array.",
+        path.display()
+    )
+}
+
+fn load_convertible_npy(path: &Path) -> Result<ConvertibleArray> {
+    macro_rules! try_npy {
+        ($ty:ty, $scalar_type:expr) => {
+            if let Ok(values) = read_npy::<_, ArrayD<$ty>>(path) {
+                return Ok(ConvertibleArray {
+                    values: values.mapv(|value| value as f32),
+                    scalar_type: $scalar_type,
+                });
+            }
+        };
+    }
+
+    try_npy!(f32, ImageScalarType::F32);
+    try_npy!(f64, ImageScalarType::F32);
+    try_npy!(u8, ImageScalarType::U8);
+    try_npy!(u16, ImageScalarType::U16);
+    try_npy!(u32, ImageScalarType::U32);
+    try_npy!(u64, ImageScalarType::F32);
+    try_npy!(i8, ImageScalarType::F32);
+    try_npy!(i16, ImageScalarType::F32);
+    try_npy!(i32, ImageScalarType::F32);
+    try_npy!(i64, ImageScalarType::F32);
+    bail!("Unsupported NPY element type in {}", path.display())
+}
+
+fn load_convertible_h5(path: &Path) -> Result<ConvertibleArray> {
+    let file =
+        Hdf5File::open(path).with_context(|| format!("Failed to open H5 {}", path.display()))?;
+    let dataset = file
+        .dataset("/data")
+        .or_else(|_| file.dataset("data"))
+        .with_context(|| format!("Failed to open dataset \"data\" in {}", path.display()))?;
+    let shape = dataset
+        .shape()
+        .iter()
+        .map(|dim| *dim as usize)
+        .collect::<Vec<_>>();
+
+    macro_rules! try_h5 {
+        ($ty:ty, $scalar_type:expr) => {
+            if let Ok(values) = dataset.read_array::<$ty>() {
+                let values = values.into_iter().map(|value| value as f32).collect();
+                return Ok(ConvertibleArray {
+                    values: ArrayD::from_shape_vec(IxDyn(&shape), values).with_context(|| {
+                        format!("Failed to shape H5 dataset from {}", path.display())
+                    })?,
+                    scalar_type: $scalar_type,
+                });
+            }
+        };
+    }
+
+    try_h5!(f32, ImageScalarType::F32);
+    try_h5!(f64, ImageScalarType::F32);
+    try_h5!(u8, ImageScalarType::U8);
+    try_h5!(u16, ImageScalarType::U16);
+    try_h5!(u32, ImageScalarType::U32);
+    try_h5!(u64, ImageScalarType::F32);
+    try_h5!(i8, ImageScalarType::F32);
+    try_h5!(i16, ImageScalarType::F32);
+    try_h5!(i32, ImageScalarType::F32);
+    try_h5!(i64, ImageScalarType::F32);
+    bail!("Unsupported H5 dataset type in {}", path.display())
+}
+
+fn load_convertible_tiff(path: &Path) -> Result<ConvertibleArray> {
+    let file =
+        File::open(path).with_context(|| format!("Failed to open TIFF {}", path.display()))?;
+    let mut decoder = tiff::decoder::Decoder::new(file)
+        .with_context(|| format!("Failed to decode TIFF {}", path.display()))?;
+    let mut pages = Vec::new();
+    let mut expected_shape = None;
+    let mut scalar_type = None;
+
+    loop {
+        let (width, height) = decoder
+            .dimensions()
+            .with_context(|| format!("Failed to read TIFF dimensions in {}", path.display()))?;
+        let page_shape = (height as usize, width as usize);
+        if let Some(expected) = expected_shape {
+            if expected != page_shape {
+                bail!(
+                    "TIFF pages in {} do not share the same dimensions",
+                    path.display()
+                );
+            }
+        } else {
+            expected_shape = Some(page_shape);
+        }
+
+        let result = decoder
+            .read_image()
+            .with_context(|| format!("Failed to read TIFF page in {}", path.display()))?;
+        let page_scalar_type = tiff_scalar_type(&result);
+        if let Some(expected) = scalar_type {
+            if expected != page_scalar_type {
+                scalar_type = Some(ImageScalarType::F32);
+            }
+        } else {
+            scalar_type = Some(page_scalar_type);
+        }
+        pages.extend(tiff_result_to_f32(result));
+
+        if !decoder.more_images() {
+            break;
+        }
+        decoder
+            .next_image()
+            .with_context(|| format!("Failed to advance TIFF pages in {}", path.display()))?;
+    }
+
+    let (height, width) = expected_shape.unwrap_or((0, 0));
+    let values = if pages.len() == height * width {
+        ArrayD::from_shape_vec(IxDyn(&[height, width]), pages)
+    } else {
+        let frames = if height == 0 || width == 0 {
+            0
+        } else {
+            pages.len() / (height * width)
+        };
+        ArrayD::from_shape_vec(IxDyn(&[frames, height, width]), pages)
+    }
+    .with_context(|| format!("Failed to shape TIFF data from {}", path.display()))?;
+
+    Ok(ConvertibleArray {
+        values,
+        scalar_type: scalar_type.unwrap_or(ImageScalarType::F32),
+    })
+}
+
+fn save_convertible_npz(path: &Path, array: &ConvertibleArray) -> Result<()> {
+    let file =
+        File::create(path).with_context(|| format!("Failed to create NPZ {}", path.display()))?;
+    let mut writer = NpzWriter::new_compressed(file);
+    match array.scalar_type {
+        ImageScalarType::U8 => writer.add_array("arr_0", &array.values.mapv(f32_to_u8_exact))?,
+        ImageScalarType::U16 => writer.add_array("arr_0", &array.values.mapv(f32_to_u16_exact))?,
+        ImageScalarType::U32 => writer.add_array("arr_0", &array.values.mapv(f32_to_u32_exact))?,
+        ImageScalarType::F32 => writer.add_array("arr_0", &array.values)?,
+    }
+    writer
+        .finish()
+        .with_context(|| format!("Failed to finish NPZ {}", path.display()))?;
+    Ok(())
+}
+
+fn save_convertible_npy(path: &Path, array: &ConvertibleArray) -> Result<()> {
+    match array.scalar_type {
+        ImageScalarType::U8 => write_npy(path, &array.values.mapv(f32_to_u8_exact))?,
+        ImageScalarType::U16 => write_npy(path, &array.values.mapv(f32_to_u16_exact))?,
+        ImageScalarType::U32 => write_npy(path, &array.values.mapv(f32_to_u32_exact))?,
+        ImageScalarType::F32 => write_npy(path, &array.values)?,
+    }
+    Ok(())
+}
+
+fn save_convertible_tiff(path: &Path, array: &ConvertibleArray) -> Result<()> {
+    let file =
+        File::create(path).with_context(|| format!("Failed to create TIFF {}", path.display()))?;
+    let mut encoder = TiffEncoder::new(file)?;
+    for plane in flatten_array_planes(&array.values)? {
+        match array.scalar_type {
+            ImageScalarType::U8 => {
+                let pixels = plane
+                    .pixels
+                    .iter()
+                    .copied()
+                    .map(f32_to_u8_exact)
+                    .collect::<Vec<_>>();
+                encoder.write_image::<colortype::Gray8>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &pixels,
+                )?;
+            }
+            ImageScalarType::U16 => {
+                let pixels = plane
+                    .pixels
+                    .iter()
+                    .copied()
+                    .map(f32_to_u16_exact)
+                    .collect::<Vec<_>>();
+                encoder.write_image::<colortype::Gray16>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &pixels,
+                )?;
+            }
+            ImageScalarType::U32 => {
+                let pixels = plane
+                    .pixels
+                    .iter()
+                    .copied()
+                    .map(f32_to_u32_exact)
+                    .collect::<Vec<_>>();
+                encoder.write_image::<colortype::Gray32>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &pixels,
+                )?;
+            }
+            ImageScalarType::F32 => {
+                encoder.write_image::<colortype::Gray32Float>(
+                    plane.width as u32,
+                    plane.height as u32,
+                    &plane.pixels,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn tiff_scalar_type(result: &tiff::decoder::DecodingResult) -> ImageScalarType {
+    match result {
+        tiff::decoder::DecodingResult::U8(_) => ImageScalarType::U8,
+        tiff::decoder::DecodingResult::U16(_) => ImageScalarType::U16,
+        tiff::decoder::DecodingResult::U32(_) => ImageScalarType::U32,
+        _ => ImageScalarType::F32,
+    }
+}
+
+fn tiff_result_to_f32(result: tiff::decoder::DecodingResult) -> Vec<f32> {
+    match result {
+        tiff::decoder::DecodingResult::U8(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::U16(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::U32(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::U64(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::I8(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::I16(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::I32(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::I64(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::F32(values) => values,
+        tiff::decoder::DecodingResult::F64(values) => {
+            values.into_iter().map(|value| value as f32).collect()
+        }
+        tiff::decoder::DecodingResult::F16(values) => {
+            values.into_iter().map(|value| value.to_f32()).collect()
+        }
+    }
+}
+
+fn ensure_output_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Output path has no parent: {}", path.display()))?;
+    if !parent.as_os_str().is_empty() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn f32_to_u8_exact(value: f32) -> u8 {
+    value.round().clamp(0.0, u8::MAX as f32) as u8
+}
+
+fn f32_to_u16_exact(value: f32) -> u16 {
+    value.round().clamp(0.0, u16::MAX as f32) as u16
+}
+
+fn f32_to_u32_exact(value: f32) -> u32 {
+    value.round().clamp(0.0, u32::MAX as f32) as u32
+}
+
+fn path_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
 }
 
 fn detect_image_scalar_type(path: &Path) -> Result<ImageScalarType> {

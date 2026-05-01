@@ -1,5 +1,5 @@
 use ndarray::{Array2, Array3};
-use ndarray_npy::{NpzReader, NpzWriter};
+use ndarray_npy::{read_npy, NpzReader, NpzWriter};
 use std::fs::{self, File};
 use std::process::Command;
 use tiff::encoder::{colortype, TiffEncoder};
@@ -41,6 +41,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--compute_multi_channel"));
     assert!(stdout.contains("--concat_acdc_outputs"));
     assert!(stdout.contains("--combine_channels"));
+    assert!(stdout.contains("--convert_file_format"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -215,6 +216,38 @@ fn to_obj_coords_utility_writes_coordinate_table() {
     let csv = fs::read_to_string(output_path).expect("object coordinate csv");
     assert!(csv.contains("frame_i,Cell_ID,y,x"));
     assert!(csv.contains("1,3,1,0"));
+}
+
+#[test]
+fn convert_file_format_utility_converts_npz_to_npy_with_segm_cast() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("segm_float.npz");
+    let output_path = temp.path().join("segm_uint32.npy");
+    let file = File::create(&input_path).expect("input npz");
+    let mut writer = NpzWriter::new(file);
+    let values = Array2::from_shape_vec((2, 2), vec![0.0f32, 1.2, 2.0, 0.0]).expect("shape");
+    writer.add_array("arr_0", &values).expect("write input");
+    writer.finish().expect("finish input");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--convert_file_format")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--cast_segm_uint32")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved converted file"));
+    let converted: ndarray::ArrayD<u32> = read_npy(&output_path).expect("converted npy");
+    assert_eq!(converted.shape(), &[2, 2]);
+    assert_eq!(
+        converted.iter().copied().collect::<Vec<_>>(),
+        vec![0, 1, 2, 0]
+    );
 }
 
 #[test]

@@ -11,12 +11,13 @@ use std::path::{Path, PathBuf};
 use cellacdc_rs::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
     combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
-    count_objects, fill_holes, generate_mother_bud_total, run_workflow_file,
+    convert_file_format, count_objects, fill_holes, generate_mother_bud_total, run_workflow_file,
     segmentation_to_object_coords, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
     CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
-    Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig,
-    GenerateMotherBudTotalConfig, LineageTreeConfig, MaskPathResolution, ObjectCoordinatesConfig,
-    SegmentationLayout, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterConfig, CountObjectsConfig,
+    FillHolesConfig, GenerateMotherBudTotalConfig, LineageTreeConfig, MaskPathResolution,
+    ObjectCoordinatesConfig, SegmentationLayout, Stack2DSegmTo3DConfig, TableFormat,
+    TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -154,6 +155,12 @@ struct Cli {
         help = "Combine raw/segmentation channels from a JSON recipe"
     )]
     combine_channels: bool,
+    #[arg(
+        long = "convert_file_format",
+        action = ArgAction::SetTrue,
+        help = "Convert an image/array file between Cell-ACDC-compatible formats"
+    )]
+    convert_file_format: bool,
     #[arg(
         long = "segmentation_path",
         value_name = "PATH_TO_SEGM",
@@ -304,6 +311,12 @@ struct Cli {
         help = "Only keep columns named by --column_operation in --generate_mother_bud_total output"
     )]
     no_copy_all_nonselected_columns: bool,
+    #[arg(
+        long = "cast_segm_uint32",
+        action = ArgAction::SetTrue,
+        help = "Cast converted segmentation-like data to uint32 for --convert_file_format"
+    )]
+    cast_segm_uint32: bool,
     #[arg(
         long = "coords_table_path",
         value_name = "PATH_TO_COORDS_TABLE",
@@ -467,10 +480,11 @@ fn main() -> Result<()> {
         + usize::from(cli.combine_metrics)
         + usize::from(cli.compute_multi_channel)
         + usize::from(cli.concat_acdc_outputs)
-        + usize::from(cli.combine_channels);
+        + usize::from(cli.combine_channels)
+        + usize::from(cli.convert_file_format);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, or --convert_file_format"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -568,6 +582,11 @@ fn main() -> Result<()> {
 
     if cli.combine_channels {
         println!("{}", run_combine_channels(&cli)?);
+        return Ok(());
+    }
+
+    if cli.convert_file_format {
+        println!("{}", run_convert_file_format(&cli)?);
         return Ok(());
     }
 
@@ -948,6 +967,26 @@ fn run_combine_channels(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_convert_file_format(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--convert_file_format requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--convert_file_format requires --output_path"))?;
+    let result = convert_file_format(ConvertFileFormatConfig {
+        input_path,
+        output_path,
+        cast_segm_uint32: cli.cast_segm_uint32,
+    })?;
+    Ok(format!(
+        "Saved converted file to {}",
+        result.primary_path.display()
+    ))
+}
+
 fn parse_column_operations(values: &[String]) -> Result<BTreeMap<String, String>> {
     parse_name_value_pairs(values, "--column_operation")
 }
@@ -1003,6 +1042,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || !cli.grouping_columns.is_empty()
         || cli.entity_colname != "entity"
         || cli.no_copy_all_nonselected_columns
+        || cli.cast_segm_uint32
         || cli.size_t.is_some()
         || cli.size_z.is_some()
         || cli.segm_layout.is_some()
@@ -1025,7 +1065,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, or --convert_file_format");
     }
     Ok(())
 }
