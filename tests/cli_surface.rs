@@ -651,6 +651,60 @@ fn stack_2d_segm_to_3d_utility_writes_stacked_mask() {
 }
 
 #[test]
+fn stack_2d_segm_to_3d_utility_stacks_experiment_positions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        let segm_path = images_dir.join("demo_segm.npz");
+        let file = File::create(segm_path).expect("segm npz");
+        let mut writer = NpzWriter::new(file);
+        let masks = Array2::from_shape_vec(
+            (2, 2),
+            vec![
+                0u32, 1, //
+                2, 0,
+            ],
+        )
+        .expect("mask shape");
+        writer.add_array("arr_0", &masks).expect("write mask");
+        writer.finish().expect("finish npz");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--stack_2d_segm_to_3d")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--segm_endname")
+        .arg("segm")
+        .arg("--segm_append_name")
+        .arg("stacked3d")
+        .arg("--size_z")
+        .arg("3")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved 2D segmentation masks stacked to 3D for 2 position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let output_path = temp
+            .path()
+            .join(pos)
+            .join("Images")
+            .join("demo_segm_stacked3d.npz");
+        let mut npz = NpzReader::new(File::open(output_path).expect("stacked npz"))
+            .expect("read stacked npz");
+        let stacked: Array3<u32> = npz.by_name("arr_0.npy").expect("stacked array");
+        assert_eq!(stacked.shape(), &[3, 2, 2]);
+        for z in 0..3 {
+            assert_eq!(stacked[[z, 0, 1]], 1);
+            assert_eq!(stacked[[z, 1, 0]], 2);
+        }
+    }
+}
+
+#[test]
 fn filter_segm_from_table_utility_writes_filtered_mask() {
     let temp = tempfile::tempdir().expect("temp dir");
     let segm_path = temp.path().join("segm.npz");

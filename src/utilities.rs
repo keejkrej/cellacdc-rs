@@ -174,6 +174,16 @@ pub struct Stack2DSegmTo3DConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stack2DSegmTo3DBatchConfig {
+    pub position_dir: Option<PathBuf>,
+    pub experiment_dir: Option<PathBuf>,
+    pub segm_endname: String,
+    pub append_name: String,
+    pub size_z: usize,
+    pub resolution: Option<MaskPathResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoordinateFilterConfig {
     pub segmentation_path: PathBuf,
     pub coords_table_path: PathBuf,
@@ -819,6 +829,50 @@ pub fn stack_2d_segm_to_3d(config: Stack2DSegmTo3DConfig) -> Result<UtilityOutpu
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
+    })
+}
+
+pub fn stack_2d_segm_to_3d_in_positions(
+    config: Stack2DSegmTo3DBatchConfig,
+) -> Result<UtilityOutputPaths> {
+    if config.append_name.trim().is_empty() {
+        bail!("stack_2d_segm_to_3d batch mode requires a non-empty append name");
+    }
+    if config.size_z == 0 {
+        bail!("stack_2d_segm_to_3d requires size_z > 0");
+    }
+    let images_dirs = collect_images_dirs_from_scope(
+        config.position_dir.as_deref(),
+        config.experiment_dir.as_deref(),
+    )?;
+    let mut output_paths = Vec::new();
+    for images_dir in images_dirs {
+        let Some(segmentation_path) = find_file_by_endname(
+            &images_dir,
+            &config.segm_endname,
+            &["npz", "tif", "tiff", "h5"],
+        )?
+        else {
+            continue;
+        };
+        let output_path = append_text_to_filename(&segmentation_path, &config.append_name)?;
+        stack_2d_segm_to_3d(Stack2DSegmTo3DConfig {
+            segmentation_path,
+            output_path: output_path.clone(),
+            size_z: config.size_z,
+            resolution: config.resolution.clone(),
+        })?;
+        output_paths.push(output_path);
+    }
+    if output_paths.is_empty() {
+        bail!(
+            "No segmentation files ending with {:?} were found in the selected scope",
+            config.segm_endname
+        );
+    }
+    Ok(UtilityOutputPaths {
+        primary_path: output_paths[0].clone(),
+        secondary_paths: output_paths.into_iter().skip(1).collect(),
     })
 }
 

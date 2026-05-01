@@ -14,14 +14,15 @@ use cellacdc_rs::{
     concat_acdc_outputs, connect_3d_segm, connect_3d_segm_in_positions, convert_file_format,
     count_objects, count_objects_in_positions, fill_holes, fill_holes_in_positions,
     generate_mother_bud_total, images_to_positions, move_channel_tiffs_to_positions, rename_files,
-    run_workflow_file, segmentation_to_object_coords, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
-    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
-    ConvertFileFormatConfig, CoordinateFilterConfig, CountObjectsBatchConfig, CountObjectsConfig,
-    FillHolesBatchConfig, FillHolesConfig, GenerateMotherBudTotalConfig, ImagesToPositionsConfig,
-    LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution, MoveChannelTiffsConfig,
-    ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DConfig,
-    TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    run_workflow_file, segmentation_to_object_coords, stack_2d_segm_to_3d_in_positions,
+    ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig,
+    CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig,
+    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterConfig, CountObjectsBatchConfig,
+    CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
+    ImagesToPositionsConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
+    MoveChannelTiffsConfig, ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout,
+    Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap,
+    WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -879,27 +880,65 @@ fn run_connect_3d_segm(cli: &Cli) -> Result<String> {
 }
 
 fn run_stack_2d_segm_to_3d(cli: &Cli) -> Result<String> {
-    let segmentation_path = cli
-        .segmentation_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --segmentation_path"))?;
-    let output_path = cli
-        .output_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --output_path"))?;
-    let size_z = cli
-        .size_z
-        .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --size_z"))?;
-    let result = cellacdc_rs::stack_2d_segm_to_3d(Stack2DSegmTo3DConfig {
-        segmentation_path,
-        output_path,
-        size_z,
-        resolution: utility_mask_resolution(cli),
-    })?;
-    Ok(format!(
-        "Saved 2D segmentation mask stacked to 3D at {}",
-        result.primary_path.display()
-    ))
+    match (
+        cli.segmentation_path.clone(),
+        cli.output_path.clone(),
+        cli.position_dir.clone(),
+        cli.experiment_dir.clone(),
+    ) {
+        (Some(segmentation_path), Some(output_path), None, None) => {
+            let size_z = cli
+                .size_z
+                .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --size_z"))?;
+            let result = cellacdc_rs::stack_2d_segm_to_3d(Stack2DSegmTo3DConfig {
+                segmentation_path,
+                output_path,
+                size_z,
+                resolution: utility_mask_resolution(cli),
+            })?;
+            Ok(format!(
+                "Saved 2D segmentation mask stacked to 3D at {}",
+                result.primary_path.display()
+            ))
+        }
+        (None, None, position_dir, experiment_dir)
+            if position_dir.is_some() ^ experiment_dir.is_some() =>
+        {
+            let segm_endname = cli.segm_endname.clone().ok_or_else(|| {
+                anyhow::anyhow!("--stack_2d_segm_to_3d batch mode requires --segm_endname")
+            })?;
+            let append_name = cli.segm_append_name.clone().ok_or_else(|| {
+                anyhow::anyhow!("--stack_2d_segm_to_3d batch mode requires --segm_append_name")
+            })?;
+            let size_z = cli
+                .size_z
+                .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --size_z"))?;
+            let result = stack_2d_segm_to_3d_in_positions(Stack2DSegmTo3DBatchConfig {
+                position_dir,
+                experiment_dir,
+                segm_endname,
+                append_name,
+                size_z,
+                resolution: utility_mask_resolution(cli),
+            })?;
+            let mut outputs = vec![result.primary_path];
+            outputs.extend(result.secondary_paths);
+            let mut lines = vec![format!(
+                "Saved 2D segmentation masks stacked to 3D for {} position(s)",
+                outputs.len()
+            )];
+            for path in outputs {
+                lines.push(format!(
+                    "Saved 2D segmentation mask stacked to 3D at {}",
+                    path.display()
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        _ => bail!(
+            "--stack_2d_segm_to_3d requires either --segmentation_path and --output_path, or exactly one of --position_dir and --experiment_dir with --segm_endname, --segm_append_name, and --size_z"
+        ),
+    }
 }
 
 fn run_filter_segm_from_table(cli: &Cli) -> Result<String> {
