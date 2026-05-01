@@ -19,17 +19,17 @@ use cellacdc_rs::{
     prepare_zstack_segm_info, propagate_lineage_file, read_background_roi_json, rename_files,
     resolve_measurement_position, run_workflow_file, segmentation_to_object_coords,
     segmentation_to_object_coords_in_positions, stack_2d_segm_to_3d_in_positions,
-    AlignmentRunConfig, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
-    CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
-    Connect3DSegmBatchConfig, Connect3DSegmConfig, ConvertFileFormatConfig,
-    CoordinateFilterBatchConfig, CoordinateFilterConfig, CountObjectsBatchConfig,
-    CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
-    ImagesToPositionsConfig, LineageInfoConfig, LineagePropagateConfig, LineageTreeBatchConfig,
-    LineageTreeConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
-    MoveChannelTiffsConfig, ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverwritePolicy,
-    PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, RenameFilesConfig, SegmentationLayout,
-    Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap,
-    WorkflowRunOptions,
+    update_lineage_frame_file, AlignmentRunConfig, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
+    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
+    ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
+    CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig,
+    GenerateMotherBudTotalConfig, ImagesToPositionsConfig, LineageInfoConfig,
+    LineagePropagateConfig, LineageTreeBatchConfig, LineageTreeConfig, LineageUpdateConfig,
+    MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig, MoveChannelTiffsConfig,
+    ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverwritePolicy, PrepareSegmInfoTarget,
+    PrepareZStackSegmInfoConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
+    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -173,6 +173,12 @@ struct Cli {
         help = "Propagate lineage edits from one frame to future frames"
     )]
     propagate_lineage: bool,
+    #[arg(
+        long = "update_lineage_frame",
+        action = ArgAction::SetTrue,
+        help = "Apply lineage edits to one frame of an acdc_output table"
+    )]
+    update_lineage_frame: bool,
     #[arg(
         long = "generate_mother_bud_total",
         action = ArgAction::SetTrue,
@@ -498,6 +504,18 @@ struct Cli {
     )]
     cell_ids: Vec<i64>,
     #[arg(
+        long = "edits_table_path",
+        value_name = "PATH_TO_TABLE",
+        help = "Lineage edit CSV/XLSX table path for --update_lineage_frame"
+    )]
+    edits_table_path: Option<PathBuf>,
+    #[arg(
+        long = "edits_json_path",
+        value_name = "PATH_TO_JSON",
+        help = "Lineage edit JSON path for --update_lineage_frame"
+    )]
+    edits_json_path: Option<PathBuf>,
+    #[arg(
         long = "position_col",
         value_name = "COLUMN",
         help = "Position column used to subset --filter_segm_from_table coordinates"
@@ -630,6 +648,7 @@ fn main() -> Result<()> {
         + usize::from(cli.add_lineage_tree)
         + usize::from(cli.export_lineage_info)
         + usize::from(cli.propagate_lineage)
+        + usize::from(cli.update_lineage_frame)
         + usize::from(cli.generate_mother_bud_total)
         + usize::from(cli.combine_metrics)
         + usize::from(cli.compute_multi_channel)
@@ -641,7 +660,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --export_lineage_info, --propagate_lineage, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -744,6 +763,11 @@ fn main() -> Result<()> {
 
     if cli.propagate_lineage {
         println!("{}", run_propagate_lineage(&cli)?);
+        return Ok(());
+    }
+
+    if cli.update_lineage_frame {
+        println!("{}", run_update_lineage_frame(&cli)?);
         return Ok(());
     }
 
@@ -1518,6 +1542,31 @@ fn run_propagate_lineage(cli: &Cli) -> Result<String> {
     ))
 }
 
+fn run_update_lineage_frame(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--update_lineage_frame requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--update_lineage_frame requires --output_path"))?;
+    let frame_i = cli
+        .frame_i
+        .ok_or_else(|| anyhow::anyhow!("--update_lineage_frame requires --frame_i"))?;
+    let result = update_lineage_frame_file(LineageUpdateConfig {
+        input_path,
+        output_path,
+        frame_i,
+        edits_table_path: cli.edits_table_path.clone(),
+        edits_json_path: cli.edits_json_path.clone(),
+    })?;
+    Ok(format!(
+        "Saved updated lineage table to {}",
+        result.primary_path.display()
+    ))
+}
+
 fn run_generate_mother_bud_total(cli: &Cli) -> Result<String> {
     let input_path = cli
         .input_path
@@ -1815,6 +1864,8 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.frame_col.is_some()
         || cli.frame_i.is_some()
         || !cli.cell_ids.is_empty()
+        || cli.edits_table_path.is_some()
+        || cli.edits_json_path.is_some()
         || cli.position_col.is_some()
         || cli.position_value.is_some()
         || cli.tracking_table_path.is_some()
@@ -1829,7 +1880,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --export_lineage_info, --propagate_lineage, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }

@@ -31,6 +31,7 @@ cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path d
 cellacdc-rs --add_lineage_tree --experiment_dir Experiment_1 --table_endname acdc_output
 cellacdc-rs --export_lineage_info --input_path demo_acdc_output.csv --output_path frame1_lineage_info.json --frame_i 1
 cellacdc-rs --propagate_lineage --input_path edited_acdc_output.csv --output_path propagated_acdc_output.csv --frame_i 0 --cell_id 1
+cellacdc-rs --update_lineage_frame --input_path demo_acdc_output.csv --output_path updated_acdc_output.csv --frame_i 0 --edits_json_path lineage_edits.json
 cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --output_path demo_mother_bud_total.csv --column_operation cell_area_um2=sum
 cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.csv --output_path combined.csv --formula "sum_signal=table1_signal + table2_signal"
 cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
@@ -140,6 +141,9 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   rows in an `acdc_output` table. Required arguments are `--input_path`,
   `--output_path`, and `--frame_i`. Repeat `--cell_id` to restrict propagation;
   when omitted, all cells in the source frame are propagated.
+- `--update_lineage_frame`: apply lineage edits to one frame of an
+  `acdc_output` table. Required arguments are `--input_path`, `--output_path`,
+  `--frame_i`, and exactly one of `--edits_table_path` or `--edits_json_path`.
 - `--generate_mother_bud_total`: generate G1, mother, bud, and total rows from
   an `acdc_output` CSV/XLSX table. Required arguments are `--input_path` and
   `--output_path`. Repeat `--column_operation COLUMN=OPERATION` for columns that

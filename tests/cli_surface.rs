@@ -52,6 +52,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--add_lineage_tree"));
     assert!(stdout.contains("--export_lineage_info"));
     assert!(stdout.contains("--propagate_lineage"));
+    assert!(stdout.contains("--update_lineage_frame"));
     assert!(stdout.contains("--generate_mother_bud_total"));
     assert!(stdout.contains("--combine_metrics"));
     assert!(stdout.contains("--compute_multi_channel"));
@@ -1306,6 +1307,51 @@ fn propagate_lineage_utility_writes_updated_future_rows() {
     let csv = fs::read_to_string(output_path).expect("propagated csv");
     assert!(csv.contains("1,1,10,1,-1,1,-1,false,4"));
     assert!(csv.contains("1,2,20,2,10,1,-1,true,5"));
+}
+
+#[test]
+fn update_lineage_frame_utility_applies_json_edits() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let edits_path = temp.path().join("lineage_edits.json");
+    let output_path = temp.path().join("updated_acdc_output.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,Cell_ID_tree,generation_num_tree,parent_ID_tree,root_ID_tree,sister_ID_tree,is_history_known\n",
+            "0,1,1,1,-1,1,-1,false\n",
+            "0,2,2,1,-1,2,-1,false\n",
+        ),
+    )
+    .expect("lineage csv");
+    fs::write(
+        &edits_path,
+        r#"[{"Cell_ID":2,"parent_ID_tree":1,"is_history_known":true}]"#,
+    )
+    .expect("lineage edits");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--update_lineage_frame")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--edits_json_path")
+        .arg(&edits_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved updated lineage table to"));
+    let csv = fs::read_to_string(output_path).expect("updated lineage csv");
+    assert!(csv.contains("0,2,2,2,1,1,-1,true"));
 }
 
 #[test]
