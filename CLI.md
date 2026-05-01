@@ -41,6 +41,7 @@ cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_e
 cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_channels_recipe.json --append_name combined
 cellacdc-rs --convert_file_format --input_path demo_segm.npz --output_path demo_segm.npy --cast_segm_uint32
 cellacdc-rs --rename_files --file_path Position_1/Images/demo_phase.tif --rename_append_text aligned
+cellacdc-rs --import_experiment --import_source raw_images --target_dir Experiment_1 --import_layout file_per_position
 cellacdc-rs --images_to_positions --source_dir raw_images --target_dir Experiment_1 --images_append_text GFP
 cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --channel_name GFP --channel_name RFP
 ```
@@ -197,6 +198,15 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
 - `--rename_files`: append text to one or more filenames. Repeat
   `--file_path PATH` for each file and pass `--rename_append_text TEXT`. The
   output filename is `stem_TEXT.ext`; existing target files are not overwritten.
+- `--import_experiment`: import TIFF/NPZ/H5 sources into a Cell-ACDC experiment
+  folder using the native Data Structure importer. Repeat `--import_source PATH`
+  for files or folders and provide `--target_dir`. `--import_layout` accepts
+  `single_file_multi_position`, `file_per_position`, or `file_per_channel` and
+  is inferred when omitted. Optional controls include `--import_backend`
+  (`auto`, `native`, `bioformats`), `--import_conflict_mode`
+  (`create_new_positions`, `overwrite`, `add_files`), `--import_output_format`
+  (`tiff`, `h5`), `--import_add_image_name`, and zero-based half-open frame
+  cropping with `--import_time_start` and `--import_time_end`.
 - `--images_to_positions`: convert a flat folder of image files into Cell-ACDC
   `Position_n/Images` folders. Required arguments are `--source_dir`,
   `--target_dir`, and `--images_append_text`; output filenames follow the Python

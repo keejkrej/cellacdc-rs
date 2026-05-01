@@ -63,6 +63,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--combine_channels"));
     assert!(stdout.contains("--convert_file_format"));
     assert!(stdout.contains("--rename_files"));
+    assert!(stdout.contains("--import_experiment"));
     assert!(stdout.contains("--images_to_positions"));
     assert!(stdout.contains("--move_channel_tiffs_to_positions"));
     assert!(!stdout.contains("Commands:"));
@@ -483,6 +484,43 @@ fn move_channel_tiffs_to_positions_utility_groups_flat_channel_files() {
     .expect("moved metadata");
     assert!(metadata.contains("basename,pos2_"));
     assert!(!source_dir.join("pos2_GFP.tif").exists());
+}
+
+#[test]
+fn import_experiment_utility_creates_position_structure() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_dir = temp.path().join("raw");
+    let target_dir = temp.path().join("imported_experiment");
+    fs::create_dir_all(&source_dir).expect("source dir");
+    write_test_tiff(&source_dir.join("demo_phase.tif"), &[1, 2, 3, 4], 2, 2);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--import_experiment")
+        .arg("--import_source")
+        .arg(&source_dir)
+        .arg("--target_dir")
+        .arg(&target_dir)
+        .arg("--import_layout")
+        .arg("file_per_position")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Imported 1 position(s)"));
+    assert!(stdout.contains("Discovered 1 import source(s)"));
+    let images_dir = target_dir.join("Position_1").join("Images");
+    assert!(images_dir.join("s01_phase.tif").exists());
+    assert!(images_dir.join("s01_metadata.csv").exists());
+    assert!(images_dir.join("s01_metadataXML.txt").exists());
+    let metadata = fs::read_to_string(images_dir.join("s01_metadata.csv")).expect("metadata csv");
+    assert!(metadata.contains("basename,s01_"));
+    assert!(metadata.contains("SizeT,1"));
+    assert!(metadata.contains("channel_0_name,phase"));
 }
 
 #[test]

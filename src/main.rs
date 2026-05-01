@@ -10,25 +10,28 @@ use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
     add_lineage_tree, add_lineage_tree_to_tables, apply_alignment, apply_tracking_from_table,
-    apply_tracking_from_trackmate_xml, build_lineage_state_file, combine_channels, combine_metrics,
-    compute_alignment_shifts, compute_background_roi_archives, compute_multi_channel,
-    concat_acdc_outputs, connect_3d_segm, connect_3d_segm_in_positions, convert_file_format,
-    count_objects, count_objects_in_positions, discover_measurement_experiment,
+    apply_tracking_from_trackmate_xml, build_import_plan, build_lineage_state_file,
+    classify_import_layout, combine_channels, combine_metrics, compute_alignment_shifts,
+    compute_background_roi_archives, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
+    connect_3d_segm_in_positions, convert_file_format, count_objects, count_objects_in_positions,
+    discover_import_sources, discover_measurement_experiment, execute_import_plan,
     export_lineage_info_file, fill_holes, fill_holes_in_positions,
     filter_segm_from_table_in_positions, generate_mother_bud_total, images_to_positions,
     inspect_position_frame, measure_experiment, measure_position, move_channel_tiffs_to_positions,
-    prepare_zstack_segm_info, propagate_lineage_file, read_background_roi_json, rename_files,
-    resolve_measurement_position, run_workflow_file, segmentation_to_object_coords,
-    segmentation_to_object_coords_in_positions, stack_2d_segm_to_3d_in_positions,
-    update_lineage_frame_file, AlignmentRunConfig, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
-    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
-    ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
-    CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig,
-    FrameInspection, FrameInspectionConfig, FrameProjection, GenerateMotherBudTotalConfig,
-    ImagesToPositionsConfig, LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig,
+    prepare_zstack_segm_info, probe_import_source, propagate_lineage_file,
+    read_background_roi_json, rename_files, resolve_measurement_position, run_workflow_file,
+    segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
+    stack_2d_segm_to_3d_in_positions, update_lineage_frame_file, AlignmentRunConfig,
+    ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig,
+    CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig,
+    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterBatchConfig,
+    CoordinateFilterConfig, CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig,
+    FillHolesConfig, FrameInspection, FrameInspectionConfig, FrameProjection,
+    GenerateMotherBudTotalConfig, ImagesToPositionsConfig, ImportConflictMode,
+    ImportExecutionConfig, ImportLayoutKind, ImportOutputFormat, ImportReaderBackend,
+    ImportSelection, LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig,
     LineageTreeBatchConfig, LineageTreeConfig, LineageUpdateConfig, MaskPathResolution,
-    MeasurementExperimentConfig, MeasurementRunConfig, MoveChannelTiffsConfig,
+    MeasurementExperimentConfig, MeasurementRunConfig, MetadataReusePolicy, MoveChannelTiffsConfig,
     ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverwritePolicy, PrepareSegmInfoTarget,
     PrepareZStackSegmInfoConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
     Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
@@ -236,6 +239,12 @@ struct Cli {
     )]
     rename_files: bool,
     #[arg(
+        long = "import_experiment",
+        action = ArgAction::SetTrue,
+        help = "Import raw TIFF/NPZ/H5 sources into a Cell-ACDC experiment folder"
+    )]
+    import_experiment: bool,
+    #[arg(
         long = "images_to_positions",
         action = ArgAction::SetTrue,
         help = "Convert a flat image folder into Cell-ACDC Position_n folders"
@@ -316,6 +325,62 @@ struct Cli {
         help = "Source table path for --combine_metrics"
     )]
     source_paths: Vec<PathBuf>,
+    #[arg(
+        long = "import_source",
+        value_name = "PATH_TO_SOURCE",
+        action = ArgAction::Append,
+        help = "Input file or folder for --import_experiment; repeat for multiple sources"
+    )]
+    import_sources: Vec<PathBuf>,
+    #[arg(
+        long = "import_layout",
+        value_name = "single_file_multi_position|file_per_position|file_per_channel",
+        value_parser = parse_import_layout_kind,
+        help = "Source layout for --import_experiment; inferred when omitted"
+    )]
+    import_layout: Option<ImportLayoutKind>,
+    #[arg(
+        long = "import_backend",
+        value_name = "auto|native|bioformats",
+        default_value = "auto",
+        value_parser = parse_import_reader_backend,
+        help = "Reader backend for --import_experiment"
+    )]
+    import_backend: ImportReaderBackend,
+    #[arg(
+        long = "import_conflict_mode",
+        value_name = "create_new_positions|overwrite|add_files",
+        default_value = "create_new_positions",
+        value_parser = parse_import_conflict_mode,
+        help = "Destination conflict behavior for --import_experiment"
+    )]
+    import_conflict_mode: ImportConflictMode,
+    #[arg(
+        long = "import_output_format",
+        value_name = "tiff|h5",
+        default_value = "tiff",
+        value_parser = parse_import_output_format,
+        help = "Output image format for --import_experiment"
+    )]
+    import_output_format: ImportOutputFormat,
+    #[arg(
+        long = "import_add_image_name",
+        action = ArgAction::SetTrue,
+        help = "Include source image names in imported basenames"
+    )]
+    import_add_image_name: bool,
+    #[arg(
+        long = "import_time_start",
+        value_name = "FRAME",
+        help = "Zero-based inclusive start frame for --import_experiment"
+    )]
+    import_time_start: Option<usize>,
+    #[arg(
+        long = "import_time_end",
+        value_name = "FRAME",
+        help = "Zero-based exclusive end frame for --import_experiment"
+    )]
+    import_time_end: Option<usize>,
     #[arg(
         long = "source_endname",
         value_name = "ENDNAME",
@@ -684,11 +749,12 @@ fn main() -> Result<()> {
         + usize::from(cli.combine_channels)
         + usize::from(cli.convert_file_format)
         + usize::from(cli.rename_files)
+        + usize::from(cli.import_experiment)
         + usize::from(cli.images_to_positions)
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -841,6 +907,11 @@ fn main() -> Result<()> {
 
     if cli.rename_files {
         println!("{}", run_rename_files(&cli)?);
+        return Ok(());
+    }
+
+    if cli.import_experiment {
+        println!("{}", run_import_experiment(&cli)?);
         return Ok(());
     }
 
@@ -1859,6 +1930,70 @@ fn run_rename_files(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_import_experiment(cli: &Cli) -> Result<String> {
+    if cli.import_sources.is_empty() {
+        bail!("--import_experiment requires at least one --import_source");
+    }
+    let destination_experiment_dir = cli
+        .target_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--import_experiment requires --target_dir"))?;
+    let time_range = match (cli.import_time_start, cli.import_time_end) {
+        (None, None) => None,
+        (Some(start), Some(end)) => Some((start, end)),
+        _ => bail!("--import_time_start and --import_time_end must be provided together"),
+    };
+
+    let mut discovered_sources = Vec::new();
+    for source in &cli.import_sources {
+        discovered_sources.extend(discover_import_sources(source)?);
+    }
+    discovered_sources.sort_by(|left, right| left.path.cmp(&right.path));
+    discovered_sources.dedup_by(|left, right| left.path == right.path);
+    if discovered_sources.is_empty() {
+        bail!("No supported import sources were found");
+    }
+    let metadata_drafts = discovered_sources
+        .iter()
+        .map(|source| probe_import_source(&source.path, cli.import_backend))
+        .collect::<Result<Vec<_>>>()?;
+    let layout_kind = classify_import_layout(&discovered_sources, cli.import_layout)?;
+    let config = ImportExecutionConfig {
+        layout_kind,
+        backend: cli.import_backend,
+        sources: discovered_sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect(),
+        destination_experiment_dir,
+        conflict_mode: cli.import_conflict_mode,
+        metadata_policy: MetadataReusePolicy::ConfirmEverySource,
+    };
+    let selection = ImportSelection {
+        selected_positions: vec!["All Positions".to_string()],
+        save_channels: Vec::new(),
+        time_range,
+        add_image_name: cli.import_add_image_name,
+        output_format: cli.import_output_format,
+    };
+    let plan = build_import_plan(&config, &discovered_sources, &metadata_drafts, &selection)?;
+    let report = execute_import_plan(&plan)?;
+    let mut lines = vec![format!(
+        "Imported {} position(s) into {}",
+        plan.positions.len(),
+        report.experiment_dir.display()
+    )];
+    lines.push(format!(
+        "Discovered {} import source(s)",
+        discovered_sources.len()
+    ));
+    lines.push(format!("Wrote {} file(s)", report.written_files.len()));
+    for warning in report.warnings {
+        lines.push(format!("Warning: {warning}"));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn run_images_to_positions(cli: &Cli) -> Result<String> {
     let source_dir = cli
         .source_dir
@@ -1953,6 +2088,14 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.recipe_path.is_some()
         || !cli.column_operations.is_empty()
         || !cli.source_paths.is_empty()
+        || !cli.import_sources.is_empty()
+        || cli.import_layout.is_some()
+        || cli.import_backend != ImportReaderBackend::Auto
+        || cli.import_conflict_mode != ImportConflictMode::CreateNewPositions
+        || cli.import_output_format != ImportOutputFormat::Tiff
+        || cli.import_add_image_name
+        || cli.import_time_start.is_some()
+        || cli.import_time_end.is_some()
         || !cli.source_endnames.is_empty()
         || !cli.formulas.is_empty()
         || cli.equations_path.is_some()
@@ -2005,9 +2148,58 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
+}
+
+fn parse_import_layout_kind(value: &str) -> Result<ImportLayoutKind, String> {
+    match normalize_choice(value).as_str() {
+        "singlefilemultiposition" => Ok(ImportLayoutKind::SingleFileMultiPosition),
+        "fileperposition" => Ok(ImportLayoutKind::FilePerPosition),
+        "fileperchannel" => Ok(ImportLayoutKind::FilePerChannel),
+        "custommapping" => Ok(ImportLayoutKind::CustomMapping),
+        _ => Err(
+            "expected one of single_file_multi_position, file_per_position, or file_per_channel"
+                .to_string(),
+        ),
+    }
+}
+
+fn parse_import_reader_backend(value: &str) -> Result<ImportReaderBackend, String> {
+    match normalize_choice(value).as_str() {
+        "auto" => Ok(ImportReaderBackend::Auto),
+        "native" => Ok(ImportReaderBackend::Native),
+        "bioformats" | "bioformatsjvmbridge" => Ok(ImportReaderBackend::BioFormatsJvmBridge),
+        _ => Err("expected one of auto, native, or bioformats".to_string()),
+    }
+}
+
+fn parse_import_conflict_mode(value: &str) -> Result<ImportConflictMode, String> {
+    match normalize_choice(value).as_str() {
+        "createnewpositions" => Ok(ImportConflictMode::CreateNewPositions),
+        "overwrite" | "overwritepositionfiles" => Ok(ImportConflictMode::OverwritePositionFiles),
+        "addfiles" | "addfilestoexistingexperiment" => {
+            Ok(ImportConflictMode::AddFilesToExistingExperiment)
+        }
+        _ => Err("expected one of create_new_positions, overwrite, or add_files".to_string()),
+    }
+}
+
+fn parse_import_output_format(value: &str) -> Result<ImportOutputFormat, String> {
+    match normalize_choice(value).as_str() {
+        "tiff" | "tif" => Ok(ImportOutputFormat::Tiff),
+        "h5" | "hdf5" => Ok(ImportOutputFormat::H5),
+        _ => Err("expected one of tiff or h5".to_string()),
+    }
+}
+
+fn normalize_choice(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| *ch != '_' && *ch != '-' && !ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn parse_segmentation_layout(value: &str) -> Result<SegmentationLayout, String> {
