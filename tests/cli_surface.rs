@@ -51,6 +51,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
     assert!(stdout.contains("--export_lineage_info"));
+    assert!(stdout.contains("--propagate_lineage"));
     assert!(stdout.contains("--generate_mother_bud_total"));
     assert!(stdout.contains("--combine_metrics"));
     assert!(stdout.contains("--compute_multi_channel"));
@@ -1263,6 +1264,48 @@ fn export_lineage_info_utility_writes_frame_json() {
     );
     assert_eq!(json["orphan_cells"], serde_json::json!([4]));
     assert_eq!(json["lost_cells"], serde_json::json!([]));
+}
+
+#[test]
+fn propagate_lineage_utility_writes_updated_future_rows() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("edited_acdc_output.csv");
+    let output_path = temp.path().join("propagated_acdc_output.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,Cell_ID_tree,generation_num_tree,parent_ID_tree,root_ID_tree,sister_ID_tree,is_history_known,cell_area\n",
+            "0,1,10,1,-1,1,-1,false,2\n",
+            "0,2,20,2,10,1,-1,true,3\n",
+            "1,1,99,1,-1,1,-1,false,4\n",
+            "1,2,20,5,99,8,-1,true,5\n",
+        ),
+    )
+    .expect("lineage csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--propagate_lineage")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved propagated lineage table to"));
+    let csv = fs::read_to_string(output_path).expect("propagated csv");
+    assert!(csv.contains("1,1,10,1,-1,1,-1,false,4"));
+    assert!(csv.contains("1,2,20,2,10,1,-1,true,5"));
 }
 
 #[test]
