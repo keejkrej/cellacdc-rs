@@ -2,12 +2,21 @@ use ndarray::{Array2, Array3};
 use ndarray_npy::{NpzReader, NpzWriter};
 use std::fs::{self, File};
 use std::process::Command;
+use tiff::encoder::{colortype, TiffEncoder};
 
 fn run_bin(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
         .args(args)
         .output()
         .expect("run binary")
+}
+
+fn write_test_tiff(path: &std::path::Path, values: &[u16], width: u32, height: u32) {
+    let file = File::create(path).expect("tiff file");
+    let mut encoder = TiffEncoder::new(file).expect("tiff encoder");
+    encoder
+        .write_image::<colortype::Gray16>(width, height, values)
+        .expect("write tiff image");
 }
 
 #[test]
@@ -30,6 +39,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--combine_metrics"));
     assert!(stdout.contains("--compute_multi_channel"));
     assert!(stdout.contains("--concat_acdc_outputs"));
+    assert!(stdout.contains("--combine_channels"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -613,6 +623,58 @@ fn concat_acdc_outputs_utility_writes_allpos_table() {
     assert!(csv.contains("Position_n,Cell_ID"));
     assert!(csv.contains("Position_1,1"));
     assert!(csv.contains("Position_2,2"));
+}
+
+#[test]
+fn combine_channels_utility_writes_recipe_output() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    write_test_tiff(
+        &images_dir.join("demo_ch1.tif"),
+        &[0, 0, u16::MAX, u16::MAX],
+        2,
+        2,
+    );
+    let recipe_path = temp.path().join("recipe.json");
+    fs::write(
+        &recipe_path,
+        r#"{
+  "1": {
+    "name": "img",
+    "channel": "ch1",
+    "binarize": "No",
+    "min_val": 0.0,
+    "max_val": 1.0
+  },
+  "formula": "img",
+  "keep_input_data_type": true,
+  "save_as_segm": false
+}"#,
+    )
+    .expect("recipe json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--combine_channels")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--recipe_path")
+        .arg(&recipe_path)
+        .arg("--append_name")
+        .arg("combined")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Combined channels for 1 position(s)"));
+    assert!(images_dir.join("demo_combined.tif").exists());
 }
 
 #[test]

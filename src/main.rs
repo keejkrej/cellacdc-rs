@@ -10,12 +10,13 @@ use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
-    combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm, count_objects,
-    fill_holes, generate_mother_bud_total, run_workflow_file, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineMetricsConfig, ComputeMultiChannelConfig,
-    ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig,
-    GenerateMotherBudTotalConfig, LineageTreeConfig, MaskPathResolution, SegmentationLayout,
-    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
+    count_objects, fill_holes, generate_mother_bud_total, run_workflow_file, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
+    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig,
+    CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig, LineageTreeConfig,
+    MaskPathResolution, SegmentationLayout, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap,
+    WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -142,6 +143,12 @@ struct Cli {
     )]
     concat_acdc_outputs: bool,
     #[arg(
+        long = "combine_channels",
+        action = ArgAction::SetTrue,
+        help = "Combine raw/segmentation channels from a JSON recipe"
+    )]
+    combine_channels: bool,
+    #[arg(
         long = "segmentation_path",
         value_name = "PATH_TO_SEGM",
         help = "Segmentation mask path for utility modes"
@@ -190,6 +197,12 @@ struct Cli {
         help = "TrackMate XML path for --apply_tracking_from_trackmate_xml"
     )]
     xml_path: Option<PathBuf>,
+    #[arg(
+        long = "recipe_path",
+        value_name = "PATH_TO_JSON",
+        help = "JSON recipe path for --combine_channels"
+    )]
+    recipe_path: Option<PathBuf>,
     #[arg(
         long = "column_operation",
         value_name = "COLUMN=OPERATION",
@@ -446,10 +459,11 @@ fn main() -> Result<()> {
         + usize::from(cli.generate_mother_bud_total)
         + usize::from(cli.combine_metrics)
         + usize::from(cli.compute_multi_channel)
-        + usize::from(cli.concat_acdc_outputs);
+        + usize::from(cli.concat_acdc_outputs)
+        + usize::from(cli.combine_channels);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, or --concat_acdc_outputs"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -537,6 +551,11 @@ fn main() -> Result<()> {
 
     if cli.concat_acdc_outputs {
         println!("{}", run_concat_acdc_outputs(&cli)?);
+        return Ok(());
+    }
+
+    if cli.combine_channels {
+        println!("{}", run_combine_channels(&cli)?);
         return Ok(());
     }
 
@@ -873,6 +892,30 @@ fn run_concat_acdc_outputs(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_combine_channels(cli: &Cli) -> Result<String> {
+    let recipe_path = cli
+        .recipe_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--combine_channels requires --recipe_path"))?;
+    let result = combine_channels(CombineChannelsConfig {
+        position_dir: cli.position_dir.clone(),
+        experiment_dir: cli.experiment_dir.clone(),
+        recipe_path,
+        append_name: cli.append_name.clone(),
+    })?;
+    let mut lines = vec![format!(
+        "Combined channels for {} position(s)",
+        result.output_paths.len()
+    )];
+    for path in result.output_paths {
+        lines.push(format!(
+            "Saved combined channel output to {}",
+            path.display()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn parse_column_operations(values: &[String]) -> Result<BTreeMap<String, String>> {
     parse_name_value_pairs(values, "--column_operation")
 }
@@ -913,6 +956,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || !cli.concat_experiment_dirs.is_empty()
         || cli.segm_endname.is_some()
         || cli.xml_path.is_some()
+        || cli.recipe_path.is_some()
         || !cli.column_operations.is_empty()
         || !cli.source_paths.is_empty()
         || !cli.source_endnames.is_empty()
@@ -949,7 +993,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, or --concat_acdc_outputs");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels");
     }
     Ok(())
 }

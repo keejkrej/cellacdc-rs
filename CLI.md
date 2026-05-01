@@ -21,6 +21,7 @@ cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --outp
 cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.csv --output_path combined.csv --formula "sum_signal=table1_signal + table2_signal"
 cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
 cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_endname acdc_output --output_format csv
+cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_channels_recipe.json --append_name combined
 ```
 
 - No arguments: launch the desktop GUI.
@@ -95,6 +96,12 @@ cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_e
   `--selected_column COLUMN` flags keep a subset of columns. `--output_name`
   controls each experiment-level output filename; `--multi_experiment_dir`
   controls where multi-experiment outputs are written.
+- `--combine_channels`: combine raw image and segmentation channels from a JSON
+  recipe. Provide exactly one of `--position_dir` or `--experiment_dir`, pass
+  `--recipe_path`, and use `--append_name` for the output suffix. Recipes use
+  numeric step entries with `name`, `channel`, `binarize`, `min_val`, and
+  `max_val`, plus top-level `formula`, `keep_input_data_type`, and
+  `save_as_segm` fields.
 
 ## Supported Workflow INI Subset
 
