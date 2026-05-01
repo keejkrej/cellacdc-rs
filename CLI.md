@@ -27,6 +27,7 @@ cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_c
 cellacdc-rs --convert_file_format --input_path demo_segm.npz --output_path demo_segm.npy --cast_segm_uint32
 cellacdc-rs --rename_files --file_path Position_1/Images/demo_phase.tif --rename_append_text aligned
 cellacdc-rs --images_to_positions --source_dir raw_images --target_dir Experiment_1 --images_append_text GFP
+cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --channel_name GFP --channel_name RFP
 ```
 
 - No arguments: launch the desktop GUI.
@@ -128,6 +129,11 @@ cellacdc-rs --images_to_positions --source_dir raw_images --target_dir Experimen
   `--target_dir`, and `--images_append_text`; output filenames follow the Python
   utility pattern `sXX_STEM_TEXT.tif`. Invalid image files and directories are
   skipped.
+- `--move_channel_tiffs_to_positions`: move separate channel TIFF files from a
+  flat folder into `Position_n/Images` folders. Required arguments are
+  `--source_dir` and one or more `--channel_name` values. Basenames are inferred
+  from filename prefixes before the channel names, matching the Python utility;
+  matching metadata CSV files are moved and their `basename` row is updated.
 
 ## Supported Workflow INI Subset
 

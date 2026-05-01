@@ -12,6 +12,7 @@ use ndarray::{ArrayD, IxDyn};
 use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use roxmltree::Document;
 use serde_json::json;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -235,6 +236,13 @@ pub struct ImagesToPositionsConfig {
     pub source_dir: PathBuf,
     pub target_dir: PathBuf,
     pub append_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveChannelTiffsConfig {
+    pub source_dir: PathBuf,
+    pub channel_names: Vec<String>,
+    pub extension: String,
 }
 
 pub fn concat_acdc_outputs(config: ConcatConfig) -> Result<ConcatResult> {
@@ -978,6 +986,84 @@ pub fn images_to_positions(config: ImagesToPositionsConfig) -> Result<UtilityOut
     Ok(UtilityOutputPaths {
         primary_path: output_paths[0].clone(),
         secondary_paths: output_paths.into_iter().skip(1).collect(),
+    })
+}
+
+pub fn move_channel_tiffs_to_positions(
+    config: MoveChannelTiffsConfig,
+) -> Result<UtilityOutputPaths> {
+    if !config.source_dir.is_dir() {
+        bail!(
+            "Source directory does not exist: {}",
+            config.source_dir.display()
+        );
+    }
+    if config.channel_names.is_empty() {
+        bail!("move_channel_tiffs_to_positions requires at least one channel name");
+    }
+    let extension = normalize_extension(&config.extension);
+    let mut basenames = BTreeSet::new();
+    for path in list_regular_files(&config.source_dir)? {
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !file_name.ends_with(&extension) {
+            continue;
+        }
+        let stem = file_name.trim_end_matches(&extension);
+        for channel in &config.channel_names {
+            if channel.is_empty() {
+                continue;
+            }
+            let splits = stem.split(channel).collect::<Vec<_>>();
+            if splits.len() == 2 {
+                basenames.insert(splits[0].to_string());
+                break;
+            }
+        }
+    }
+    let mut basenames = basenames.into_iter().collect::<Vec<_>>();
+    basenames.sort_by(|left, right| natural_compare(left, right));
+    if basenames.is_empty() {
+        bail!(
+            "No TIFF files in {} matched channel names {:?}",
+            config.source_dir.display(),
+            config.channel_names
+        );
+    }
+
+    let all_files = list_regular_files(&config.source_dir)?;
+    let mut output_dirs = Vec::new();
+    for (idx, basename) in basenames.iter().enumerate() {
+        let images_dir = config
+            .source_dir
+            .join(format!("Position_{}", idx + 1))
+            .join("Images");
+        fs::create_dir_all(&images_dir)
+            .with_context(|| format!("Failed to create {}", images_dir.display()))?;
+        for path in &all_files {
+            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with(basename) {
+                continue;
+            }
+            if file_name.ends_with(&extension) {
+                let dst = images_dir.join(file_name);
+                fs::rename(path, &dst).with_context(|| {
+                    format!("Failed to move {} to {}", path.display(), dst.display())
+                })?;
+            } else if file_name.ends_with("_metadata.csv") {
+                let dst = images_dir.join(format!("{basename}metadata.csv"));
+                move_metadata_with_basename(path, &dst, basename)?;
+            }
+        }
+        output_dirs.push(images_dir);
+    }
+
+    Ok(UtilityOutputPaths {
+        primary_path: output_dirs[0].clone(),
+        secondary_paths: output_dirs.into_iter().skip(1).collect(),
     })
 }
 
@@ -1884,6 +1970,117 @@ fn path_extension(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
+}
+
+fn normalize_extension(extension: &str) -> String {
+    let trimmed = extension.trim();
+    if trimmed.starts_with('.') {
+        trimmed.to_string()
+    } else {
+        format!(".{trimmed}")
+    }
+}
+
+fn list_regular_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = fs::read_dir(dir)
+        .with_context(|| format!("Failed to read {}", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
+}
+
+fn move_metadata_with_basename(src: &Path, dst: &Path, basename: &str) -> Result<()> {
+    let mut table = read_table(src)?;
+    let description_idx = table.header_index("Description")?;
+    let values_idx = table.header_index("values")?;
+    let mut found = false;
+    for row in &mut table.rows {
+        if row
+            .get(description_idx)
+            .map(|value| value.as_string_lossy() == "basename")
+            .unwrap_or(false)
+        {
+            row[values_idx] = TableValue::Text(basename.to_string());
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        let mut row = vec![TableValue::Text(String::new()); table.headers.len()];
+        row[description_idx] = TableValue::Text("basename".into());
+        row[values_idx] = TableValue::Text(basename.to_string());
+        table.rows.push(row);
+    }
+    write_table(dst, &table)?;
+    fs::remove_file(src).with_context(|| format!("Failed to remove {}", src.display()))?;
+    Ok(())
+}
+
+fn natural_compare(left: &str, right: &str) -> Ordering {
+    let mut left_iter = NaturalParts::new(left);
+    let mut right_iter = NaturalParts::new(right);
+    loop {
+        match (left_iter.next(), right_iter.next()) {
+            (Some(NaturalPart::Number(a)), Some(NaturalPart::Number(b))) => match a.cmp(&b) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+            (Some(NaturalPart::Text(a)), Some(NaturalPart::Text(b))) => match a.cmp(b) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+            (Some(NaturalPart::Number(_)), Some(NaturalPart::Text(_))) => return Ordering::Less,
+            (Some(NaturalPart::Text(_)), Some(NaturalPart::Number(_))) => return Ordering::Greater,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return left.cmp(right),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NaturalPart<'a> {
+    Text(&'a str),
+    Number(u64),
+}
+
+struct NaturalParts<'a> {
+    text: &'a str,
+    index: usize,
+}
+
+impl<'a> NaturalParts<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, index: 0 }
+    }
+}
+
+impl<'a> Iterator for NaturalParts<'a> {
+    type Item = NaturalPart<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.text.len() {
+            return None;
+        }
+        let start = self.index;
+        let first = self.text[start..].chars().next()?;
+        let is_digit = first.is_ascii_digit();
+        while self.index < self.text.len() {
+            let ch = self.text[self.index..].chars().next()?;
+            if ch.is_ascii_digit() != is_digit {
+                break;
+            }
+            self.index += ch.len_utf8();
+        }
+        let part = &self.text[start..self.index];
+        if is_digit {
+            Some(NaturalPart::Number(part.parse().unwrap_or(u64::MAX)))
+        } else {
+            Some(NaturalPart::Text(part))
+        }
+    }
 }
 
 fn detect_image_scalar_type(path: &Path) -> Result<ImageScalarType> {

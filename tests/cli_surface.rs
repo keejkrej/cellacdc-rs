@@ -44,6 +44,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--convert_file_format"));
     assert!(stdout.contains("--rename_files"));
     assert!(stdout.contains("--images_to_positions"));
+    assert!(stdout.contains("--move_channel_tiffs_to_positions"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -313,6 +314,60 @@ fn images_to_positions_utility_creates_position_folders() {
         .join("Images")
         .join("s02_second_GFP.tif")
         .exists());
+}
+
+#[test]
+fn move_channel_tiffs_to_positions_utility_groups_flat_channel_files() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_dir = temp.path();
+    write_test_tiff(&source_dir.join("pos2_GFP.tif"), &[1, 2, 3, 4], 2, 2);
+    write_test_tiff(&source_dir.join("pos2_RFP.tif"), &[5, 6, 7, 8], 2, 2);
+    write_test_tiff(&source_dir.join("pos10_GFP.tif"), &[9, 10, 11, 12], 2, 2);
+    write_test_tiff(&source_dir.join("pos10_RFP.tif"), &[13, 14, 15, 16], 2, 2);
+    fs::write(
+        source_dir.join("pos2_metadata.csv"),
+        "Description,values\nbasename,old_\nSizeT,1\n",
+    )
+    .expect("metadata");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--move_channel_tiffs_to_positions")
+        .arg("--source_dir")
+        .arg(source_dir)
+        .arg("--channel_name")
+        .arg("GFP")
+        .arg("--channel_name")
+        .arg("RFP")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Moved channel TIFFs into 2 position folder(s)"));
+    assert!(source_dir
+        .join("Position_1")
+        .join("Images")
+        .join("pos2_GFP.tif")
+        .exists());
+    assert!(source_dir
+        .join("Position_1")
+        .join("Images")
+        .join("pos2_RFP.tif")
+        .exists());
+    assert!(source_dir
+        .join("Position_2")
+        .join("Images")
+        .join("pos10_GFP.tif")
+        .exists());
+    let metadata = fs::read_to_string(
+        source_dir
+            .join("Position_1")
+            .join("Images")
+            .join("pos2_metadata.csv"),
+    )
+    .expect("moved metadata");
+    assert!(metadata.contains("basename,pos2_"));
+    assert!(!source_dir.join("pos2_GFP.tif").exists());
 }
 
 #[test]

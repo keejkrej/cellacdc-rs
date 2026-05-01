@@ -12,13 +12,14 @@ use cellacdc_rs::{
     add_lineage_tree, add_lineage_tree_to_tables, apply_tracking_from_table,
     apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_multi_channel,
     concat_acdc_outputs, connect_3d_segm, convert_file_format, count_objects, fill_holes,
-    generate_mother_bud_total, images_to_positions, rename_files, run_workflow_file,
-    segmentation_to_object_coords, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
-    CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
-    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterConfig, CountObjectsConfig,
-    FillHolesConfig, GenerateMotherBudTotalConfig, ImagesToPositionsConfig, LineageTreeBatchConfig,
-    LineageTreeConfig, MaskPathResolution, ObjectCoordinatesConfig, RenameFilesConfig,
-    SegmentationLayout, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    generate_mother_bud_total, images_to_positions, move_channel_tiffs_to_positions, rename_files,
+    run_workflow_file, segmentation_to_object_coords, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
+    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmConfig, ConvertFileFormatConfig,
+    CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
+    ImagesToPositionsConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
+    MoveChannelTiffsConfig, ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout,
+    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -174,6 +175,12 @@ struct Cli {
         help = "Convert a flat image folder into Cell-ACDC Position_n folders"
     )]
     images_to_positions: bool,
+    #[arg(
+        long = "move_channel_tiffs_to_positions",
+        action = ArgAction::SetTrue,
+        help = "Move separate channel TIFF files into Cell-ACDC Position_n folders"
+    )]
+    move_channel_tiffs_to_positions: bool,
     #[arg(
         long = "segmentation_path",
         value_name = "PATH_TO_SEGM",
@@ -362,6 +369,20 @@ struct Cli {
     )]
     images_append_text: Option<String>,
     #[arg(
+        long = "channel_name",
+        value_name = "CHANNEL",
+        action = ArgAction::Append,
+        help = "Channel name for --move_channel_tiffs_to_positions; repeat for multiple channels"
+    )]
+    channel_names: Vec<String>,
+    #[arg(
+        long = "tiff_extension",
+        value_name = "EXT",
+        default_value = "tif",
+        help = "TIFF extension for --move_channel_tiffs_to_positions"
+    )]
+    tiff_extension: String,
+    #[arg(
         long = "coords_table_path",
         value_name = "PATH_TO_COORDS_TABLE",
         help = "Coordinate table path for --filter_segm_from_table"
@@ -527,10 +548,11 @@ fn main() -> Result<()> {
         + usize::from(cli.combine_channels)
         + usize::from(cli.convert_file_format)
         + usize::from(cli.rename_files)
-        + usize::from(cli.images_to_positions);
+        + usize::from(cli.images_to_positions)
+        + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, or --images_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -643,6 +665,11 @@ fn main() -> Result<()> {
 
     if cli.images_to_positions {
         println!("{}", run_images_to_positions(&cli)?);
+        return Ok(());
+    }
+
+    if cli.move_channel_tiffs_to_positions {
+        println!("{}", run_move_channel_tiffs_to_positions(&cli)?);
         return Ok(());
     }
 
@@ -1111,6 +1138,27 @@ fn run_images_to_positions(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_move_channel_tiffs_to_positions(cli: &Cli) -> Result<String> {
+    let source_dir = cli.source_dir.clone().ok_or_else(|| {
+        anyhow::anyhow!("--move_channel_tiffs_to_positions requires --source_dir")
+    })?;
+    let result = move_channel_tiffs_to_positions(MoveChannelTiffsConfig {
+        source_dir,
+        channel_names: cli.channel_names.clone(),
+        extension: cli.tiff_extension.clone(),
+    })?;
+    let mut outputs = vec![result.primary_path];
+    outputs.extend(result.secondary_paths);
+    let mut lines = vec![format!(
+        "Moved channel TIFFs into {} position folder(s)",
+        outputs.len()
+    )];
+    for path in outputs {
+        lines.push(format!("Created position Images folder {}", path.display()));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn parse_column_operations(values: &[String]) -> Result<BTreeMap<String, String>> {
     parse_name_value_pairs(values, "--column_operation")
 }
@@ -1172,6 +1220,8 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_dir.is_some()
         || cli.target_dir.is_some()
         || cli.images_append_text.is_some()
+        || !cli.channel_names.is_empty()
+        || cli.tiff_extension != "tif"
         || cli.size_t.is_some()
         || cli.size_z.is_some()
         || cli.segm_layout.is_some()
@@ -1194,7 +1244,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, or --images_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }
