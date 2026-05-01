@@ -9,6 +9,13 @@ cellacdc-rs
 cellacdc-rs -p workflow.ini
 cellacdc-rs -v
 cellacdc-rs -info
+cellacdc-rs --count_objects --segmentation_path demo_segm.npz --output_path demo_acdc_objects_count.csv
+cellacdc-rs --fill_holes --segmentation_path demo_segm.npz --output_path demo_segm_filled.npz
+cellacdc-rs --connect_3d_segm --segmentation_path demo_segm3d.npz --output_path demo_segm3d_connected.npz --segm_layout ZYX
+cellacdc-rs --stack_2d_segm_to_3d --segmentation_path demo_segm2d.npz --output_path demo_segm3d.npz --size_z 5
+cellacdc-rs --filter_segm_from_table --segmentation_path demo_segm.npz --coords_table_path coords.csv --output_path demo_segm_filtered.npz
+cellacdc-rs --apply_tracking_from_table --segmentation_path demo_segm.npz --tracking_table_path tracking.csv --output_path demo_segm_tracked.npz --segm_layout TYX --mask_ids_col mask_id
+cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path demo_lineage_tree.csv
 ```
 
 - No arguments: launch the desktop GUI.
@@ -22,6 +29,34 @@ cellacdc-rs -info
 - `--install_details`: accepted as a Python installer compatibility flag. The
   JSON file is parsed and path-like fields are normalized, but Rust does not run
   Python installer commands.
+- `--count_objects`: run the object-count utility on a segmentation mask and
+  write the counts table to `--output_path`. Required arguments are
+  `--segmentation_path` and `--output_path`. Optional layout hints
+  `--size_t`, `--size_z`, and `--segm_layout` resolve ambiguous 3D masks.
+- `--fill_holes`: fill holes in a segmentation mask and write the corrected
+  mask to `--output_path`. It uses the same `--segmentation_path` and optional
+  layout-hint flags as `--count_objects`.
+- `--connect_3d_segm`: connect labels across z-slice boundaries in a 3D
+  segmentation mask and write the corrected mask to `--output_path`. Use
+  `--segm_layout ZYX` or `--segm_layout TZYX` when metadata does not make the
+  layout unambiguous.
+- `--stack_2d_segm_to_3d`: broadcast 2D segmentation masks into a 3D z-stack
+  and write the stacked mask to `--output_path`. Required arguments are
+  `--segmentation_path`, `--output_path`, and target depth `--size_z`.
+- `--filter_segm_from_table`: keep only segmentation labels touched by
+  coordinates in a CSV/XLSX table. Required arguments are `--segmentation_path`,
+  `--coords_table_path`, and `--output_path`. Coordinate columns default to
+  `--x_col x` and `--y_col y`; time-series/3D masks can also use
+  `--frame_col`, `--z_col`, `--position_col`, and `--position_value`.
+- `--apply_tracking_from_table`: apply tracking IDs from a CSV/XLSX table to a
+  time-series segmentation mask. Required arguments are `--segmentation_path`,
+  `--tracking_table_path`, and `--output_path`. Tracking columns default to
+  `--frame_index_col frame_i` and `--track_ids_col track_id`; optional mapping
+  inputs include `--mask_ids_col`, centroid columns, `--first_frame_one`, and
+  `--delete_untracked_ids`. Optional `--source_acdc_output_path` and
+  `--output_acdc_output_path` remap a matching `acdc_output` table.
+- `--add_lineage_tree`: add lineage-tree columns to an `acdc_output` CSV/XLSX
+  table. Required arguments are `--input_path` and `--output_path`.
 
 ## Supported Workflow INI Subset
 

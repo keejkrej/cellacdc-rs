@@ -7,7 +7,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use cellacdc_rs::{run_workflow_file, WorkflowRunOptions};
+use cellacdc_rs::{
+    add_lineage_tree, apply_tracking_from_table, connect_3d_segm, count_objects, fill_holes,
+    run_workflow_file, ApplyTrackingConfig, Connect3DSegmConfig, CoordinateFilterConfig,
+    CountObjectsConfig, FillHolesConfig, LineageTreeConfig, MaskPathResolution, SegmentationLayout,
+    Stack2DSegmTo3DConfig, TrackingColumnMap, WorkflowRunOptions,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "cellacdc-rs")]
@@ -60,6 +65,197 @@ struct Cli {
         help = "Path to install_details.json (Python installer compatibility flag; not used by Rust)"
     )]
     install_details: Option<PathBuf>,
+    #[arg(
+        long = "count_objects",
+        action = ArgAction::SetTrue,
+        help = "Count labels in a segmentation mask and write an objects-count CSV"
+    )]
+    count_objects: bool,
+    #[arg(
+        long = "fill_holes",
+        action = ArgAction::SetTrue,
+        help = "Fill holes in segmentation masks and write the corrected mask"
+    )]
+    fill_holes: bool,
+    #[arg(
+        long = "connect_3d_segm",
+        action = ArgAction::SetTrue,
+        help = "Connect labels across z-slice boundaries in 3D segmentation masks"
+    )]
+    connect_3d_segm: bool,
+    #[arg(
+        long = "stack_2d_segm_to_3d",
+        action = ArgAction::SetTrue,
+        help = "Broadcast 2D segmentation masks into a 3D z-stack"
+    )]
+    stack_2d_segm_to_3d: bool,
+    #[arg(
+        long = "filter_segm_from_table",
+        action = ArgAction::SetTrue,
+        help = "Keep only segmentation labels touched by coordinates in a table"
+    )]
+    filter_segm_from_table: bool,
+    #[arg(
+        long = "apply_tracking_from_table",
+        action = ArgAction::SetTrue,
+        help = "Apply tracking IDs from a table to a time-series segmentation mask"
+    )]
+    apply_tracking_from_table: bool,
+    #[arg(
+        long = "add_lineage_tree",
+        action = ArgAction::SetTrue,
+        help = "Add lineage-tree columns to an acdc_output table"
+    )]
+    add_lineage_tree: bool,
+    #[arg(
+        long = "segmentation_path",
+        value_name = "PATH_TO_SEGM",
+        help = "Segmentation mask path for utility modes"
+    )]
+    segmentation_path: Option<PathBuf>,
+    #[arg(
+        long = "output_path",
+        value_name = "PATH_TO_OUTPUT",
+        help = "Output table or mask path for utility modes"
+    )]
+    output_path: Option<PathBuf>,
+    #[arg(
+        long = "input_path",
+        value_name = "PATH_TO_INPUT",
+        help = "Input table path for table utility modes such as --add_lineage_tree"
+    )]
+    input_path: Option<PathBuf>,
+    #[arg(
+        long = "coords_table_path",
+        value_name = "PATH_TO_COORDS_TABLE",
+        help = "Coordinate table path for --filter_segm_from_table"
+    )]
+    coords_table_path: Option<PathBuf>,
+    #[arg(
+        long = "x_col",
+        value_name = "COLUMN",
+        default_value = "x",
+        help = "X-coordinate column for --filter_segm_from_table"
+    )]
+    x_col: String,
+    #[arg(
+        long = "y_col",
+        value_name = "COLUMN",
+        default_value = "y",
+        help = "Y-coordinate column for --filter_segm_from_table"
+    )]
+    y_col: String,
+    #[arg(
+        long = "z_col",
+        value_name = "COLUMN",
+        help = "Z-coordinate column for 3D --filter_segm_from_table"
+    )]
+    z_col: Option<String>,
+    #[arg(
+        long = "frame_col",
+        value_name = "COLUMN",
+        help = "Frame-index column for time-series --filter_segm_from_table"
+    )]
+    frame_col: Option<String>,
+    #[arg(
+        long = "position_col",
+        value_name = "COLUMN",
+        help = "Position column used to subset --filter_segm_from_table coordinates"
+    )]
+    position_col: Option<String>,
+    #[arg(
+        long = "position_value",
+        value_name = "VALUE",
+        help = "Position value used to subset --filter_segm_from_table coordinates"
+    )]
+    position_value: Option<String>,
+    #[arg(
+        long = "tracking_table_path",
+        value_name = "PATH_TO_TRACKING_TABLE",
+        help = "Tracking table path for --apply_tracking_from_table"
+    )]
+    tracking_table_path: Option<PathBuf>,
+    #[arg(
+        long = "frame_index_col",
+        value_name = "COLUMN",
+        default_value = "frame_i",
+        help = "Frame-index column for tracking-table utilities"
+    )]
+    frame_index_col: String,
+    #[arg(
+        long = "first_frame_one",
+        action = ArgAction::SetTrue,
+        help = "Treat tracking table frame indices as one-based"
+    )]
+    first_frame_one: bool,
+    #[arg(
+        long = "track_ids_col",
+        value_name = "COLUMN",
+        default_value = "track_id",
+        help = "Tracking-ID column for --apply_tracking_from_table"
+    )]
+    track_ids_col: String,
+    #[arg(
+        long = "mask_ids_col",
+        value_name = "COLUMN",
+        help = "Mask-label column for --apply_tracking_from_table"
+    )]
+    mask_ids_col: Option<String>,
+    #[arg(
+        long = "x_centroid_col",
+        value_name = "COLUMN",
+        help = "X-centroid column used to resolve mask labels for tracking"
+    )]
+    x_centroid_col: Option<String>,
+    #[arg(
+        long = "y_centroid_col",
+        value_name = "COLUMN",
+        help = "Y-centroid column used to resolve mask labels for tracking"
+    )]
+    y_centroid_col: Option<String>,
+    #[arg(
+        long = "z_centroid_col",
+        value_name = "COLUMN",
+        help = "Z-centroid column used to resolve 3D mask labels for tracking"
+    )]
+    z_centroid_col: Option<String>,
+    #[arg(
+        long = "delete_untracked_ids",
+        action = ArgAction::SetTrue,
+        help = "Delete segmentation labels not represented in the tracking table"
+    )]
+    delete_untracked_ids: bool,
+    #[arg(
+        long = "source_acdc_output_path",
+        value_name = "PATH_TO_ACDC_OUTPUT",
+        help = "Optional source acdc_output table to remap with tracking"
+    )]
+    source_acdc_output_path: Option<PathBuf>,
+    #[arg(
+        long = "output_acdc_output_path",
+        value_name = "PATH_TO_OUTPUT_ACDC",
+        help = "Optional output acdc_output path for remapped tracking metadata"
+    )]
+    output_acdc_output_path: Option<PathBuf>,
+    #[arg(
+        long = "size_t",
+        value_name = "SIZE_T",
+        help = "Metadata SizeT for resolving ambiguous segmentation layouts"
+    )]
+    size_t: Option<usize>,
+    #[arg(
+        long = "size_z",
+        value_name = "SIZE_Z",
+        help = "Metadata SizeZ for resolving ambiguous segmentation layouts"
+    )]
+    size_z: Option<usize>,
+    #[arg(
+        long = "segm_layout",
+        value_name = "YX|TYX|ZYX|TZYX",
+        value_parser = parse_segmentation_layout,
+        help = "Explicit segmentation layout for utility modes"
+    )]
+    segm_layout: Option<SegmentationLayout>,
     #[arg(long = "cpModelsDownload", action = ArgAction::SetTrue, hide = true)]
     cp_models_download: bool,
     #[arg(long = "YeaZModelsDownload", action = ArgAction::SetTrue, hide = true)]
@@ -78,9 +274,18 @@ fn main() -> Result<()> {
     let cli = Cli::parse_from(preprocess_args());
     let mode_count = usize::from(cli.params.is_some())
         + usize::from(cli.version || cli.info)
-        + usize::from(cli.reset);
+        + usize::from(cli.reset)
+        + usize::from(cli.count_objects)
+        + usize::from(cli.fill_holes)
+        + usize::from(cli.connect_3d_segm)
+        + usize::from(cli.stack_2d_segm_to_3d)
+        + usize::from(cli.filter_segm_from_table)
+        + usize::from(cli.apply_tracking_from_table)
+        + usize::from(cli.add_lineage_tree);
     if mode_count > 1 {
-        bail!("Use only one of --params, --version/--info, or --reset");
+        bail!(
+            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, or --add_lineage_tree"
+        );
     }
     if cli.debug && cli.params.is_none() {
         bail!("--debug is only supported together with --params");
@@ -110,6 +315,43 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.count_objects {
+        println!("{}", run_count_objects(&cli)?);
+        return Ok(());
+    }
+
+    if cli.fill_holes {
+        println!("{}", run_fill_holes(&cli)?);
+        return Ok(());
+    }
+
+    if cli.connect_3d_segm {
+        println!("{}", run_connect_3d_segm(&cli)?);
+        return Ok(());
+    }
+
+    if cli.stack_2d_segm_to_3d {
+        println!("{}", run_stack_2d_segm_to_3d(&cli)?);
+        return Ok(());
+    }
+
+    if cli.filter_segm_from_table {
+        println!("{}", run_filter_segm_from_table(&cli)?);
+        return Ok(());
+    }
+
+    if cli.apply_tracking_from_table {
+        println!("{}", run_apply_tracking_from_table(&cli)?);
+        return Ok(());
+    }
+
+    if cli.add_lineage_tree {
+        println!("{}", run_add_lineage_tree(&cli)?);
+        return Ok(());
+    }
+
+    reject_utility_args_without_mode(&cli)?;
+
     if let Some(params_path) = cli.params {
         let report = run_workflow_file(params_path, WorkflowRunOptions { debug: cli.debug })?;
         if !report.segmentation_results.is_empty() {
@@ -125,6 +367,236 @@ fn main() -> Result<()> {
     }
 
     gui::launch_gui()
+}
+
+fn run_count_objects(cli: &Cli) -> Result<String> {
+    let segmentation_path = cli
+        .segmentation_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--count_objects requires --segmentation_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--count_objects requires --output_path"))?;
+    let resolution = utility_mask_resolution(cli);
+    let result = count_objects(CountObjectsConfig {
+        segmentation_path,
+        output_path,
+        resolution,
+    })?;
+    let mut lines = vec![format!(
+        "Saved object counts table to {}",
+        result.summary.output_path.display()
+    )];
+    for (name, value) in result.summary.counts {
+        lines.push(format!("{name}: {value}"));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn run_fill_holes(cli: &Cli) -> Result<String> {
+    let segmentation_path = cli
+        .segmentation_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--fill_holes requires --segmentation_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--fill_holes requires --output_path"))?;
+    let result = fill_holes(FillHolesConfig {
+        segmentation_path,
+        output_path,
+        resolution: utility_mask_resolution(cli),
+    })?;
+    Ok(format!(
+        "Saved hole-filled segmentation mask to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_connect_3d_segm(cli: &Cli) -> Result<String> {
+    let segmentation_path = cli
+        .segmentation_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--connect_3d_segm requires --segmentation_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--connect_3d_segm requires --output_path"))?;
+    let result = connect_3d_segm(Connect3DSegmConfig {
+        segmentation_path,
+        output_path,
+        resolution: utility_mask_resolution(cli),
+    })?;
+    Ok(format!(
+        "Saved 3D-connected segmentation mask to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_stack_2d_segm_to_3d(cli: &Cli) -> Result<String> {
+    let segmentation_path = cli
+        .segmentation_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --segmentation_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --output_path"))?;
+    let size_z = cli
+        .size_z
+        .ok_or_else(|| anyhow::anyhow!("--stack_2d_segm_to_3d requires --size_z"))?;
+    let result = cellacdc_rs::stack_2d_segm_to_3d(Stack2DSegmTo3DConfig {
+        segmentation_path,
+        output_path,
+        size_z,
+        resolution: utility_mask_resolution(cli),
+    })?;
+    Ok(format!(
+        "Saved 2D segmentation mask stacked to 3D at {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_filter_segm_from_table(cli: &Cli) -> Result<String> {
+    let segmentation_path = cli
+        .segmentation_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--filter_segm_from_table requires --segmentation_path"))?;
+    let coords_table_path = cli
+        .coords_table_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--filter_segm_from_table requires --coords_table_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--filter_segm_from_table requires --output_path"))?;
+    let result = cellacdc_rs::filter_segm_from_table(CoordinateFilterConfig {
+        segmentation_path,
+        coords_table_path,
+        output_path,
+        x_col: cli.x_col.clone(),
+        y_col: cli.y_col.clone(),
+        z_col: cli.z_col.clone(),
+        frame_col: cli.frame_col.clone(),
+        position_col: cli.position_col.clone(),
+        position_value: cli.position_value.clone(),
+        resolution: utility_mask_resolution(cli),
+    })?;
+    Ok(format!(
+        "Saved coordinate-filtered segmentation mask to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {
+    let segmentation_path = cli.segmentation_path.clone().ok_or_else(|| {
+        anyhow::anyhow!("--apply_tracking_from_table requires --segmentation_path")
+    })?;
+    let tracking_table_path = cli.tracking_table_path.clone().ok_or_else(|| {
+        anyhow::anyhow!("--apply_tracking_from_table requires --tracking_table_path")
+    })?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--apply_tracking_from_table requires --output_path"))?;
+    let result = apply_tracking_from_table(ApplyTrackingConfig {
+        segmentation_path,
+        tracking_table_path,
+        output_path,
+        columns: TrackingColumnMap {
+            frame_index_col: cli.frame_index_col.clone(),
+            is_first_frame_one: cli.first_frame_one,
+            track_ids_col: cli.track_ids_col.clone(),
+            mask_ids_col: cli.mask_ids_col.clone(),
+            x_centroid_col: cli.x_centroid_col.clone(),
+            y_centroid_col: cli.y_centroid_col.clone(),
+            z_centroid_col: cli.z_centroid_col.clone(),
+            delete_untracked_ids: cli.delete_untracked_ids,
+        },
+        resolution: utility_mask_resolution(cli),
+        source_acdc_output_path: cli.source_acdc_output_path.clone(),
+        output_acdc_output_path: cli.output_acdc_output_path.clone(),
+    })?;
+    let mut lines = vec![format!(
+        "Saved tracked segmentation mask to {}",
+        result.primary_path.display()
+    )];
+    for path in result.secondary_paths {
+        lines.push(format!("Saved tracking sidecar to {}", path.display()));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn run_add_lineage_tree(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_lineage_tree requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_lineage_tree requires --output_path"))?;
+    let result = add_lineage_tree(LineageTreeConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Saved lineage-tree table to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn utility_mask_resolution(cli: &Cli) -> Option<MaskPathResolution> {
+    if cli.size_t.is_none() && cli.size_z.is_none() && cli.segm_layout.is_none() {
+        return None;
+    }
+    Some(MaskPathResolution {
+        size_t: cli.size_t,
+        size_z: cli.size_z,
+        layout: cli.segm_layout,
+    })
+}
+
+fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
+    if cli.segmentation_path.is_some()
+        || cli.output_path.is_some()
+        || cli.input_path.is_some()
+        || cli.size_t.is_some()
+        || cli.size_z.is_some()
+        || cli.segm_layout.is_some()
+        || cli.coords_table_path.is_some()
+        || cli.x_col != "x"
+        || cli.y_col != "y"
+        || cli.z_col.is_some()
+        || cli.frame_col.is_some()
+        || cli.position_col.is_some()
+        || cli.position_value.is_some()
+        || cli.tracking_table_path.is_some()
+        || cli.frame_index_col != "frame_i"
+        || cli.first_frame_one
+        || cli.track_ids_col != "track_id"
+        || cli.mask_ids_col.is_some()
+        || cli.x_centroid_col.is_some()
+        || cli.y_centroid_col.is_some()
+        || cli.z_centroid_col.is_some()
+        || cli.delete_untracked_ids
+        || cli.source_acdc_output_path.is_some()
+        || cli.output_acdc_output_path.is_some()
+    {
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, or --add_lineage_tree");
+    }
+    Ok(())
+}
+
+fn parse_segmentation_layout(value: &str) -> Result<SegmentationLayout, String> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "YX" => Ok(SegmentationLayout::YX),
+        "TYX" => Ok(SegmentationLayout::TYX),
+        "ZYX" => Ok(SegmentationLayout::ZYX),
+        "TZYX" => Ok(SegmentationLayout::TZYX),
+        _ => Err("expected one of YX, TYX, ZYX, or TZYX".to_string()),
+    }
 }
 
 fn preprocess_args() -> Vec<OsString> {
