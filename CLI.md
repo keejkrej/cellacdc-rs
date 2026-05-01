@@ -20,6 +20,7 @@ cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path d
 cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --output_path demo_mother_bud_total.csv --column_operation cell_area_um2=sum
 cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.csv --output_path combined.csv --formula "sum_signal=table1_signal + table2_signal"
 cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
+cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_endname acdc_output --output_format csv
 ```
 
 - No arguments: launch the desktop GUI.
@@ -87,6 +88,13 @@ cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname a
   and repeat `--formula COLUMN=EXPRESSION`. Outputs are written into each
   position `Images` folder using `--append_name`, which defaults to
   `combined_metrics`.
+- `--concat_acdc_outputs`: concatenate `acdc_output`-style tables across
+  Cell-ACDC positions and optionally across experiments. Repeat
+  `--concat_experiment_dir PATH` for each experiment. `--table_endname` defaults
+  to `acdc_output`, `--output_format` accepts `csv` or `xlsx`, and repeated
+  `--selected_column COLUMN` flags keep a subset of columns. `--output_name`
+  controls each experiment-level output filename; `--multi_experiment_dir`
+  controls where multi-experiment outputs are written.
 
 ## Supported Workflow INI Subset
 

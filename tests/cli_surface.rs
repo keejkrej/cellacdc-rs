@@ -29,6 +29,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--generate_mother_bud_total"));
     assert!(stdout.contains("--combine_metrics"));
     assert!(stdout.contains("--compute_multi_channel"));
+    assert!(stdout.contains("--concat_acdc_outputs"));
     assert!(!stdout.contains("Commands:"));
     assert!(!stdout.contains("run-position"));
 }
@@ -571,6 +572,47 @@ fn compute_multi_channel_utility_writes_position_table() {
     assert!(images_dir
         .join("demo_equations_combined_metrics.ini")
         .exists());
+}
+
+#[test]
+fn concat_acdc_outputs_utility_writes_allpos_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        let cell_id = if pos.ends_with('1') { 1 } else { 2 };
+        fs::write(
+            images_dir.join("demo_acdc_output.csv"),
+            format!("frame_i,Cell_ID,value\n0,{cell_id},{pos}\n"),
+        )
+        .expect("acdc output csv");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--concat_acdc_outputs")
+        .arg("--concat_experiment_dir")
+        .arg(temp.path())
+        .arg("--table_endname")
+        .arg("acdc_output")
+        .arg("--selected_column")
+        .arg("Position_n")
+        .arg("--selected_column")
+        .arg("Cell_ID")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved concatenated position table"));
+    let csv = fs::read_to_string(
+        temp.path()
+            .join("AllPos_acdc_output")
+            .join("AllPos_acdc_output.csv"),
+    )
+    .expect("allpos csv");
+    assert!(csv.contains("Position_n,Cell_ID"));
+    assert!(csv.contains("Position_1,1"));
+    assert!(csv.contains("Position_2,2"));
 }
 
 #[test]

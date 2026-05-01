@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
-    combine_metrics, compute_multi_channel, connect_3d_segm, count_objects, fill_holes,
-    generate_mother_bud_total, run_workflow_file, ApplyTrackingConfig,
+    combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm, count_objects,
+    fill_holes, generate_mother_bud_total, run_workflow_file, ApplyTrackingConfig,
     ApplyTrackingFromTrackMateXmlConfig, CombineMetricsConfig, ComputeMultiChannelConfig,
-    Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig,
+    ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig,
     GenerateMotherBudTotalConfig, LineageTreeConfig, MaskPathResolution, SegmentationLayout,
-    Stack2DSegmTo3DConfig, TrackingColumnMap, WorkflowRunOptions,
+    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -136,6 +136,12 @@ struct Cli {
     )]
     compute_multi_channel: bool,
     #[arg(
+        long = "concat_acdc_outputs",
+        action = ArgAction::SetTrue,
+        help = "Concatenate acdc_output tables across Cell-ACDC positions and experiments"
+    )]
+    concat_acdc_outputs: bool,
+    #[arg(
         long = "segmentation_path",
         value_name = "PATH_TO_SEGM",
         help = "Segmentation mask path for utility modes"
@@ -165,6 +171,13 @@ struct Cli {
         help = "Experiment folder path for experiment-scoped utility modes"
     )]
     experiment_dir: Option<PathBuf>,
+    #[arg(
+        long = "concat_experiment_dir",
+        value_name = "PATH_TO_EXPERIMENT",
+        action = ArgAction::Append,
+        help = "Experiment folder path for --concat_acdc_outputs; repeat for multi-experiment output"
+    )]
+    concat_experiment_dirs: Vec<PathBuf>,
     #[arg(
         long = "segm_endname",
         value_name = "ENDNAME",
@@ -218,6 +231,40 @@ struct Cli {
         help = "Append name for position-scoped computed metric outputs"
     )]
     append_name: String,
+    #[arg(
+        long = "table_endname",
+        value_name = "ENDNAME",
+        default_value = "acdc_output",
+        help = "Table endname for --concat_acdc_outputs"
+    )]
+    table_endname: String,
+    #[arg(
+        long = "output_format",
+        value_name = "csv|xlsx",
+        default_value = "csv",
+        value_parser = parse_table_format,
+        help = "Output table format for --concat_acdc_outputs"
+    )]
+    output_format: TableFormat,
+    #[arg(
+        long = "selected_column",
+        value_name = "COLUMN",
+        action = ArgAction::Append,
+        help = "Selected output column for --concat_acdc_outputs; repeat to keep multiple columns"
+    )]
+    selected_columns: Vec<String>,
+    #[arg(
+        long = "output_name",
+        value_name = "FILENAME",
+        help = "Output filename for --concat_acdc_outputs"
+    )]
+    output_name: Option<String>,
+    #[arg(
+        long = "multi_experiment_dir",
+        value_name = "PATH_TO_OUTPUT_DIR",
+        help = "Output directory for multi-experiment --concat_acdc_outputs results"
+    )]
+    multi_experiment_dir: Option<PathBuf>,
     #[arg(
         long = "grouping_column",
         value_name = "COLUMN",
@@ -398,10 +445,11 @@ fn main() -> Result<()> {
         + usize::from(cli.add_lineage_tree)
         + usize::from(cli.generate_mother_bud_total)
         + usize::from(cli.combine_metrics)
-        + usize::from(cli.compute_multi_channel);
+        + usize::from(cli.compute_multi_channel)
+        + usize::from(cli.concat_acdc_outputs);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, or --compute_multi_channel"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, or --concat_acdc_outputs"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -484,6 +532,11 @@ fn main() -> Result<()> {
 
     if cli.compute_multi_channel {
         println!("{}", run_compute_multi_channel(&cli)?);
+        return Ok(());
+    }
+
+    if cli.concat_acdc_outputs {
+        println!("{}", run_concat_acdc_outputs(&cli)?);
         return Ok(());
     }
 
@@ -779,6 +832,47 @@ fn run_compute_multi_channel(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_concat_acdc_outputs(cli: &Cli) -> Result<String> {
+    let result = concat_acdc_outputs(ConcatConfig {
+        experiment_dirs: cli.concat_experiment_dirs.clone(),
+        table_endname: cli.table_endname.clone(),
+        output_format: cli.output_format,
+        selected_columns: if cli.selected_columns.is_empty() {
+            None
+        } else {
+            Some(cli.selected_columns.clone())
+        },
+        output_name: cli.output_name.clone(),
+        multi_experiment_dir: cli.multi_experiment_dir.clone(),
+    })?;
+    let mut lines = Vec::new();
+    for path in result.all_position_outputs {
+        lines.push(format!(
+            "Saved concatenated position table to {}",
+            path.display()
+        ));
+    }
+    for path in result.all_position_count_outputs {
+        lines.push(format!(
+            "Saved concatenated object-count table to {}",
+            path.display()
+        ));
+    }
+    if let Some(path) = result.multi_experiment_output {
+        lines.push(format!(
+            "Saved concatenated multi-experiment table to {}",
+            path.display()
+        ));
+    }
+    if let Some(path) = result.multi_experiment_count_output {
+        lines.push(format!(
+            "Saved concatenated multi-experiment object-count table to {}",
+            path.display()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn parse_column_operations(values: &[String]) -> Result<BTreeMap<String, String>> {
     parse_name_value_pairs(values, "--column_operation")
 }
@@ -816,6 +910,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.input_path.is_some()
         || cli.position_dir.is_some()
         || cli.experiment_dir.is_some()
+        || !cli.concat_experiment_dirs.is_empty()
         || cli.segm_endname.is_some()
         || cli.xml_path.is_some()
         || !cli.column_operations.is_empty()
@@ -824,6 +919,11 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || !cli.formulas.is_empty()
         || cli.equations_path.is_some()
         || cli.append_name != "combined_metrics"
+        || cli.table_endname != "acdc_output"
+        || cli.output_format != TableFormat::Csv
+        || !cli.selected_columns.is_empty()
+        || cli.output_name.is_some()
+        || cli.multi_experiment_dir.is_some()
         || !cli.grouping_columns.is_empty()
         || cli.entity_colname != "entity"
         || cli.no_copy_all_nonselected_columns
@@ -849,7 +949,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, or --compute_multi_channel");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, or --concat_acdc_outputs");
     }
     Ok(())
 }
@@ -861,6 +961,14 @@ fn parse_segmentation_layout(value: &str) -> Result<SegmentationLayout, String> 
         "ZYX" => Ok(SegmentationLayout::ZYX),
         "TZYX" => Ok(SegmentationLayout::TZYX),
         _ => Err("expected one of YX, TYX, ZYX, or TZYX".to_string()),
+    }
+}
+
+fn parse_table_format(value: &str) -> Result<TableFormat, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "csv" => Ok(TableFormat::Csv),
+        "xlsx" => Ok(TableFormat::Xlsx),
+        _ => Err("expected csv or xlsx".to_string()),
     }
 }
 
