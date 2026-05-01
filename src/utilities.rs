@@ -1529,7 +1529,7 @@ fn write_equations_ini(
     Ok(())
 }
 
-fn objects_count_summary(masks: &MaskData) -> BTreeMap<String, usize> {
+pub(crate) fn objects_count_summary(masks: &MaskData) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     match masks.layout {
         SegmentationLayout::YX | SegmentationLayout::ZYX => {

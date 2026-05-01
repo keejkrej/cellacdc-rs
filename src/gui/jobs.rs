@@ -9,7 +9,8 @@ use cellacdc_rs::{
     run_position, stack_2d_segm_to_3d, CombineChannelsConfig, Connect3DSegmConfig,
     CountObjectsConfig, ExperimentRunConfig, FillHolesConfig, ImportExecutionConfig,
     ImportSelection, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
-    SegmentationLayout, Stack2DSegmTo3DConfig, TrackingConfig, TrackingRunScope,
+    OverlapDenominator, SegmentationLayout, Stack2DSegmTo3DConfig, TrackingConfig,
+    TrackingRunScope,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -135,6 +136,8 @@ impl CellAcdcGui {
     pub(crate) fn tracking_config(&self) -> Option<TrackingConfig> {
         self.persisted.track.then(|| TrackingConfig {
             ioa_threshold: self.persisted.track_ioa_threshold,
+            assign_unique_new_ids: true,
+            overlap_denominator: OverlapDenominator::AreaPrev,
         })
     }
 
@@ -212,6 +215,9 @@ impl CellAcdcGui {
                 segm_endname,
                 overwrite_policy,
                 stop_frame: None,
+                channel_names: None,
+                metric_options: None,
+                save_object_counts_table: false,
             })?;
             Ok(JobSummary {
                 summary: format!(
@@ -250,6 +256,9 @@ impl CellAcdcGui {
                 segm_endname,
                 overwrite_policy,
                 stop_frame: None,
+                channel_names: None,
+                metric_options: None,
+                save_object_counts_table: false,
             })?;
             Ok(JobSummary {
                 summary: format!("Measured {} position(s)", results.len()),
@@ -293,8 +302,13 @@ impl CellAcdcGui {
                 overwrite_policy,
                 cpu,
                 params,
+                preprocess_steps: Vec::new(),
                 tracking,
+                postprocess: None,
                 stop_frame: None,
+                save_outputs: true,
+                use_data_prep_roi: true,
+                use_data_prep_free_roi: true,
             })?;
             Ok(JobSummary {
                 summary: format!(
@@ -346,8 +360,13 @@ impl CellAcdcGui {
                 overwrite_policy,
                 cpu,
                 params,
+                preprocess_steps: Vec::new(),
                 tracking,
+                postprocess: None,
                 stop_frame: None,
+                save_outputs: true,
+                use_data_prep_roi: true,
+                use_data_prep_free_roi: true,
             })?;
             Ok(JobSummary {
                 summary: format!("Segmented {} position(s)", results.len()),
@@ -382,6 +401,8 @@ impl CellAcdcGui {
                 segm_endname.as_deref(),
                 &TrackingConfig {
                     ioa_threshold: tracking,
+                    assign_unique_new_ids: true,
+                    overlap_denominator: OverlapDenominator::AreaPrev,
                 },
                 scope,
             )?;

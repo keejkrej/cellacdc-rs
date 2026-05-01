@@ -7,7 +7,6 @@ license = "BSD-3-Clause"
 
 [features]
 default = []
-bioformats-import = ["dep:bioformats-rs"]
 
 [lib]
 name = "cellacdc_rs"
@@ -15,7 +14,6 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0"
-bioformats-rs = { path = "../bioformats-rs", optional = true, package = "bioformats-rs" }
 calamine = "0.26"
 cellpose-rs = { git = "https://github.com/keejkrej/cellpose-rs.git" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

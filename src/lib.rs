@@ -13,8 +13,6 @@ mod measurements;
 mod metadata;
 mod model;
 mod prep;
-#[cfg(feature = "bioformats-import")]
-mod raw_import;
 mod render;
 mod runner;
 mod segm_info;
@@ -76,8 +74,8 @@ pub use mask_io::{
     SegmentationLayout,
 };
 pub use measure::{
-    measure_experiment, measure_position, MeasurementExperimentConfig, MeasurementOutputPaths,
-    MeasurementRunConfig, MeasurementRunResult,
+    measure_experiment, measure_position, MeasurementExperimentConfig, MeasurementMetricOptions,
+    MeasurementOutputPaths, MeasurementRunConfig, MeasurementRunResult,
 };
 pub use model::{CellposeModel, Segmenter};
 pub use prep::{
@@ -90,19 +88,14 @@ pub use prep::{
     BackgroundRoiSet, CropConfig, CropPreview, CropRoiCoordsTable, CropRoiRect, CropSaveConfig,
     CropSaveResult, DataPrepState, FreehandRoiMask, PrepOutputPaths, TimeCropConfig, ZCropConfig,
 };
-#[cfg(feature = "bioformats-import")]
-pub use raw_import::{
-    import_raw_experiment, probe_raw_import_source, ImportedRawPosition, RawImportExperimentConfig,
-    RawImportOutputFormat, RawImportProbe, RawImportSelection, RawImportedExperiment,
-    RawSeriesSummary,
-};
 pub use render::{
     export_frame_image, export_frame_sequence, render_frame, ImageExportFormat, OverlayMarker,
     OverlayRenderStyle, RenderFrameRequest, RenderedFrame, ScaleBarStyle, TimestampStyle,
 };
 pub use runner::{
     resolve_position_run_config, run_experiment, run_position, ExperimentRunConfig,
-    OverwritePolicy, RunOutputPaths, RunResult, SegmentationParams, SegmentationRunConfig,
+    OverwritePolicy, PostprocessConfig, PreprocessStep, RunOutputPaths, RunResult,
+    SegmentationParams, SegmentationRunConfig,
 };
 pub use segm_info::{
     apply_segm_info_edit, load_segm_info, prepare_zstack_segm_info, propagate_segm_info_selection,
@@ -114,7 +107,9 @@ pub use session::{
     ExperimentSession, FrameData, FrameProjection, PositionSession, SegmentationAsset, ViewPlane,
 };
 pub use tabular::{read_table, write_table, Table, TableFormat, TableValue};
-pub use tracking::{manual_track_label, remap_frame_labels, TrackingConfig, TrackingFrameEdit};
+pub use tracking::{
+    manual_track_label, remap_frame_labels, OverlapDenominator, TrackingConfig, TrackingFrameEdit,
+};
 pub use utilities::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
     combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
@@ -127,6 +122,7 @@ pub use utilities::{
     Stack2DSegmTo3DConfig, TrackingColumnMap, UtilityOutputPaths,
 };
 pub use workflow::{
-    parse_workflow_file, run_workflow_file, MeasurementWorkflowConfig, SegmentationWorkflowConfig,
-    WorkflowFile, WorkflowKind, WorkflowRunOptions, WorkflowRunReport, WorkflowTarget,
+    parse_workflow_file, run_workflow_file, MeasurementWorkflowConfig, MeasurementWorkflowTarget,
+    SegmentationWorkflowConfig, WorkflowFile, WorkflowKind, WorkflowRunOptions, WorkflowRunReport,
+    WorkflowTarget,
 };

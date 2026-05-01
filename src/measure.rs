@@ -9,6 +9,8 @@ use crate::layout::{
 use crate::mask_io::{load_mask_data, MaskData, MaskPathResolution, SegmentationLayout};
 use crate::runner::OverwritePolicy;
 use crate::segm_info::{load_segm_info, SegmInfoRecord, SegmInfoTable};
+use crate::tabular::{write_table, Table, TableValue};
+use crate::utilities::objects_count_summary;
 use crate::zstack::{count_mask_volume_labels, project_frame_f32, project_mask_volume_max};
 use anyhow::{bail, Context, Result};
 use csv::Writer;
@@ -24,6 +26,9 @@ pub struct MeasurementRunConfig {
     pub segm_endname: Option<String>,
     pub overwrite_policy: OverwritePolicy,
     pub stop_frame: Option<usize>,
+    pub channel_names: Option<Vec<String>>,
+    pub metric_options: Option<MeasurementMetricOptions>,
+    pub save_object_counts_table: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,12 +37,26 @@ pub struct MeasurementExperimentConfig {
     pub segm_endname: Option<String>,
     pub overwrite_policy: OverwritePolicy,
     pub stop_frame: Option<usize>,
+    pub channel_names: Option<Vec<String>>,
+    pub metric_options: Option<MeasurementMetricOptions>,
+    pub save_object_counts_table: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeasurementMetricOptions {
+    pub channel_metrics: Option<BTreeMap<String, Vec<String>>>,
+    pub channel_metrics_to_skip: BTreeMap<String, Vec<String>>,
+    pub calc_for_each_zslice_channels: BTreeMap<String, bool>,
+    pub calc_size_for_each_zslice: bool,
+    pub size_metrics: Option<Vec<String>>,
+    pub regionprops: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeasurementOutputPaths {
     pub segm_npz_path: PathBuf,
     pub acdc_output_csv_path: PathBuf,
+    pub objects_count_csv_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +73,7 @@ pub(crate) struct LoadedMeasurementPosition {
     pub spec: MeasurementPositionSpec,
     pub outputs: MeasurementOutputPaths,
     pub mask_data: MaskData,
+    pub manual_background_mask_data: Option<MaskData>,
     pub segm_info: Option<SegmInfoTable>,
     pub is_segm_3d: bool,
     pub stop_frame: Option<usize>,
@@ -102,17 +122,19 @@ enum ChannelVariant {
     MaxProj,
     MeanProj,
     ZSlice,
+    ZSliceIndex(usize),
     ThreeD,
 }
 
 impl ChannelVariant {
-    fn column_suffix(self) -> &'static str {
+    fn column_suffix(self) -> String {
         match self {
-            Self::Base => "",
-            Self::MaxProj => "_maxProj",
-            Self::MeanProj => "_meanProj",
-            Self::ZSlice => "_zSlice",
-            Self::ThreeD => "_3D",
+            Self::Base => String::new(),
+            Self::MaxProj => "_maxProj".to_string(),
+            Self::MeanProj => "_meanProj".to_string(),
+            Self::ZSlice => "_zSlice".to_string(),
+            Self::ZSliceIndex(z) => format!("_zSlice{z}"),
+            Self::ThreeD => "_3D".to_string(),
         }
     }
 }
@@ -241,6 +263,16 @@ const CHANNEL_METRIC_SUFFIXES: &[&str] = &[
     "dataPrepBkgr_bkgrVal_q05",
     "CV",
 ];
+const MANUAL_BACKGROUND_METRIC_SUFFIXES: &[&str] = &[
+    "amount_manualBkgr",
+    "mean_manualBkgr",
+    "manualBkgr_bkgrVal_median",
+    "manualBkgr_bkgrVal_mean",
+    "manualBkgr_bkgrVal_q75",
+    "manualBkgr_bkgrVal_q25",
+    "manualBkgr_bkgrVal_q95",
+    "manualBkgr_bkgrVal_q05",
+];
 
 const REGIONPROP_HEADERS: &[&str] = &[
     "inertia_tensor_eigvals-0",
@@ -270,6 +302,44 @@ const REGIONPROP_HEADERS: &[&str] = &[
     "bbox-3",
 ];
 
+const CORE_MEASUREMENT_HEADERS: &[&str] = &[
+    "frame_i",
+    "time_seconds",
+    "time_minutes",
+    "time_hours",
+    "z_slice_used",
+    "which_z_proj",
+    "Cell_ID",
+    "cell_cycle_stage",
+    "generation_num",
+    "relative_ID",
+    "relationship",
+    "emerg_frame_i",
+    "division_frame_i",
+    "is_history_known",
+    "corrected_on_frame_i",
+    "will_divide",
+    "daughter_disappears_before_division",
+    "disappears_before_division",
+    "is_cell_dead",
+    "is_cell_excluded",
+    "was_manually_edited",
+    "x_centroid",
+    "y_centroid",
+    "disappears_before_end",
+];
+
+const SIZE_METRIC_HEADERS: &[&str] = &[
+    "cell_area_pxl",
+    "cell_area_um2",
+    "cell_vol_vox",
+    "cell_vol_fl",
+    "cell_vol_vox_3D",
+    "cell_vol_fl_3D",
+    "velocity_pixel",
+    "velocity_um",
+];
+
 const DEFAULT_CELL_CYCLE_STAGE: &str = "G1";
 const DEFAULT_RELATIONSHIP: &str = "mother";
 const DEFAULT_GENERATION_NUM: i32 = 2;
@@ -278,7 +348,12 @@ const DEFAULT_RELATIVE_ID: i32 = -1;
 
 pub fn measure_position(config: MeasurementRunConfig) -> Result<MeasurementRunResult> {
     let spec = resolve_measurement_position(&config.position_path)?;
-    let loaded = load_measurement_inputs(spec, config.segm_endname.as_deref(), config.stop_frame)?;
+    let loaded = load_measurement_inputs(
+        spec,
+        config.segm_endname.as_deref(),
+        config.stop_frame,
+        config.channel_names.as_deref(),
+    )?;
     if config.overwrite_policy == OverwritePolicy::Refuse
         && loaded.outputs.acdc_output_csv_path.exists()
     {
@@ -287,7 +362,16 @@ pub fn measure_position(config: MeasurementRunConfig) -> Result<MeasurementRunRe
             loaded.outputs.acdc_output_csv_path.display()
         );
     }
-    write_measurements(&loaded)
+    guard_object_counts_output(
+        &loaded,
+        config.overwrite_policy,
+        config.save_object_counts_table,
+    )?;
+    write_measurements(
+        &loaded,
+        config.metric_options.as_ref(),
+        config.save_object_counts_table,
+    )
 }
 
 pub fn measure_experiment(
@@ -303,8 +387,12 @@ pub(crate) fn measure_experiment_from_spec(
 ) -> Result<Vec<MeasurementRunResult>> {
     let mut results = Vec::with_capacity(experiment.positions.len());
     for position in experiment.positions {
-        let loaded =
-            load_measurement_inputs(position, config.segm_endname.as_deref(), config.stop_frame)?;
+        let loaded = load_measurement_inputs(
+            position,
+            config.segm_endname.as_deref(),
+            config.stop_frame,
+            config.channel_names.as_deref(),
+        )?;
         if config.overwrite_policy == OverwritePolicy::Refuse
             && loaded.outputs.acdc_output_csv_path.exists()
         {
@@ -313,16 +401,27 @@ pub(crate) fn measure_experiment_from_spec(
                 loaded.outputs.acdc_output_csv_path.display()
             );
         }
-        results.push(write_measurements(&loaded)?);
+        guard_object_counts_output(
+            &loaded,
+            config.overwrite_policy,
+            config.save_object_counts_table,
+        )?;
+        results.push(write_measurements(
+            &loaded,
+            config.metric_options.as_ref(),
+            config.save_object_counts_table,
+        )?);
     }
     Ok(results)
 }
 
 pub(crate) fn load_measurement_inputs(
-    spec: MeasurementPositionSpec,
+    mut spec: MeasurementPositionSpec,
     segm_endname: Option<&str>,
     stop_frame: Option<usize>,
+    channel_names: Option<&[String]>,
 ) -> Result<LoadedMeasurementPosition> {
+    apply_measurement_channel_filter(&mut spec, channel_names)?;
     let outputs = measurement_output_paths(&spec.images_dir, &spec.basename, segm_endname);
     let segm_name = measurement_segmentation_name(segm_endname);
     let is_segm_3d = spec.segm_is_3d.get(&segm_name).copied().unwrap_or(false);
@@ -338,6 +437,17 @@ pub(crate) fn load_measurement_inputs(
                 outputs.segm_npz_path.display()
             )
         })?;
+    let manual_background_mask_data = manual_background_mask_path(&outputs.segm_npz_path)
+        .filter(|path| path.exists())
+        .map(|path| {
+            load_mask_data(&path, Some(&mask_resolution)).with_context(|| {
+                format!(
+                    "Failed to load manual background masks from {}",
+                    path.display()
+                )
+            })
+        })
+        .transpose()?;
 
     let mask_size_t = match mask_data.layout {
         SegmentationLayout::YX | SegmentationLayout::ZYX => 1,
@@ -367,14 +477,74 @@ pub(crate) fn load_measurement_inputs(
         spec,
         outputs,
         mask_data,
+        manual_background_mask_data,
         segm_info,
         is_segm_3d,
         stop_frame,
     })
 }
 
+fn apply_measurement_channel_filter(
+    spec: &mut MeasurementPositionSpec,
+    channel_names: Option<&[String]>,
+) -> Result<()> {
+    let Some(channel_names) = channel_names else {
+        return Ok(());
+    };
+    let requested = channel_names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        spec.channels.clear();
+        return Ok(());
+    }
+    let requested_set = requested.iter().collect::<BTreeSet<_>>();
+    let available = spec
+        .channels
+        .iter()
+        .map(|channel| channel.name.clone())
+        .collect::<BTreeSet<_>>();
+    let missing = requested
+        .iter()
+        .filter(|name| !available.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "Measurement workflow requested missing channel(s) {} in {}",
+            missing.join(", "),
+            spec.position_dir.display()
+        );
+    }
+    spec.channels
+        .retain(|channel| requested_set.contains(&channel.name));
+    Ok(())
+}
+
+fn guard_object_counts_output(
+    loaded: &LoadedMeasurementPosition,
+    overwrite_policy: OverwritePolicy,
+    save_object_counts_table: bool,
+) -> Result<()> {
+    if !save_object_counts_table || overwrite_policy == OverwritePolicy::Overwrite {
+        return Ok(());
+    }
+    if loaded.outputs.objects_count_csv_path.exists() {
+        bail!(
+            "Refusing to overwrite existing output {}. Re-run with --overwrite to replace it.",
+            loaded.outputs.objects_count_csv_path.display()
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn write_measurements(
     loaded: &LoadedMeasurementPosition,
+    metric_options: Option<&MeasurementMetricOptions>,
+    save_object_counts_table: bool,
 ) -> Result<MeasurementRunResult> {
     let mut mask_context = measurement_mask_context(&loaded.mask_data);
     let frame_limit = resolve_measurement_stop_frame(loaded.spec.size_t, loaded.stop_frame)?;
@@ -385,13 +555,36 @@ pub(crate) fn write_measurements(
     if let Some(volumes) = &mut mask_context.volume_frames {
         volumes.truncate(frame_limit);
     }
+    let mut manual_background_context = loaded
+        .manual_background_mask_data
+        .as_ref()
+        .map(measurement_mask_context);
+    if let Some(context) = &mut manual_background_context {
+        context.projected_frames.truncate(frame_limit);
+        if let Some(volumes) = &mut context.volume_frames {
+            volumes.truncate(frame_limit);
+        }
+    }
     let channels = load_channels(
         &loaded.spec,
         mask_context.frame_height,
         mask_context.frame_width,
         loaded.is_segm_3d,
     )?;
-    let variants = measurement_channel_variants(loaded.spec.size_z, loaded.is_segm_3d);
+    let variants_by_channel = channels
+        .iter()
+        .map(|channel| {
+            (
+                channel.spec.name.clone(),
+                measurement_channel_variants(
+                    loaded.spec.size_z,
+                    loaded.is_segm_3d,
+                    &channel.spec.name,
+                    metric_options,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let roi_mask = load_data_prep_roi_mask(
         loaded.spec.data_prep_background_rois_path.as_deref(),
         mask_context.frame_height,
@@ -417,6 +610,15 @@ pub(crate) fn write_measurements(
             .as_ref()
             .and_then(|frames| frames.get(frame_i))
             .map(Vec::as_slice);
+        let manual_background_frame = manual_background_context
+            .as_ref()
+            .and_then(|context| context.projected_frames.get(frame_i))
+            .map(Vec::as_slice);
+        let manual_background_volume = manual_background_context
+            .as_ref()
+            .and_then(|context| context.volume_frames.as_ref())
+            .and_then(|frames| frames.get(frame_i))
+            .map(Vec::as_slice);
         let mut channel_contexts = HashMap::<String, ChannelFrameContext>::new();
         for channel in &channels {
             let segm_info = segm_info_for_channel_from_table(
@@ -424,11 +626,14 @@ pub(crate) fn write_measurements(
                 &channel.spec,
                 frame_i,
             )?;
+            let variants = variants_by_channel
+                .get(&channel.spec.name)
+                .expect("missing channel variants");
             let context = build_channel_frame_context(
                 channel,
                 frame_i,
                 segm_info,
-                &variants,
+                variants,
                 mask_frame,
                 mask_volume,
                 roi_mask.as_deref(),
@@ -462,6 +667,16 @@ pub(crate) fn write_measurements(
                 .unwrap_or((f64::NAN, f64::NAN));
             let mut dynamic_values = BTreeMap::new();
             insert_regionprop_values(&mut dynamic_values, &region_measurements);
+            insert_zslice_size_values(
+                &mut dynamic_values,
+                metric_options,
+                mask_volume,
+                loaded.spec.size_z,
+                mask_context.frame_height,
+                mask_context.frame_width,
+                region.label,
+                loaded.spec.physical_size_x * loaded.spec.physical_size_y,
+            );
             let segm_info_record = loaded
                 .segm_info
                 .as_ref()
@@ -472,7 +687,10 @@ pub(crate) fn write_measurements(
                 let channel_context = channel_contexts
                     .get(&channel.spec.name)
                     .expect("missing channel frame context");
-                for variant in &variants {
+                let variants = variants_by_channel
+                    .get(&channel.spec.name)
+                    .expect("missing channel variants");
+                for variant in variants {
                     let object_values = match variant {
                         ChannelVariant::ThreeD => channel_context
                             .volume_foreground
@@ -504,6 +722,23 @@ pub(crate) fn write_measurements(
                         .data_prep_backgrounds
                         .get(variant)
                         .map(Vec::as_slice);
+                    let manual_background = match variant {
+                        ChannelVariant::ThreeD => channel_context
+                            .volume_foreground
+                            .as_ref()
+                            .and_then(|volume| {
+                                manual_background_volume.map(|mask| {
+                                    collect_object_volume_values(volume, mask, region.label)
+                                })
+                            }),
+                        _ => channel_context
+                            .projected_foregrounds
+                            .get(variant)
+                            .and_then(|frame| {
+                                manual_background_frame
+                                    .map(|mask| collect_labeled_values(frame, mask, region.label))
+                            }),
+                    };
                     let (variant_cell_vol_vox, variant_cell_vol_fl) =
                         if *variant == ChannelVariant::ThreeD {
                             (cell_vol_vox_3d, cell_vol_fl_3d)
@@ -522,6 +757,7 @@ pub(crate) fn write_measurements(
                         &object_values,
                         auto_background,
                         data_prep_background,
+                        manual_background.as_deref(),
                         variant_area,
                         variant_cell_vol_vox,
                         variant_cell_vol_fl,
@@ -596,8 +832,17 @@ pub(crate) fn write_measurements(
         &mut rows,
     );
 
-    let headers = build_headers(&loaded.spec.channels, &variants);
+    let headers = build_headers(
+        &loaded.spec.channels,
+        &variants_by_channel,
+        loaded.spec.size_z,
+        metric_options,
+        loaded.manual_background_mask_data.is_some(),
+    );
     write_measurement_csv(&loaded.outputs.acdc_output_csv_path, &headers, &rows)?;
+    if save_object_counts_table {
+        write_object_counts_csv(&loaded.outputs.objects_count_csv_path, &loaded.mask_data)?;
+    }
 
     Ok(MeasurementRunResult {
         position_dir: loaded.spec.position_dir.clone(),
@@ -625,21 +870,35 @@ fn measurement_output_paths(
     basename: &str,
     segm_endname: Option<&str>,
 ) -> MeasurementOutputPaths {
-    let suffix = match segm_endname {
-        Some(value) if !value.trim().is_empty() => format!("_{value}"),
-        _ => String::new(),
-    };
+    let segm_name = measurement_segmentation_name(segm_endname);
+    let acdc_output_name = segm_name.replacen("segm", "acdc_output", 1);
+    let objects_count_name = segm_name.replacen("segm", "acdc_objects_count", 1);
     MeasurementOutputPaths {
-        segm_npz_path: images_dir.join(format!("{basename}segm{suffix}.npz")),
-        acdc_output_csv_path: images_dir.join(format!("{basename}acdc_output{suffix}.csv")),
+        segm_npz_path: images_dir.join(format!("{basename}{segm_name}.npz")),
+        acdc_output_csv_path: images_dir.join(format!("{basename}{acdc_output_name}.csv")),
+        objects_count_csv_path: images_dir.join(format!("{basename}{objects_count_name}.csv")),
     }
 }
 
 fn measurement_segmentation_name(endname: Option<&str>) -> String {
     match endname {
-        Some(value) if !value.trim().is_empty() => format!("segm_{value}"),
+        Some(value) if value.trim().trim_end_matches(".npz").starts_with("segm") => {
+            value.trim().trim_end_matches(".npz").to_string()
+        }
+        Some(value) if !value.trim().is_empty() => {
+            format!("segm_{}", value.trim().trim_end_matches(".npz"))
+        }
         _ => "segm".to_string(),
     }
+}
+
+fn manual_background_mask_path(segm_npz_path: &Path) -> Option<PathBuf> {
+    let file_name = segm_npz_path.file_name()?.to_str()?;
+    let manual_name = file_name.replacen("segm", "manualBackground", 1);
+    if manual_name == file_name {
+        return None;
+    }
+    Some(segm_npz_path.with_file_name(manual_name))
 }
 
 fn measurement_mask_context(mask_data: &MaskData) -> MeasurementMaskContext {
@@ -748,7 +1007,12 @@ fn segm_info_for_channel_from_table<'a>(
     }
 }
 
-fn measurement_channel_variants(size_z: usize, is_segm_3d: bool) -> Vec<ChannelVariant> {
+fn measurement_channel_variants(
+    size_z: usize,
+    is_segm_3d: bool,
+    channel_name: &str,
+    metric_options: Option<&MeasurementMetricOptions>,
+) -> Vec<ChannelVariant> {
     if size_z <= 1 {
         return vec![ChannelVariant::Base];
     }
@@ -758,6 +1022,17 @@ fn measurement_channel_variants(size_z: usize, is_segm_3d: bool) -> Vec<ChannelV
         ChannelVariant::MeanProj,
         ChannelVariant::ZSlice,
     ];
+    if metric_options
+        .and_then(|options| {
+            options
+                .calc_for_each_zslice_channels
+                .get(&normalize_metric_key(channel_name))
+        })
+        .copied()
+        .unwrap_or(false)
+    {
+        variants.extend((0..size_z).map(ChannelVariant::ZSliceIndex));
+    }
     if is_segm_3d {
         variants.push(ChannelVariant::ThreeD);
     }
@@ -816,6 +1091,13 @@ fn project_volume_frame_variant(
             VolumeShape { size_t: 1, ..shape },
             0,
             z_slice,
+            crate::segm_info::ZProjectionMode::SingleZSlice,
+        ),
+        ChannelVariant::ZSliceIndex(index) => project_frame_f32(
+            frame,
+            VolumeShape { size_t: 1, ..shape },
+            0,
+            index,
             crate::segm_info::ZProjectionMode::SingleZSlice,
         ),
         ChannelVariant::Base | ChannelVariant::ThreeD => {
@@ -1080,6 +1362,14 @@ fn collect_object_volume_values(volume_frame: &[f32], mask_volume: &[u32], label
         .collect()
 }
 
+fn collect_labeled_values(values: &[f32], labels: &[u32], label: u32) -> Vec<f32> {
+    values
+        .iter()
+        .zip(labels.iter())
+        .filter_map(|(value, current_label)| (*current_label == label).then_some(*value))
+        .collect()
+}
+
 fn collect_masked_values(values: &[f32], mask: &[bool]) -> Vec<f32> {
     values
         .iter()
@@ -1159,6 +1449,7 @@ fn insert_channel_measurements(
     object_values: &[f32],
     auto_background: &[f32],
     data_prep_background: Option<&[f32]>,
+    manual_background: Option<&[f32]>,
     area: usize,
     cell_vol_vox: f64,
     cell_vol_fl: f64,
@@ -1315,6 +1606,60 @@ fn insert_channel_measurements(
         ),
         data_amount / cell_vol_fl,
     );
+
+    if let Some(manual_values) = manual_background {
+        let manual_median = quantile_f32(manual_values, 0.5);
+        let manual_mean = mean_f32(manual_values);
+        let manual_q75 = quantile_f32(manual_values, 0.75);
+        let manual_q25 = quantile_f32(manual_values, 0.25);
+        let manual_q95 = quantile_f32(manual_values, 0.95);
+        let manual_q05 = quantile_f32(manual_values, 0.05);
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "manualBkgr_bkgrVal_median", variant),
+            manual_median,
+        );
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "manualBkgr_bkgrVal_mean", variant),
+            manual_mean,
+        );
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "manualBkgr_bkgrVal_q75", variant),
+            manual_q75,
+        );
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "manualBkgr_bkgrVal_q25", variant),
+            manual_q25,
+        );
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "manualBkgr_bkgrVal_q95", variant),
+            manual_q95,
+        );
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "manualBkgr_bkgrVal_q05", variant),
+            manual_q05,
+        );
+        let manual_amount = if manual_mean.is_nan() || mean.is_nan() {
+            f64::NAN
+        } else {
+            (mean - manual_mean) * area as f64
+        };
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "amount_manualBkgr", variant),
+            manual_amount,
+        );
+        insert_value(
+            out,
+            &metric_column_name(channel_name, "mean_manualBkgr", variant),
+            mean - manual_mean,
+        );
+    }
 }
 
 fn insert_regionprop_values(out: &mut BTreeMap<String, f64>, region: &RegionMeasurements) {
@@ -1343,6 +1688,39 @@ fn insert_regionprop_values(out: &mut BTreeMap<String, f64>, region: &RegionMeas
     insert_value(out, "bbox-1", region.bbox_min_x);
     insert_value(out, "bbox-2", region.bbox_max_y);
     insert_value(out, "bbox-3", region.bbox_max_x);
+}
+
+fn insert_zslice_size_values(
+    out: &mut BTreeMap<String, f64>,
+    metric_options: Option<&MeasurementMetricOptions>,
+    mask_volume: Option<&[u32]>,
+    size_z: usize,
+    height: usize,
+    width: usize,
+    label: u32,
+    pixel_area_um2: f64,
+) {
+    if !metric_options
+        .map(|options| options.calc_size_for_each_zslice)
+        .unwrap_or(false)
+        || size_z <= 1
+    {
+        return;
+    }
+
+    let plane_len = height * width;
+    for z in 0..size_z {
+        let area_pxl = mask_volume
+            .and_then(|volume| volume.get(z * plane_len..(z + 1) * plane_len))
+            .map(|plane| plane.iter().filter(|value| **value == label).count() as f64)
+            .unwrap_or(f64::NAN);
+        insert_value(out, &format!("cell_area_pxl_zslice{z}"), area_pxl);
+        insert_value(
+            out,
+            &format!("cell_area_um2_zslice{z}"),
+            area_pxl * pixel_area_um2,
+        );
+    }
 }
 
 fn insert_value(out: &mut BTreeMap<String, f64>, key: &str, value: f64) {
@@ -1789,51 +2167,154 @@ fn unique_labels(frame: &[u32]) -> BTreeSet<u32> {
     frame.iter().copied().filter(|label| *label != 0).collect()
 }
 
-fn build_headers(channels: &[ChannelSpec], variants: &[ChannelVariant]) -> Vec<String> {
-    let mut headers = vec![
-        "frame_i".to_string(),
-        "time_seconds".to_string(),
-        "time_minutes".to_string(),
-        "time_hours".to_string(),
-        "z_slice_used".to_string(),
-        "which_z_proj".to_string(),
-        "Cell_ID".to_string(),
-        "cell_cycle_stage".to_string(),
-        "generation_num".to_string(),
-        "relative_ID".to_string(),
-        "relationship".to_string(),
-        "emerg_frame_i".to_string(),
-        "division_frame_i".to_string(),
-        "is_history_known".to_string(),
-        "corrected_on_frame_i".to_string(),
-        "will_divide".to_string(),
-        "daughter_disappears_before_division".to_string(),
-        "disappears_before_division".to_string(),
-        "is_cell_dead".to_string(),
-        "is_cell_excluded".to_string(),
-        "was_manually_edited".to_string(),
-        "x_centroid".to_string(),
-        "y_centroid".to_string(),
-        "cell_area_pxl".to_string(),
-        "cell_area_um2".to_string(),
-        "cell_vol_vox".to_string(),
-        "cell_vol_fl".to_string(),
-        "cell_vol_vox_3D".to_string(),
-        "cell_vol_fl_3D".to_string(),
-        "velocity_pixel".to_string(),
-        "velocity_um".to_string(),
-        "disappears_before_end".to_string(),
-    ];
+fn build_headers(
+    channels: &[ChannelSpec],
+    variants_by_channel: &BTreeMap<String, Vec<ChannelVariant>>,
+    size_z: usize,
+    metric_options: Option<&MeasurementMetricOptions>,
+    has_manual_background: bool,
+) -> Vec<String> {
+    let mut headers = CORE_MEASUREMENT_HEADERS
+        .iter()
+        .map(|header| header.to_string())
+        .collect::<Vec<_>>();
+
+    headers.extend(
+        SIZE_METRIC_HEADERS
+            .iter()
+            .filter(|header| {
+                metric_name_allowed(
+                    metric_options.and_then(|opts| opts.size_metrics.as_ref()),
+                    header,
+                )
+            })
+            .map(|header| header.to_string()),
+    );
+    if include_zslice_size_headers(metric_options, size_z) {
+        for z in 0..size_z {
+            headers.push(format!("cell_area_pxl_zslice{z}"));
+            headers.push(format!("cell_area_um2_zslice{z}"));
+        }
+    }
 
     for channel in channels {
+        let variants = variants_by_channel
+            .get(&channel.name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         for variant in variants {
             for suffix in CHANNEL_METRIC_SUFFIXES {
-                headers.push(metric_column_name(&channel.name, suffix, *variant));
+                if channel_metric_allowed(metric_options, &channel.name, suffix, *variant) {
+                    headers.push(metric_column_name(&channel.name, suffix, *variant));
+                }
+            }
+            if has_manual_background {
+                for suffix in MANUAL_BACKGROUND_METRIC_SUFFIXES {
+                    if channel_metric_allowed(metric_options, &channel.name, suffix, *variant) {
+                        headers.push(metric_column_name(&channel.name, suffix, *variant));
+                    }
+                }
             }
         }
     }
-    headers.extend(REGIONPROP_HEADERS.iter().map(|header| header.to_string()));
+    headers.extend(
+        REGIONPROP_HEADERS
+            .iter()
+            .filter(|header| {
+                regionprop_name_allowed(
+                    metric_options.and_then(|opts| opts.regionprops.as_ref()),
+                    header,
+                )
+            })
+            .map(|header| header.to_string()),
+    );
     headers
+}
+
+fn include_zslice_size_headers(
+    metric_options: Option<&MeasurementMetricOptions>,
+    size_z: usize,
+) -> bool {
+    let Some(metric_options) = metric_options else {
+        return false;
+    };
+    if !metric_options.calc_size_for_each_zslice || size_z <= 1 {
+        return false;
+    }
+    metric_options
+        .size_metrics
+        .as_ref()
+        .map(|metrics| !metrics.is_empty())
+        .unwrap_or(true)
+}
+
+fn metric_name_allowed(selected: Option<&Vec<String>>, header: &str) -> bool {
+    let Some(selected) = selected else {
+        return true;
+    };
+    selected
+        .iter()
+        .any(|metric| metric.trim().eq_ignore_ascii_case(header))
+}
+
+fn regionprop_name_allowed(selected: Option<&Vec<String>>, header: &str) -> bool {
+    let Some(selected) = selected else {
+        return true;
+    };
+    let header_lower = header.to_ascii_lowercase();
+    selected.iter().any(|metric| {
+        let metric_lower = metric.trim().to_ascii_lowercase();
+        metric_lower == header_lower
+            || header_lower
+                .strip_prefix(&metric_lower)
+                .is_some_and(|suffix| suffix.starts_with('-'))
+    })
+}
+
+fn channel_metric_allowed(
+    metric_options: Option<&MeasurementMetricOptions>,
+    channel_name: &str,
+    suffix: &str,
+    variant: ChannelVariant,
+) -> bool {
+    let Some(metric_options) = metric_options else {
+        return true;
+    };
+    let channel_key = normalize_metric_key(channel_name);
+    if metric_options
+        .channel_metrics_to_skip
+        .get(&channel_key)
+        .is_some_and(|metrics| channel_metric_list_matches(metrics, channel_name, suffix, variant))
+    {
+        return false;
+    }
+    let Some(channel_metrics) = &metric_options.channel_metrics else {
+        return true;
+    };
+    channel_metrics
+        .get(&channel_key)
+        .is_some_and(|metrics| channel_metric_list_matches(metrics, channel_name, suffix, variant))
+}
+
+fn channel_metric_list_matches(
+    metrics: &[String],
+    channel_name: &str,
+    suffix: &str,
+    variant: ChannelVariant,
+) -> bool {
+    let header = metric_column_name(channel_name, suffix, variant);
+    let variant_suffix = variant.column_suffix();
+    let suffix_with_variant = format!("{suffix}{variant_suffix}");
+    metrics.iter().any(|metric| {
+        let metric = metric.trim();
+        metric.eq_ignore_ascii_case(suffix)
+            || metric.eq_ignore_ascii_case(&suffix_with_variant)
+            || metric.eq_ignore_ascii_case(&header)
+    })
+}
+
+pub(crate) fn normalize_metric_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 fn write_measurement_csv(path: &Path, headers: &[String], rows: &[MeasurementRow]) -> Result<()> {
@@ -1899,6 +2380,18 @@ fn write_measurement_csv(path: &Path, headers: &[String], rows: &[MeasurementRow
 
     writer.flush()?;
     Ok(())
+}
+
+fn write_object_counts_csv(path: &Path, masks: &MaskData) -> Result<()> {
+    let counts = objects_count_summary(masks);
+    let mut table = Table::new(counts.keys().cloned().collect());
+    table.push_row(
+        counts
+            .values()
+            .map(|value| TableValue::Number(*value as f64))
+            .collect(),
+    )?;
+    write_table(path, &table)
 }
 
 fn format_f64(value: f64) -> String {
@@ -2016,6 +2509,9 @@ mod tests {
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
             stop_frame: None,
+            channel_names: None,
+            metric_options: None,
+            save_object_counts_table: false,
         })?;
         let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
         let headers = reader
@@ -2069,6 +2565,335 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_python_segmentation_end_filename() -> Result<()> {
+        let images = Path::new("/tmp/images");
+        let from_full_name = measurement_output_paths(images, "demo_", Some("segm_rust.npz"));
+        assert_eq!(
+            from_full_name.segm_npz_path,
+            images.join("demo_segm_rust.npz")
+        );
+        assert_eq!(
+            from_full_name.acdc_output_csv_path,
+            images.join("demo_acdc_output_rust.csv")
+        );
+        assert_eq!(
+            from_full_name.objects_count_csv_path,
+            images.join("demo_acdc_objects_count_rust.csv")
+        );
+
+        let from_suffix = measurement_output_paths(images, "demo_", Some("rust"));
+        assert_eq!(from_suffix, from_full_name);
+        Ok(())
+    }
+
+    #[test]
+    fn measures_only_selected_channels_when_configured() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10])?;
+        write_test_stack(&images.join("demo_gfp.tif"), &[30])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: Some(vec!["phase".to_string()]),
+            metric_options: None,
+            save_object_counts_table: false,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(headers.iter().any(|header| header == "phase_mean"));
+        assert!(!headers.iter().any(|header| header == "gfp_mean"));
+        Ok(())
+    }
+
+    #[test]
+    fn saves_object_counts_table_when_configured() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10, 20])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 2, 2, //
+                0, 0, 2, 2, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            2,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: None,
+            metric_options: None,
+            save_object_counts_table: true,
+        })?;
+        let table = read_table(&result.outputs.objects_count_csv_path)?;
+        assert!(result.outputs.objects_count_csv_path.exists());
+        assert_eq!(
+            table
+                .headers
+                .iter()
+                .position(|header| header == "In entire video")
+                .and_then(|idx| table.rows[0][idx].as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            table
+                .headers
+                .iter()
+                .position(|header| header == "Unique objects in entire video")
+                .and_then(|idx| table.rows[0][idx].as_i64()),
+            Some(2)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn writes_manual_background_metrics_when_mask_exists() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack_pixels(
+            &images.join("demo_phase.tif"),
+            &[
+                10, 14, 0, 0, //
+                0, 0, 0, 0, //
+                2, 4, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+        )?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+        write_mask_npz(
+            &images.join("demo_manualBackground.npz"),
+            &[
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: Some(vec!["phase".to_string()]),
+            metric_options: None,
+            save_object_counts_table: false,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let row = reader.records().next().transpose()?.expect("row");
+        assert_eq!(
+            csv_f64(&headers, &row, "phase_manualBkgr_bkgrVal_mean")?,
+            3.0
+        );
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_manualBkgr")?, 9.0);
+        assert_eq!(csv_f64(&headers, &row, "phase_amount_manualBkgr")?, 18.0);
+        Ok(())
+    }
+
+    #[test]
+    fn filters_manual_background_metrics_when_configured() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack_pixels(
+            &images.join("demo_phase.tif"),
+            &[
+                10, 14, 0, 0, //
+                0, 0, 0, 0, //
+                2, 4, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+        )?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+        write_mask_npz(
+            &images.join("demo_manualBackground.npz"),
+            &[
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: Some(vec!["phase".to_string()]),
+            metric_options: Some(MeasurementMetricOptions {
+                channel_metrics: Some(BTreeMap::from([(
+                    "phase".to_string(),
+                    vec!["mean_manualBkgr".to_string()],
+                )])),
+                channel_metrics_to_skip: BTreeMap::new(),
+                calc_for_each_zslice_channels: BTreeMap::new(),
+                calc_size_for_each_zslice: false,
+                size_metrics: Some(Vec::new()),
+                regionprops: Some(Vec::new()),
+            }),
+            save_object_counts_table: false,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(headers
+            .iter()
+            .any(|header| header == "phase_mean_manualBkgr"));
+        assert!(!headers.iter().any(|header| header == "phase_mean"));
+        assert!(!headers
+            .iter()
+            .any(|header| header == "phase_manualBkgr_bkgrVal_mean"));
+        Ok(())
+    }
+
+    #[test]
+    fn writes_only_selected_measurement_metrics_when_configured() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10])?;
+        write_test_stack(&images.join("demo_gfp.tif"), &[30])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: None,
+            metric_options: Some(MeasurementMetricOptions {
+                channel_metrics: Some(BTreeMap::from([(
+                    "phase".to_string(),
+                    vec!["mean".to_string()],
+                )])),
+                channel_metrics_to_skip: BTreeMap::new(),
+                calc_for_each_zslice_channels: BTreeMap::new(),
+                calc_size_for_each_zslice: false,
+                size_metrics: Some(vec!["cell_area_pxl".to_string()]),
+                regionprops: Some(vec!["centroid".to_string()]),
+            }),
+            save_object_counts_table: false,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(headers.iter().any(|header| header == "phase_mean"));
+        assert!(!headers.iter().any(|header| header == "phase_sum"));
+        assert!(!headers.iter().any(|header| header == "gfp_mean"));
+        assert!(headers.iter().any(|header| header == "cell_area_pxl"));
+        assert!(!headers.iter().any(|header| header == "cell_vol_vox"));
+        assert!(headers.iter().any(|header| header == "centroid-0"));
+        assert!(headers.iter().any(|header| header == "centroid-1"));
+        assert!(!headers.iter().any(|header| header == "area"));
+        Ok(())
+    }
+
+    #[test]
     fn measured_output_can_flow_into_lineage_tree_utility() -> Result<()> {
         let temp = tempdir()?;
         let images = temp.path().join("Position_1").join("Images");
@@ -2096,6 +2921,9 @@ mod tests {
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
             stop_frame: None,
+            channel_names: None,
+            metric_options: None,
+            save_object_counts_table: false,
         })?;
         let lineage_output = images.join("demo_acdc_output_lineage.csv");
         add_lineage_tree(LineageTreeConfig {
@@ -2207,6 +3035,9 @@ mod tests {
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
             stop_frame: None,
+            channel_names: None,
+            metric_options: None,
+            save_object_counts_table: false,
         })?;
         let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
         let headers = reader
@@ -2245,6 +3076,80 @@ mod tests {
     }
 
     #[test]
+    fn emits_each_zslice_columns_when_configured() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_volume_npz(
+            &images.join("demo_phase_aligned.npz"),
+            &[1.0, 5.0, 0.0, 10.0, 3.0, 7.0, 2.0, 12.0],
+            1,
+            2,
+            2,
+            2,
+        )?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,2\nPhysicalSizeX,1\nPhysicalSizeY,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, //
+                0, 0, //
+            ],
+            1,
+            2,
+            2,
+        )?;
+        write_test_segm_info(
+            &images.join("demo_segmInfo.csv"),
+            "demo_phase_aligned.npz",
+            0,
+            0,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: None,
+            metric_options: Some(MeasurementMetricOptions {
+                channel_metrics: Some(BTreeMap::from([(
+                    "phase".to_string(),
+                    vec!["mean".to_string()],
+                )])),
+                channel_metrics_to_skip: BTreeMap::new(),
+                calc_for_each_zslice_channels: BTreeMap::from([("phase".to_string(), true)]),
+                calc_size_for_each_zslice: false,
+                size_metrics: None,
+                regionprops: None,
+            }),
+            save_object_counts_table: false,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(headers.iter().any(|header| header == "phase_mean_zSlice"));
+        assert!(headers.iter().any(|header| header == "phase_mean_zSlice0"));
+        assert!(headers.iter().any(|header| header == "phase_mean_zSlice1"));
+
+        let row = reader
+            .records()
+            .next()
+            .transpose()?
+            .expect("first output row");
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_zSlice")?, 3.0);
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_zSlice0")?, 3.0);
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_zSlice1")?, 5.0);
+        Ok(())
+    }
+
+    #[test]
     fn emits_zstack_3d_variant_columns_for_3d_segmentation() -> Result<()> {
         let temp = tempdir()?;
         let images = temp.path().join("Position_1").join("Images");
@@ -2275,6 +3180,9 @@ mod tests {
             segm_endname: None,
             overwrite_policy: OverwritePolicy::Overwrite,
             stop_frame: None,
+            channel_names: None,
+            metric_options: None,
+            save_object_counts_table: false,
         })?;
         let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
         let headers = reader
@@ -2313,6 +3221,81 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn emits_zslice_size_columns_when_configured() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_volume_npz(
+            &images.join("demo_phase_aligned.npz"),
+            &[1.0, 5.0, 0.0, 10.0, 3.0, 7.0, 2.0, 12.0],
+            1,
+            2,
+            2,
+            2,
+        )?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,2\nsegm_isSegm3D,True\nPhysicalSizeZ,1\nPhysicalSizeX,2\nPhysicalSizeY,3\n",
+        )?;
+        write_test_mask_volume_npz(
+            &images.join("demo_segm.npz"),
+            &[1, 1, 0, 0, 1, 0, 0, 0],
+            1,
+            2,
+            2,
+            2,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: None,
+            metric_options: Some(MeasurementMetricOptions {
+                channel_metrics: None,
+                channel_metrics_to_skip: BTreeMap::new(),
+                calc_for_each_zslice_channels: BTreeMap::new(),
+                calc_size_for_each_zslice: true,
+                size_metrics: Some(vec!["cell_area_pxl".to_string()]),
+                regionprops: None,
+            }),
+            save_object_counts_table: false,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(headers.iter().any(|header| header == "cell_area_pxl"));
+        assert!(!headers.iter().any(|header| header == "cell_area_um2"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "cell_area_pxl_zslice0"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "cell_area_um2_zslice0"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "cell_area_pxl_zslice1"));
+        assert!(headers
+            .iter()
+            .any(|header| header == "cell_area_um2_zslice1"));
+
+        let row = reader
+            .records()
+            .next()
+            .transpose()?
+            .expect("first output row");
+        assert_eq!(csv_f64(&headers, &row, "cell_area_pxl_zslice0")?, 2.0);
+        assert_eq!(csv_f64(&headers, &row, "cell_area_um2_zslice0")?, 12.0);
+        assert_eq!(csv_f64(&headers, &row, "cell_area_pxl_zslice1")?, 1.0);
+        assert_eq!(csv_f64(&headers, &row, "cell_area_um2_zslice1")?, 6.0);
+        Ok(())
+    }
+
     fn write_test_stack(path: &Path, frame_values: &[u16]) -> Result<()> {
         let file = File::create(path)?;
         let mut encoder = TiffEncoder::new(file)?;
@@ -2320,6 +3303,13 @@ mod tests {
             let data = vec![*value; 16];
             encoder.write_image::<colortype::Gray16>(4, 4, &data)?;
         }
+        Ok(())
+    }
+
+    fn write_test_stack_pixels(path: &Path, frame_values: &[u16]) -> Result<()> {
+        let file = File::create(path)?;
+        let mut encoder = TiffEncoder::new(file)?;
+        encoder.write_image::<colortype::Gray16>(4, 4, frame_values)?;
         Ok(())
     }
 

@@ -575,6 +575,9 @@ pub fn repeat_tracking_current_position(
         segm_endname: segm_endname.map(str::to_string),
         overwrite_policy: OverwritePolicy::Overwrite,
         stop_frame: None,
+        channel_names: None,
+        metric_options: None,
+        save_object_counts_table: false,
     })?;
     Ok(TrackingRunReport {
         output_segmentation_path: asset.path.clone(),

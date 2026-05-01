@@ -3,6 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackingConfig {
     pub ioa_threshold: f32,
+    pub assign_unique_new_ids: bool,
+    pub overlap_denominator: OverlapDenominator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlapDenominator {
+    AreaPrev,
+    Union,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,14 +84,22 @@ fn track_frame(
         return frame.to_vec();
     }
 
-    let (ioa_matrix, curr_ids, prev_ids) = calc_ioa_matrix(frame, prev_frame, height, width);
+    let (ioa_matrix, curr_ids, prev_ids) =
+        calc_ioa_matrix(frame, prev_frame, height, width, config.overlap_denominator);
     let (old_ids, tracked_ids) = assign(&ioa_matrix, &curr_ids, &prev_ids, config.ioa_threshold);
     let unique_id = std::cmp::max(
         prev_ids.iter().copied().max().unwrap_or(0),
         curr_ids.iter().copied().max().unwrap_or(0),
     ) + 1;
 
-    index_assignment(&old_ids, &tracked_ids, &curr_ids, frame, unique_id, true)
+    index_assignment(
+        &old_ids,
+        &tracked_ids,
+        &curr_ids,
+        frame,
+        unique_id,
+        config.assign_unique_new_ids,
+    )
 }
 
 fn calc_ioa_matrix(
@@ -91,6 +107,7 @@ fn calc_ioa_matrix(
     prev_frame: &[u32],
     height: usize,
     width: usize,
+    denominator: OverlapDenominator,
 ) -> (Vec<Vec<f32>>, Vec<u32>, Vec<u32>) {
     let curr_ids = collect_ids(frame);
     let prev_ids = collect_ids(prev_frame);
@@ -107,30 +124,47 @@ fn calc_ioa_matrix(
 
     let mut matrix = vec![vec![0.0; prev_ids.len()]; curr_ids.len()];
     let mut prev_areas = vec![0usize; prev_ids.len()];
+    let mut curr_areas = vec![0usize; curr_ids.len()];
 
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
             let prev_label = prev_frame[idx];
-            if prev_label == 0 {
-                continue;
+            if prev_label != 0 {
+                let prev_col = prev_idx[&prev_label];
+                prev_areas[prev_col] += 1;
             }
-            let prev_col = prev_idx[&prev_label];
-            prev_areas[prev_col] += 1;
 
             let curr_label = frame[idx];
-            if curr_label == 0 {
+            if curr_label != 0 {
+                let curr_row = curr_idx[&curr_label];
+                curr_areas[curr_row] += 1;
+            }
+
+            if prev_label == 0 || curr_label == 0 {
                 continue;
             }
             let curr_row = curr_idx[&curr_label];
+            let prev_col = prev_idx[&prev_label];
             matrix[curr_row][prev_col] += 1.0;
         }
     }
 
-    for row in &mut matrix {
+    for (row_idx, row) in matrix.iter_mut().enumerate() {
         for (col, value) in row.iter_mut().enumerate() {
-            if prev_areas[col] != 0 {
-                *value /= prev_areas[col] as f32;
+            let intersection = *value as usize;
+            let denominator = match denominator {
+                OverlapDenominator::AreaPrev => prev_areas[col],
+                OverlapDenominator::Union => {
+                    if intersection == 0 {
+                        0
+                    } else {
+                        prev_areas[col] + curr_areas[row_idx] - intersection
+                    }
+                }
+            };
+            if denominator != 0 {
+                *value /= denominator as f32;
             }
         }
     }
@@ -289,7 +323,16 @@ mod tests {
             0, 0, 0, 0, //
         ]];
 
-        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
+        let tracked = track_sequence(
+            &frames,
+            4,
+            4,
+            &TrackingConfig {
+                ioa_threshold: 0.4,
+                assign_unique_new_ids: true,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
 
         assert_eq!(tracked.frames[0], frames[0]);
         assert_eq!(tracked.labels_found, 2);
@@ -312,7 +355,16 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
+        let tracked = track_sequence(
+            &frames,
+            4,
+            4,
+            &TrackingConfig {
+                ioa_threshold: 0.4,
+                assign_unique_new_ids: true,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
 
         assert_eq!(
             tracked.frames[1],
@@ -343,7 +395,16 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
+        let tracked = track_sequence(
+            &frames,
+            4,
+            4,
+            &TrackingConfig {
+                ioa_threshold: 0.4,
+                assign_unique_new_ids: true,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
 
         assert_eq!(
             tracked.frames[1],
@@ -374,7 +435,16 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
+        let tracked = track_sequence(
+            &frames,
+            4,
+            4,
+            &TrackingConfig {
+                ioa_threshold: 0.4,
+                assign_unique_new_ids: true,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
 
         assert_eq!(
             tracked.frames[1],
@@ -385,6 +455,78 @@ mod tests {
                 0, 0, 0, 0, //
             ]
         );
+    }
+
+    #[test]
+    fn leaves_new_object_ids_when_unique_assignment_disabled() {
+        let frames = vec![
+            vec![
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            vec![
+                1, 1, 2, 2, //
+                1, 1, 2, 2, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+        ];
+
+        let tracked = track_sequence(
+            &frames,
+            4,
+            4,
+            &TrackingConfig {
+                ioa_threshold: 0.4,
+                assign_unique_new_ids: false,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
+
+        assert_eq!(tracked.frames[1], frames[1]);
+        assert_eq!(tracked.labels_found, 2);
+    }
+
+    #[test]
+    fn union_overlap_denominator_requires_union_threshold() {
+        let frames = vec![
+            vec![
+                1, 1, 0, //
+                1, 1, 0, //
+                0, 0, 0, //
+            ],
+            vec![
+                2, 2, 2, //
+                2, 0, 2, //
+                0, 0, 2, //
+            ],
+        ];
+
+        let area_prev = track_sequence(
+            &frames,
+            3,
+            3,
+            &TrackingConfig {
+                ioa_threshold: 0.6,
+                assign_unique_new_ids: false,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
+        let union = track_sequence(
+            &frames,
+            3,
+            3,
+            &TrackingConfig {
+                ioa_threshold: 0.6,
+                assign_unique_new_ids: false,
+                overlap_denominator: OverlapDenominator::Union,
+            },
+        );
+
+        assert_eq!(area_prev.frames[1][0], 1);
+        assert_eq!(union.frames[1][0], 2);
     }
 
     #[test]
@@ -404,7 +546,16 @@ mod tests {
             ],
         ];
 
-        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
+        let tracked = track_sequence(
+            &frames,
+            4,
+            4,
+            &TrackingConfig {
+                ioa_threshold: 0.4,
+                assign_unique_new_ids: true,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
 
         assert_eq!(tracked.disappeared, vec![(0, 2)]);
         assert_eq!(tracked.frames[1][0], 1);
@@ -422,7 +573,16 @@ mod tests {
             vec![0; 16],
         ];
 
-        let tracked = track_sequence(&frames, 4, 4, &TrackingConfig { ioa_threshold: 0.4 });
+        let tracked = track_sequence(
+            &frames,
+            4,
+            4,
+            &TrackingConfig {
+                ioa_threshold: 0.4,
+                assign_unique_new_ids: true,
+                overlap_denominator: OverlapDenominator::AreaPrev,
+            },
+        );
 
         assert_eq!(tracked.frames[1], vec![0; 16]);
         assert_eq!(tracked.disappeared, vec![(0, 1)]);
