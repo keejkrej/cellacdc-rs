@@ -45,6 +45,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--filter_segm_from_table"));
     assert!(stdout.contains("--align_frames"));
     assert!(stdout.contains("--measure"));
+    assert!(stdout.contains("--prepare_zstack_segm_info"));
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
@@ -991,6 +992,49 @@ fn measure_utility_writes_experiment_acdc_outputs() {
         assert!(csv.contains("phase_mean"));
         assert!(!csv.contains("gfp_mean"));
         assert!(images_dir.join("demo_acdc_objects_count.csv").exists());
+    }
+}
+
+#[test]
+fn prepare_zstack_segm_info_utility_writes_experiment_tables() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        fs::write(
+            images_dir.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,5\n",
+        )
+        .expect("metadata csv");
+        write_test_tiff_stack(
+            &images_dir.join("demo_phase.tif"),
+            &vec![vec![0, 1, 0, 0]; 10],
+            2,
+            2,
+        );
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--prepare_zstack_segm_info")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Prepared z-stack segmInfo files for 2 position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let csv = fs::read_to_string(
+            temp.path()
+                .join(pos)
+                .join("Images")
+                .join("demo_segmInfo.csv"),
+        )
+        .expect("segm info csv");
+        assert!(csv.contains("filename,frame_i,z_slice_used_dataPrep"));
+        assert!(csv.contains("demo_phase.tif,0,2,single z-slice,1,2"));
+        assert!(csv.contains("demo_phase.tif,1,2,single z-slice,1,2"));
     }
 }
 

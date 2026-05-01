@@ -15,19 +15,20 @@ use cellacdc_rs::{
     convert_file_format, count_objects, count_objects_in_positions,
     discover_measurement_experiment, fill_holes, fill_holes_in_positions,
     filter_segm_from_table_in_positions, generate_mother_bud_total, images_to_positions,
-    measure_experiment, measure_position, move_channel_tiffs_to_positions, rename_files,
-    resolve_measurement_position, run_workflow_file, segmentation_to_object_coords,
-    segmentation_to_object_coords_in_positions, stack_2d_segm_to_3d_in_positions,
-    AlignmentRunConfig, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
-    CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
-    Connect3DSegmBatchConfig, Connect3DSegmConfig, ConvertFileFormatConfig,
-    CoordinateFilterBatchConfig, CoordinateFilterConfig, CountObjectsBatchConfig,
-    CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
-    ImagesToPositionsConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
-    MeasurementExperimentConfig, MeasurementRunConfig, MoveChannelTiffsConfig,
-    ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverwritePolicy, RenameFilesConfig,
-    SegmentationLayout, Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig, TableFormat,
-    TrackingColumnMap, WorkflowRunOptions,
+    measure_experiment, measure_position, move_channel_tiffs_to_positions,
+    prepare_zstack_segm_info, rename_files, resolve_measurement_position, run_workflow_file,
+    segmentation_to_object_coords, segmentation_to_object_coords_in_positions,
+    stack_2d_segm_to_3d_in_positions, AlignmentRunConfig, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
+    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
+    ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
+    CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig,
+    GenerateMotherBudTotalConfig, ImagesToPositionsConfig, LineageTreeBatchConfig,
+    LineageTreeConfig, MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig,
+    MoveChannelTiffsConfig, ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverwritePolicy,
+    PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, RenameFilesConfig, SegmentationLayout,
+    Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap,
+    WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -129,6 +130,12 @@ struct Cli {
         help = "Compute Cell-ACDC measurements for a position or experiment"
     )]
     measure: bool,
+    #[arg(
+        long = "prepare_zstack_segm_info",
+        action = ArgAction::SetTrue,
+        help = "Write default z-stack segmInfo.csv files for positions"
+    )]
+    prepare_zstack_segm_info: bool,
     #[arg(
         long = "apply_tracking_from_table",
         action = ArgAction::SetTrue,
@@ -584,6 +591,7 @@ fn main() -> Result<()> {
         + usize::from(cli.filter_segm_from_table)
         + usize::from(cli.align_frames)
         + usize::from(cli.measure)
+        + usize::from(cli.prepare_zstack_segm_info)
         + usize::from(cli.apply_tracking_from_table)
         + usize::from(cli.apply_tracking_from_trackmate_xml)
         + usize::from(cli.add_lineage_tree)
@@ -598,7 +606,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -666,6 +674,11 @@ fn main() -> Result<()> {
 
     if cli.measure {
         println!("{}", run_measure(&cli)?);
+        return Ok(());
+    }
+
+    if cli.prepare_zstack_segm_info {
+        println!("{}", run_prepare_zstack_segm_info(&cli)?);
         return Ok(());
     }
 
@@ -1193,6 +1206,35 @@ fn run_measure(cli: &Cli) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn run_prepare_zstack_segm_info(cli: &Cli) -> Result<String> {
+    let target = match (cli.position_dir.clone(), cli.experiment_dir.clone()) {
+        (Some(position_dir), None) => PrepareSegmInfoTarget::Position(position_dir),
+        (None, Some(experiment_dir)) => PrepareSegmInfoTarget::Experiment(experiment_dir),
+        _ => bail!(
+            "--prepare_zstack_segm_info requires exactly one of --position_dir and --experiment_dir"
+        ),
+    };
+    let paths = prepare_zstack_segm_info(PrepareZStackSegmInfoConfig {
+        target,
+        overwrite_policy: if cli.yes {
+            OverwritePolicy::Overwrite
+        } else {
+            OverwritePolicy::Refuse
+        },
+    })?;
+    let mut lines = vec![format!(
+        "Prepared z-stack segmInfo files for {} position(s)",
+        paths.len()
+    )];
+    for path in paths {
+        lines.push(format!(
+            "Saved z-stack segmInfo table to {}",
+            path.display()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {
     let segmentation_path = cli.segmentation_path.clone().ok_or_else(|| {
         anyhow::anyhow!("--apply_tracking_from_table requires --segmentation_path")
@@ -1609,7 +1651,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }
