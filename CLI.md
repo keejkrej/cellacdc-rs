@@ -10,6 +10,7 @@ cellacdc-rs -p workflow.ini
 cellacdc-rs -v
 cellacdc-rs -info
 cellacdc-rs --count_objects --segmentation_path demo_segm.npz --output_path demo_acdc_objects_count.csv
+cellacdc-rs --to_obj_coords --segmentation_path demo_segm.npz --output_path demo_objects_coordinates.csv --segm_layout TYX
 cellacdc-rs --fill_holes --segmentation_path demo_segm.npz --output_path demo_segm_filled.npz
 cellacdc-rs --connect_3d_segm --segmentation_path demo_segm3d.npz --output_path demo_segm3d_connected.npz --segm_layout ZYX
 cellacdc-rs --stack_2d_segm_to_3d --segmentation_path demo_segm2d.npz --output_path demo_segm3d.npz --size_z 5
@@ -39,6 +40,11 @@ cellacdc-rs --combine_channels --position_dir Position_1 --recipe_path combine_c
   write the counts table to `--output_path`. Required arguments are
   `--segmentation_path` and `--output_path`. Optional layout hints
   `--size_t`, `--size_z`, and `--segm_layout` resolve ambiguous 3D masks.
+- `--to_obj_coords`: convert every non-zero segmentation pixel/voxel to an
+  object-coordinate table. Required arguments are `--segmentation_path` and
+  `--output_path`. Output columns are `frame_i`, `Cell_ID`, `y`, and `x`, with
+  `z` included for 3D masks. It uses the same optional layout-hint flags as
+  `--count_objects`.
 - `--fill_holes`: fill holes in a segmentation mask and write the corrected
   mask to `--output_path`. It uses the same `--segmentation_path` and optional
   layout-hint flags as `--count_objects`.

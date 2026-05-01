@@ -114,11 +114,12 @@ pub use utilities::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
     combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
     count_objects, fill_holes, filter_segm_from_table, generate_mother_bud_total,
-    stack_2d_segm_to_3d, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
-    CombineChannelsConfig, CombineChannelsResult, CombineMetricsConfig, CombineMetricsResult,
-    ComputeMultiChannelConfig, ComputeMultiChannelResult, ConcatConfig, ConcatResult,
-    Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, CountObjectsResult,
-    FillHolesConfig, GenerateMotherBudTotalConfig, LineageTreeConfig, ObjectsCountSummary,
+    segmentation_to_object_coords, stack_2d_segm_to_3d, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineChannelsResult,
+    CombineMetricsConfig, CombineMetricsResult, ComputeMultiChannelConfig,
+    ComputeMultiChannelResult, ConcatConfig, ConcatResult, Connect3DSegmConfig,
+    CoordinateFilterConfig, CountObjectsConfig, CountObjectsResult, FillHolesConfig,
+    GenerateMotherBudTotalConfig, LineageTreeConfig, ObjectCoordinatesConfig, ObjectsCountSummary,
     Stack2DSegmTo3DConfig, TrackingColumnMap, UtilityOutputPaths,
 };
 pub use workflow::{

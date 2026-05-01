@@ -105,6 +105,13 @@ pub struct CountObjectsConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectCoordinatesConfig {
+    pub segmentation_path: PathBuf,
+    pub output_path: PathBuf,
+    pub resolution: Option<MaskPathResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectsCountSummary {
     pub counts: BTreeMap<String, usize>,
     pub output_path: PathBuf,
@@ -516,6 +523,18 @@ pub fn count_objects(config: CountObjectsConfig) -> Result<CountObjectsResult> {
             counts,
             output_path: config.output_path,
         },
+    })
+}
+
+pub fn segmentation_to_object_coords(
+    config: ObjectCoordinatesConfig,
+) -> Result<UtilityOutputPaths> {
+    let masks = load_mask_data(&config.segmentation_path, config.resolution.as_ref())?;
+    let table = object_coordinates_table(&masks)?;
+    write_table(&config.output_path, &table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
     })
 }
 
@@ -1576,6 +1595,144 @@ pub(crate) fn objects_count_summary(masks: &MaskData) -> BTreeMap<String, usize>
         }
     }
     counts
+}
+
+fn object_coordinates_table(masks: &MaskData) -> Result<Table> {
+    match masks.layout {
+        SegmentationLayout::YX => {
+            let array = masks
+                .values
+                .view()
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("valid YX");
+            let mut coords_by_label = BTreeMap::<u32, Vec<(usize, usize)>>::new();
+            for ((y, x), label) in array.indexed_iter() {
+                if *label == 0 {
+                    continue;
+                }
+                coords_by_label.entry(*label).or_default().push((y, x));
+            }
+            let mut rows = Vec::new();
+            for (label, coords) in coords_by_label {
+                for (y, x) in coords {
+                    rows.push(vec![
+                        TableValue::Number(0.0),
+                        TableValue::Number(label as f64),
+                        TableValue::Number(y as f64),
+                        TableValue::Number(x as f64),
+                    ]);
+                }
+            }
+            Ok(Table {
+                headers: vec!["frame_i".into(), "Cell_ID".into(), "y".into(), "x".into()],
+                rows,
+            })
+        }
+        SegmentationLayout::TYX => {
+            let array = masks
+                .values
+                .view()
+                .into_dimensionality::<ndarray::Ix3>()
+                .expect("valid TYX");
+            let mut coords_by_key = BTreeMap::<(usize, u32), Vec<(usize, usize)>>::new();
+            for ((t, y, x), label) in array.indexed_iter() {
+                if *label == 0 {
+                    continue;
+                }
+                coords_by_key.entry((t, *label)).or_default().push((y, x));
+            }
+            let mut rows = Vec::new();
+            for ((t, label), coords) in coords_by_key {
+                for (y, x) in coords {
+                    rows.push(vec![
+                        TableValue::Number(t as f64),
+                        TableValue::Number(label as f64),
+                        TableValue::Number(y as f64),
+                        TableValue::Number(x as f64),
+                    ]);
+                }
+            }
+            Ok(Table {
+                headers: vec!["frame_i".into(), "Cell_ID".into(), "y".into(), "x".into()],
+                rows,
+            })
+        }
+        SegmentationLayout::ZYX => {
+            let array = masks
+                .values
+                .view()
+                .into_dimensionality::<ndarray::Ix3>()
+                .expect("valid ZYX");
+            let mut coords_by_label = BTreeMap::<u32, Vec<(usize, usize, usize)>>::new();
+            for ((z, y, x), label) in array.indexed_iter() {
+                if *label == 0 {
+                    continue;
+                }
+                coords_by_label.entry(*label).or_default().push((z, y, x));
+            }
+            let mut rows = Vec::new();
+            for (label, coords) in coords_by_label {
+                for (z, y, x) in coords {
+                    rows.push(vec![
+                        TableValue::Number(0.0),
+                        TableValue::Number(label as f64),
+                        TableValue::Number(z as f64),
+                        TableValue::Number(y as f64),
+                        TableValue::Number(x as f64),
+                    ]);
+                }
+            }
+            Ok(Table {
+                headers: vec![
+                    "frame_i".into(),
+                    "Cell_ID".into(),
+                    "z".into(),
+                    "y".into(),
+                    "x".into(),
+                ],
+                rows,
+            })
+        }
+        SegmentationLayout::TZYX => {
+            let array = masks
+                .values
+                .view()
+                .into_dimensionality::<ndarray::Ix4>()
+                .expect("valid TZYX");
+            let mut coords_by_key = BTreeMap::<(usize, u32), Vec<(usize, usize, usize)>>::new();
+            for ((t, z, y, x), label) in array.indexed_iter() {
+                if *label == 0 {
+                    continue;
+                }
+                coords_by_key
+                    .entry((t, *label))
+                    .or_default()
+                    .push((z, y, x));
+            }
+            let mut rows = Vec::new();
+            for ((t, label), coords) in coords_by_key {
+                for (z, y, x) in coords {
+                    rows.push(vec![
+                        TableValue::Number(t as f64),
+                        TableValue::Number(label as f64),
+                        TableValue::Number(z as f64),
+                        TableValue::Number(y as f64),
+                        TableValue::Number(x as f64),
+                    ]);
+                }
+            }
+            Ok(Table {
+                headers: vec![
+                    "frame_i".into(),
+                    "Cell_ID".into(),
+                    "z".into(),
+                    "y".into(),
+                    "x".into(),
+                ],
+                rows,
+            })
+        }
+    }
 }
 
 fn fill_holes_in_mask_data(masks: &mut MaskData) -> Result<()> {
@@ -3057,6 +3214,51 @@ mod tests {
             Some(&3)
         );
         assert!(out_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn writes_object_coordinates_from_segmentation() -> Result<()> {
+        let temp = tempdir()?;
+        let segm_path = temp.path().join("segm.npz");
+        let out_path = temp.path().join("objects_coordinates.csv");
+        let masks = MaskData {
+            values: Array3::from_shape_vec(
+                (2, 2, 2),
+                vec![
+                    0, 1, //
+                    2, 2, //
+                    3, 0, //
+                    3, 0,
+                ],
+            )?
+            .into_dyn(),
+            layout: SegmentationLayout::TYX,
+            source_path: segm_path.clone(),
+        };
+        save_mask_data(&segm_path, &masks)?;
+        segmentation_to_object_coords(ObjectCoordinatesConfig {
+            segmentation_path: segm_path,
+            output_path: out_path.clone(),
+            resolution: Some(MaskPathResolution {
+                size_t: Some(2),
+                size_z: Some(1),
+                layout: Some(SegmentationLayout::TYX),
+            }),
+        })?;
+        let table = read_table(&out_path)?;
+        assert_eq!(table.headers, vec!["frame_i", "Cell_ID", "y", "x"]);
+        assert_eq!(table.rows.len(), 5);
+        let frame_col = table.header_index("frame_i")?;
+        let id_col = table.header_index("Cell_ID")?;
+        let y_col = table.header_index("y")?;
+        let x_col = table.header_index("x")?;
+        assert!(table.rows.iter().any(|row| {
+            row[frame_col].as_i64() == Some(1)
+                && row[id_col].as_i64() == Some(3)
+                && row[y_col].as_i64() == Some(1)
+                && row[x_col].as_i64() == Some(0)
+        }));
         Ok(())
     }
 

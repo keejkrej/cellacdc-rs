@@ -28,6 +28,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--params <PATH_TO_PARAMS>"));
     assert!(stdout.contains("--info"));
     assert!(stdout.contains("--count_objects"));
+    assert!(stdout.contains("--to_obj_coords"));
     assert!(stdout.contains("--fill_holes"));
     assert!(stdout.contains("--connect_3d_segm"));
     assert!(stdout.contains("--stack_2d_segm_to_3d"));
@@ -175,6 +176,45 @@ fn count_objects_utility_writes_counts_csv() {
     let csv = fs::read_to_string(output_path).expect("counts csv");
     assert!(csv.contains("In current position"));
     assert!(csv.contains("\n2\n"));
+}
+
+#[test]
+fn to_obj_coords_utility_writes_coordinate_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let segm_path = temp.path().join("segm.npz");
+    let output_path = temp.path().join("objects_coordinates.csv");
+    let file = File::create(&segm_path).expect("segm npz");
+    let mut writer = NpzWriter::new(file);
+    let masks = Array3::from_shape_vec(
+        (2, 2, 2),
+        vec![
+            0u32, 1, //
+            2, 2, //
+            3, 0, //
+            3, 0,
+        ],
+    )
+    .expect("mask shape");
+    writer.add_array("arr_0", &masks).expect("write mask");
+    writer.finish().expect("finish npz");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--to_obj_coords")
+        .arg("--segmentation_path")
+        .arg(&segm_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--segm_layout")
+        .arg("TYX")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved object-coordinate table"));
+    let csv = fs::read_to_string(output_path).expect("object coordinate csv");
+    assert!(csv.contains("frame_i,Cell_ID,y,x"));
+    assert!(csv.contains("1,3,1,0"));
 }
 
 #[test]

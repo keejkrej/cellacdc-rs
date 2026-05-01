@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 use cellacdc_rs::{
     add_lineage_tree, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
     combine_channels, combine_metrics, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
-    count_objects, fill_holes, generate_mother_bud_total, run_workflow_file, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
-    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmConfig, CoordinateFilterConfig,
-    CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig, LineageTreeConfig,
-    MaskPathResolution, SegmentationLayout, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap,
-    WorkflowRunOptions,
+    count_objects, fill_holes, generate_mother_bud_total, run_workflow_file,
+    segmentation_to_object_coords, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
+    CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
+    Connect3DSegmConfig, CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig,
+    GenerateMotherBudTotalConfig, LineageTreeConfig, MaskPathResolution, ObjectCoordinatesConfig,
+    SegmentationLayout, Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -76,6 +76,12 @@ struct Cli {
         help = "Count labels in a segmentation mask and write an objects-count CSV"
     )]
     count_objects: bool,
+    #[arg(
+        long = "to_obj_coords",
+        action = ArgAction::SetTrue,
+        help = "Convert segmentation labels to an object-coordinate CSV/XLSX table"
+    )]
+    to_obj_coords: bool,
     #[arg(
         long = "fill_holes",
         action = ArgAction::SetTrue,
@@ -449,6 +455,7 @@ fn main() -> Result<()> {
         + usize::from(cli.version || cli.info)
         + usize::from(cli.reset)
         + usize::from(cli.count_objects)
+        + usize::from(cli.to_obj_coords)
         + usize::from(cli.fill_holes)
         + usize::from(cli.connect_3d_segm)
         + usize::from(cli.stack_2d_segm_to_3d)
@@ -463,7 +470,7 @@ fn main() -> Result<()> {
         + usize::from(cli.combine_channels);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -496,6 +503,11 @@ fn main() -> Result<()> {
 
     if cli.count_objects {
         println!("{}", run_count_objects(&cli)?);
+        return Ok(());
+    }
+
+    if cli.to_obj_coords {
+        println!("{}", run_to_obj_coords(&cli)?);
         return Ok(());
     }
 
@@ -601,6 +613,26 @@ fn run_count_objects(cli: &Cli) -> Result<String> {
         lines.push(format!("{name}: {value}"));
     }
     Ok(lines.join("\n"))
+}
+
+fn run_to_obj_coords(cli: &Cli) -> Result<String> {
+    let segmentation_path = cli
+        .segmentation_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--to_obj_coords requires --segmentation_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--to_obj_coords requires --output_path"))?;
+    let result = segmentation_to_object_coords(ObjectCoordinatesConfig {
+        segmentation_path,
+        output_path,
+        resolution: utility_mask_resolution(cli),
+    })?;
+    Ok(format!(
+        "Saved object-coordinate table to {}",
+        result.primary_path.display()
+    ))
 }
 
 fn run_fill_holes(cli: &Cli) -> Result<String> {
@@ -993,7 +1025,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, or --combine_channels");
     }
     Ok(())
 }
