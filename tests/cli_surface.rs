@@ -183,6 +183,52 @@ fn count_objects_utility_writes_counts_csv() {
 }
 
 #[test]
+fn count_objects_utility_counts_experiment_positions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for (pos, object_id) in [("Position_1", 1u32), ("Position_2", 2u32)] {
+        let images = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images).expect("images dir");
+        let segm_path = images.join("demo_segm.npz");
+        let file = File::create(&segm_path).expect("segm npz");
+        let mut writer = NpzWriter::new(file);
+        let masks = Array2::from_shape_vec(
+            (2, 2),
+            vec![
+                0u32, object_id, //
+                object_id, 0,
+            ],
+        )
+        .expect("mask shape");
+        writer.add_array("arr_0", &masks).expect("write mask");
+        writer.finish().expect("finish npz");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--count_objects")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--segm_endname")
+        .arg("segm")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved object counts for 2 position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let csv = fs::read_to_string(
+            temp.path()
+                .join(pos)
+                .join("Images")
+                .join("demo_acdc_objects_count.csv"),
+        )
+        .expect("counts csv");
+        assert!(csv.contains("In current position"));
+        assert!(csv.contains("\n1\n"));
+    }
+}
+
+#[test]
 fn to_obj_coords_utility_writes_coordinate_table() {
     let temp = tempfile::tempdir().expect("temp dir");
     let segm_path = temp.path().join("segm.npz");

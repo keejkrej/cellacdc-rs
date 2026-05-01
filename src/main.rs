@@ -11,15 +11,16 @@ use std::path::{Path, PathBuf};
 use cellacdc_rs::{
     add_lineage_tree, add_lineage_tree_to_tables, apply_tracking_from_table,
     apply_tracking_from_trackmate_xml, combine_channels, combine_metrics, compute_multi_channel,
-    concat_acdc_outputs, connect_3d_segm, convert_file_format, count_objects, fill_holes,
-    generate_mother_bud_total, images_to_positions, move_channel_tiffs_to_positions, rename_files,
-    run_workflow_file, segmentation_to_object_coords, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
-    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmConfig, ConvertFileFormatConfig,
-    CoordinateFilterConfig, CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig,
-    ImagesToPositionsConfig, LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution,
-    MoveChannelTiffsConfig, ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout,
-    Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
+    concat_acdc_outputs, connect_3d_segm, convert_file_format, count_objects,
+    count_objects_in_positions, fill_holes, generate_mother_bud_total, images_to_positions,
+    move_channel_tiffs_to_positions, rename_files, run_workflow_file,
+    segmentation_to_object_coords, ApplyTrackingConfig, ApplyTrackingFromTrackMateXmlConfig,
+    CombineChannelsConfig, CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig,
+    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterConfig, CountObjectsBatchConfig,
+    CountObjectsConfig, FillHolesConfig, GenerateMotherBudTotalConfig, ImagesToPositionsConfig,
+    LineageTreeBatchConfig, LineageTreeConfig, MaskPathResolution, MoveChannelTiffsConfig,
+    ObjectCoordinatesConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DConfig,
+    TableFormat, TrackingColumnMap, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -693,28 +694,55 @@ fn main() -> Result<()> {
 }
 
 fn run_count_objects(cli: &Cli) -> Result<String> {
-    let segmentation_path = cli
-        .segmentation_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--count_objects requires --segmentation_path"))?;
-    let output_path = cli
-        .output_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--count_objects requires --output_path"))?;
-    let resolution = utility_mask_resolution(cli);
-    let result = count_objects(CountObjectsConfig {
-        segmentation_path,
-        output_path,
-        resolution,
-    })?;
-    let mut lines = vec![format!(
-        "Saved object counts table to {}",
-        result.summary.output_path.display()
-    )];
-    for (name, value) in result.summary.counts {
-        lines.push(format!("{name}: {value}"));
+    match (
+        cli.segmentation_path.clone(),
+        cli.output_path.clone(),
+        cli.position_dir.clone(),
+        cli.experiment_dir.clone(),
+    ) {
+        (Some(segmentation_path), Some(output_path), None, None) => {
+            let result = count_objects(CountObjectsConfig {
+                segmentation_path,
+                output_path,
+                resolution: utility_mask_resolution(cli),
+            })?;
+            let mut lines = vec![format!(
+                "Saved object counts table to {}",
+                result.summary.output_path.display()
+            )];
+            for (name, value) in result.summary.counts {
+                lines.push(format!("{name}: {value}"));
+            }
+            Ok(lines.join("\n"))
+        }
+        (None, None, position_dir, experiment_dir)
+            if position_dir.is_some() ^ experiment_dir.is_some() =>
+        {
+            let segm_endname = cli
+                .segm_endname
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--count_objects batch mode requires --segm_endname"))?;
+            let result = count_objects_in_positions(CountObjectsBatchConfig {
+                position_dir,
+                experiment_dir,
+                segm_endname,
+                resolution: utility_mask_resolution(cli),
+            })?;
+            let mut outputs = vec![result.primary_path];
+            outputs.extend(result.secondary_paths);
+            let mut lines = vec![format!(
+                "Saved object counts for {} position(s)",
+                outputs.len()
+            )];
+            for path in outputs {
+                lines.push(format!("Saved object counts table to {}", path.display()));
+            }
+            Ok(lines.join("\n"))
+        }
+        _ => bail!(
+            "--count_objects requires either --segmentation_path and --output_path, or exactly one of --position_dir and --experiment_dir with --segm_endname"
+        ),
     }
-    Ok(lines.join("\n"))
 }
 
 fn run_to_obj_coords(cli: &Cli) -> Result<String> {

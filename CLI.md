@@ -10,6 +10,7 @@ cellacdc-rs -p workflow.ini
 cellacdc-rs -v
 cellacdc-rs -info
 cellacdc-rs --count_objects --segmentation_path demo_segm.npz --output_path demo_acdc_objects_count.csv
+cellacdc-rs --count_objects --experiment_dir Experiment_1 --segm_endname segm
 cellacdc-rs --to_obj_coords --segmentation_path demo_segm.npz --output_path demo_objects_coordinates.csv --segm_layout TYX
 cellacdc-rs --fill_holes --segmentation_path demo_segm.npz --output_path demo_segm_filled.npz
 cellacdc-rs --connect_3d_segm --segmentation_path demo_segm3d.npz --output_path demo_segm3d_connected.npz --segm_layout ZYX
@@ -42,8 +43,11 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   JSON file is parsed and path-like fields are normalized, but Rust does not run
   Python installer commands.
 - `--count_objects`: run the object-count utility on a segmentation mask and
-  write the counts table to `--output_path`. Required arguments are
-  `--segmentation_path` and `--output_path`. Optional layout hints
+  write the counts table to `--output_path`. Use `--segmentation_path` and
+  `--output_path` for one explicit mask, or pass exactly one of
+  `--position_dir` and `--experiment_dir` with `--segm_endname` to count
+  matching segmentation files and write Python-style
+  `*_acdc_objects_count*.csv` tables next to them. Optional layout hints
   `--size_t`, `--size_z`, and `--segm_layout` resolve ambiguous 3D masks.
 - `--to_obj_coords`: convert every non-zero segmentation pixel/voxel to an
   object-coordinate table. Required arguments are `--segmentation_path` and
