@@ -60,7 +60,37 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--export_lineage_info"));
     assert!(stdout.contains("--propagate_lineage"));
     assert!(stdout.contains("--update_lineage_frame"));
+    assert!(stdout.contains("--mark_unknown_lineage"));
+    assert!(stdout.contains("--set_lineage_parent"));
+    assert!(stdout.contains("--review_lineage_frame"));
+    assert!(stdout.contains("--find_lineage_mother"));
+    assert!(stdout.contains("--assign_mother_bud"));
+    assert!(stdout.contains("--set_cell_cycle_stage"));
+    assert!(stdout.contains("--set_cell_cycle_relationship"));
+    assert!(stdout.contains("--set_cell_cycle_generation"));
+    assert!(stdout.contains("--set_cell_cycle_markers"));
+    assert!(stdout.contains("--propagate_cell_cycle"));
+    assert!(stdout.contains("--check_cell_cycle_integrity"));
+    assert!(stdout.contains("--add_derived_cell_cycle_columns"));
+    assert!(stdout.contains("--add_will_divide_column"));
+    assert!(stdout.contains("--add_missing_acdc_columns"));
+    assert!(stdout.contains("--ensure_acdc_compatibility"));
+    assert!(stdout.contains("--add_generation_num_relid"));
+    assert!(stdout.contains("--fix_will_divide"));
+    assert!(stdout.contains("--fix_corrected_assignment_i"));
+    assert!(stdout.contains("--parent_id"));
+    assert!(stdout.contains("--mother_id"));
+    assert!(stdout.contains("--cell_cycle_stage"));
+    assert!(stdout.contains("--relationship"));
+    assert!(stdout.contains("--relative_id"));
+    assert!(stdout.contains("--generation_num"));
+    assert!(stdout.contains("--emerg_frame_i"));
+    assert!(stdout.contains("--division_frame_i"));
+    assert!(stdout.contains("--is_history_known"));
     assert!(stdout.contains("--generate_mother_bud_total"));
+    assert!(stdout.contains("--calculate_relatives_data"));
+    assert!(stdout.contains("--calculate_per_phase_quantities"));
+    assert!(stdout.contains("--normalize_acdc_column_names"));
     assert!(stdout.contains("--combine_metrics"));
     assert!(stdout.contains("--compute_multi_channel"));
     assert!(stdout.contains("--concat_acdc_outputs"));
@@ -1751,6 +1781,302 @@ fn update_lineage_frame_utility_applies_json_edits() {
 }
 
 #[test]
+fn mark_unknown_lineage_utility_sets_parent_unknown() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+            "0,1,G1,1,-1,mother,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--mark_unknown_lineage")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Marked lineage unknown for 1 cell"));
+    let lineage_path = images_dir.join("demo_acdc_output_lineage.csv");
+    let table = read_table(&lineage_path).expect("lineage table");
+    let row = table.row_map(0);
+    assert_eq!(row["parent_ID_tree"].as_i64(), Some(-1));
+    assert_eq!(row["is_history_known"].as_string_lossy(), "false");
+}
+
+#[test]
+fn mark_unknown_lineage_utility_sets_parent_unknown_for_multiple_cells() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+            "0,1,G1,1,-1,mother,1\n",
+            "0,2,G1,1,1,bud,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--mark_unknown_lineage")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .arg("--cell_id")
+        .arg("2")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Marked lineage unknown for 2 cell(s)"));
+    let lineage_path = images_dir.join("demo_acdc_output_lineage.csv");
+    let table = read_table(&lineage_path).expect("lineage table");
+    let cell_id_idx = table
+        .header_index("Cell_ID")
+        .expect("cell_ID column exists");
+    let row_idx_1 = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(1))
+        .expect("lineage row for cell 1");
+    let row_idx_2 = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(2))
+        .expect("lineage row for cell 2");
+    let row_1 = table.row_map(row_idx_1);
+    let row_2 = table.row_map(row_idx_2);
+    assert_eq!(row_1["parent_ID_tree"].as_i64(), Some(-1));
+    assert_eq!(row_1["is_history_known"].as_string_lossy(), "false");
+    assert_eq!(row_2["parent_ID_tree"].as_i64(), Some(-1));
+    assert_eq!(row_2["is_history_known"].as_string_lossy(), "false");
+}
+
+#[test]
+fn mark_unknown_lineage_requires_cell_id() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--mark_unknown_lineage")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--mark_unknown_lineage requires --cell_id"));
+}
+
+#[test]
+fn set_lineage_parent_utility_sets_parent_and_history_known() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+            "0,1,G1,1,-1,mother,1\n",
+            "0,2,G1,1,1,bud,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_lineage_parent")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .arg("--parent_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Set lineage parent for 1 cell"));
+    let lineage_path = images_dir.join("demo_acdc_output_lineage.csv");
+    let table = read_table(&lineage_path).expect("lineage table");
+    let cell_id_idx = table
+        .header_index("Cell_ID")
+        .expect("cell_ID column exists");
+    let row_idx = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(2))
+        .expect("lineage row for cell 2");
+    let row_map = table.row_map(row_idx);
+    assert_eq!(row_map["parent_ID_tree"].as_i64(), Some(1));
+    assert_eq!(row_map["is_history_known"].as_string_lossy(), "true");
+}
+
+#[test]
+fn set_lineage_parent_utility_sets_parent_for_multiple_cells() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+            "0,1,G1,1,-1,mother,1\n",
+            "0,2,G1,1,1,bud,0\n",
+            "0,3,G1,1,1,bud,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_lineage_parent")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .arg("--cell_id")
+        .arg("3")
+        .arg("--parent_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Set lineage parent for 2 cell(s)"));
+    let lineage_path = images_dir.join("demo_acdc_output_lineage.csv");
+    let table = read_table(&lineage_path).expect("lineage table");
+    let cell_id_idx = table
+        .header_index("Cell_ID")
+        .expect("cell_ID column exists");
+    let row_idx_2 = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(2))
+        .expect("lineage row for cell 2");
+    let row_idx_3 = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(3))
+        .expect("lineage row for cell 3");
+    let row_map_2 = table.row_map(row_idx_2);
+    let row_map_3 = table.row_map(row_idx_3);
+    assert_eq!(row_map_2["parent_ID_tree"].as_i64(), Some(1));
+    assert_eq!(row_map_2["is_history_known"].as_string_lossy(), "true");
+    assert_eq!(row_map_3["parent_ID_tree"].as_i64(), Some(1));
+    assert_eq!(row_map_3["is_history_known"].as_string_lossy(), "true");
+}
+
+#[test]
+fn set_lineage_parent_requires_parent_id() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_lineage_parent")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--set_lineage_parent requires --parent_id"));
+}
+
+#[test]
 fn add_lineage_tree_utility_updates_position_tables_in_experiment() {
     let temp = tempfile::tempdir().expect("temp dir");
     for pos in ["Position_1", "Position_2"] {
@@ -1826,6 +2152,614 @@ fn generate_mother_bud_total_utility_writes_total_table() {
     assert!(csv.contains("entity"));
     assert!(csv.contains("Total"));
     assert!(csv.contains(",15"));
+}
+
+#[test]
+fn add_derived_cell_cycle_columns_utility_writes_output_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("derived.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known,will_divide\n",
+            "0,1,G1,1,-1,mother,-1,-1,1,0\n",
+            "1,1,S,1,2,mother,-1,-1,1,1\n",
+            "1,2,S,0,1,bud,-1,-1,0,0\n",
+            "2,1,G1,1,-1,mother,-1,-1,1,0\n",
+            "3,1,G1,2,-1,mother,-1,-1,1,0\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--add_derived_cell_cycle_columns")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Added derived cell-cycle columns"));
+    let table = read_table(&output_path).expect("derived table");
+    let frame_idx = table.header_index("frame_i").expect("frame_i column");
+    let cell_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let gen_idx = table
+        .header_index("generation_num")
+        .expect("generation column");
+    let will_idx = table.header_index("will_divide").expect("will_divide");
+    let end_idx = table
+        .header_index("end_of_cell_cycle_frame_i")
+        .expect("end column");
+    let row_for = |frame_i: i64, cell_id: i64, generation_num: i64| {
+        table
+            .rows
+            .iter()
+            .find(|row| {
+                row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id)
+                    && row[gen_idx].as_i64() == Some(generation_num)
+            })
+            .expect("row")
+    };
+    for frame_i in [0, 1, 2] {
+        let row = row_for(frame_i, 1, 1);
+        assert_eq!(row[will_idx].as_i64(), Some(1));
+        assert_eq!(row[end_idx].as_i64(), Some(1));
+    }
+    let next_generation = row_for(3, 1, 2);
+    assert_eq!(next_generation[will_idx].as_i64(), Some(0));
+    assert_eq!(next_generation[end_idx].as_i64(), Some(-1));
+}
+
+#[test]
+fn add_will_divide_column_utility_writes_output_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("will_divide.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship\n",
+            "0,1,S,2,2,mother\n",
+            "0,2,S,0,1,bud\n",
+            "1,1,S,2,2,mother\n",
+            "1,2,S,0,1,bud\n",
+            "2,2,G1,1,-1,mother\n",
+            "3,3,S,0,1,bud\n",
+            "4,4,,0,-1,mother\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--add_will_divide_column")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Added will_divide column"));
+    let table = read_table(&output_path).expect("will_divide table");
+    let frame_idx = table.header_index("frame_i").expect("frame_i column");
+    let cell_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let will_idx = table.header_index("will_divide").expect("will_divide");
+    let value_for = |frame_i: i64, cell_id: i64| {
+        table
+            .rows
+            .iter()
+            .find(|row| {
+                row[frame_idx].as_i64() == Some(frame_i) && row[cell_idx].as_i64() == Some(cell_id)
+            })
+            .and_then(|row| row[will_idx].as_i64())
+    };
+    assert_eq!(value_for(0, 1), Some(1));
+    assert_eq!(value_for(1, 1), Some(1));
+    assert_eq!(value_for(0, 2), Some(1));
+    assert_eq!(value_for(1, 2), Some(1));
+    assert_eq!(value_for(2, 2), Some(0));
+    assert_eq!(value_for(3, 3), Some(0));
+    assert_eq!(value_for(4, 4), None);
+}
+
+#[test]
+fn add_missing_acdc_columns_utility_writes_output_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("missing_cols.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,will_divide\n",
+            "0,1,G1,0\n",
+            "1,1,S,1\n",
+            "2,1,,0\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--add_missing_acdc_columns")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Added missing acdc_output columns"));
+    let table = read_table(&output_path).expect("missing cols table");
+    let generation_idx = table
+        .header_index("generation_num")
+        .expect("generation_num");
+    let relationship_idx = table.header_index("relationship").expect("relationship");
+    let corrected_idx = table
+        .header_index("corrected_on_frame_i")
+        .expect("corrected_on_frame_i");
+    let excluded_idx = table
+        .header_index("is_cell_excluded")
+        .expect("is_cell_excluded");
+    let dead_idx = table.header_index("is_cell_dead").expect("is_cell_dead");
+    assert_eq!(table.rows[0][generation_idx].as_i64(), Some(2));
+    assert_eq!(table.rows[1][relationship_idx].as_string_lossy(), "mother");
+    assert_eq!(table.rows[1][corrected_idx].as_i64(), Some(-1));
+    assert_eq!(table.rows[2][generation_idx].as_i64(), None);
+    assert_eq!(table.rows[2][excluded_idx].as_i64(), Some(0));
+    assert_eq!(table.rows[2][dead_idx].as_i64(), Some(0));
+}
+
+#[test]
+fn ensure_acdc_compatibility_utility_writes_latest_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("legacy_acdc_output.csv");
+    let output_path = temp.path().join("latest_acdc_output.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "level_0,index,frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,corrected_assignment\n",
+            "99,99,1,1,S,2,2,mother,1\n",
+            "98,98,0,1,S,2,2,mother,1\n",
+            "97,97,0,1,G1,9,-1,mother,0\n",
+            "96,96,0,2,S,0,1,bud,0\n",
+            "95,95,1,2,S,0,1,bud,0\n",
+            "94,94,2,2,G1,1,-1,mother,0\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--ensure_acdc_compatibility")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Ensured acdc_output compatibility"));
+    let table = read_table(&output_path).expect("latest table");
+    assert!(table.maybe_header_index("level_0").is_none());
+    assert!(table.maybe_header_index("index").is_none());
+    assert!(table.maybe_header_index("corrected_assignment").is_none());
+    assert_eq!(table.rows.len(), 5);
+    let frame_idx = table.header_index("frame_i").expect("frame_i");
+    let cell_idx = table.header_index("Cell_ID").expect("Cell_ID");
+    let generation_idx = table
+        .header_index("generation_num")
+        .expect("generation_num");
+    let will_idx = table.header_index("will_divide").expect("will_divide");
+    let corrected_idx = table
+        .header_index("corrected_on_frame_i")
+        .expect("corrected_on_frame_i");
+    let value_for = |frame_i: i64, cell_id: i64, column_idx: usize| {
+        table
+            .rows
+            .iter()
+            .find(|row| {
+                row[frame_idx].as_i64() == Some(frame_i) && row[cell_idx].as_i64() == Some(cell_id)
+            })
+            .and_then(|row| row[column_idx].as_i64())
+    };
+    assert_eq!(value_for(0, 1, generation_idx), Some(2));
+    assert_eq!(value_for(0, 1, will_idx), Some(0));
+    assert_eq!(value_for(0, 2, will_idx), Some(1));
+    assert_eq!(value_for(2, 2, will_idx), Some(0));
+    assert_eq!(value_for(0, 1, corrected_idx), Some(0));
+    assert_eq!(value_for(1, 1, corrected_idx), Some(0));
+}
+
+#[test]
+fn add_generation_num_relid_utility_writes_output_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("relid.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "position,frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship\n",
+            "Position_1,0,1,S,3,2,mother\n",
+            "Position_1,0,2,S,0,1,bud\n",
+            "Position_1,1,1,G1,3,2,mother\n",
+            "Position_1,1,2,G1,1,-1,mother\n",
+            "Position_2,0,1,S,4,2,mother\n",
+            "Position_2,0,2,S,0,1,bud\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--add_generation_num_relid")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--grouping_column")
+        .arg("position")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Added generation_num_relID"));
+    let table = read_table(&output_path).expect("relid table");
+    let position_idx = table.header_index("position").expect("position column");
+    let frame_idx = table.header_index("frame_i").expect("frame_i column");
+    let cell_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let rel_gen_idx = table
+        .header_index("generation_num_relID")
+        .expect("rel generation column");
+    let value_for = |position: &str, frame_i: i64, cell_id: i64| {
+        table
+            .rows
+            .iter()
+            .find(|row| {
+                row[position_idx].as_string_lossy() == position
+                    && row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id)
+            })
+            .and_then(|row| row[rel_gen_idx].as_i64())
+    };
+    assert_eq!(value_for("Position_1", 0, 1), Some(0));
+    assert_eq!(value_for("Position_1", 0, 2), Some(3));
+    assert_eq!(value_for("Position_1", 1, 1), Some(1));
+    assert_eq!(value_for("Position_1", 1, 2), Some(-1));
+    assert_eq!(value_for("Position_2", 0, 2), Some(4));
+}
+
+#[test]
+fn calculate_relatives_data_utility_writes_combined_columns() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("overall.csv");
+    let output_path = temp.path().join("relatives.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,relative_ID,cell_cycle_stage,cell_vol_fl,position,GFP_corrected_amount,GFP_raw_sum\n",
+            "0,1,-1,G1,8,Position_1,80,800\n",
+            "1,1,2,S,10,Position_1,100,1000\n",
+            "1,2,1,S,4,Position_1,25,200\n",
+            "1,2,1,S,99,Position_2,900,9000\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--calculate_relatives_data")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--channel_name")
+        .arg("GFP")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Calculated relatives data"));
+    let table = read_table(&output_path).expect("relatives table");
+    let position_idx = table.header_index("position").expect("position column");
+    let frame_idx = table.header_index("frame_i").expect("frame_i column");
+    let cell_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let amount_idx = table
+        .header_index("GFP_combined_amount_mother_bud")
+        .expect("combined amount");
+    let raw_idx = table
+        .header_index("GFP_combined_raw_sum_mother_bud")
+        .expect("combined raw sum");
+    let volume_idx = table
+        .header_index("combined_mother_bud_volume")
+        .expect("combined volume");
+    let rel_volume_idx = table.header_index("cell_vol_fl_rel").expect("rel volume");
+    let row_for = |position: &str, frame_i: i64, cell_id: i64| {
+        table
+            .rows
+            .iter()
+            .find(|row| {
+                row[position_idx].as_string_lossy() == position
+                    && row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id)
+            })
+            .expect("row")
+    };
+    let mother = row_for("Position_1", 1, 1);
+    assert_eq!(mother[amount_idx].as_i64(), Some(125));
+    assert_eq!(mother[raw_idx].as_i64(), Some(1200));
+    assert_eq!(mother[volume_idx].as_i64(), Some(14));
+    assert_eq!(mother[rel_volume_idx].as_i64(), Some(4));
+
+    let g1 = row_for("Position_1", 0, 1);
+    assert_eq!(g1[amount_idx].as_i64(), Some(80));
+    assert_eq!(g1[volume_idx].as_i64(), Some(8));
+}
+
+#[test]
+fn calculate_per_phase_quantities_utility_writes_phase_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("relatives.csv");
+    let output_path = temp.path().join("phases.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,generation_num,position,file,max_frame_pos,cell_cycle_stage,cell_area_um2,cell_vol_fl,cell_area_um2_rel,cell_vol_fl_rel,combined_mother_bud_volume,GFP_corrected_amount,GFP_corrected_mean,GFP_corrected_concentration,GFP_combined_amount_mother_bud\n",
+            "1,1,0,Position_1,demo.tif,5,G1,10,5,1,0.5,5,50,2,10,55\n",
+            "2,1,0,Position_1,demo.tif,5,G1,13,7,1.5,0.8,7,55,2.5,12,60\n",
+            "3,1,0,Position_1,demo.tif,5,S,13,7,2,1,9,60,3,15,65\n",
+            "4,1,0,Position_1,demo.tif,5,S,19,11,3,1.5,14,70,4,20,75\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--calculate_per_phase_quantities")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .arg("--channel_name")
+        .arg("GFP")
+        .arg("--grouping_column")
+        .arg("max_frame_pos")
+        .arg("--grouping_column")
+        .arg("Cell_ID")
+        .arg("--grouping_column")
+        .arg("generation_num")
+        .arg("--grouping_column")
+        .arg("position")
+        .arg("--grouping_column")
+        .arg("file")
+        .arg("--grouping_column")
+        .arg("cell_cycle_stage")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Calculated per-phase quantities"));
+    let table = read_table(&output_path).expect("phase table");
+    assert_eq!(table.rows.len(), 2);
+    let stage_idx = table
+        .header_index("cell_cycle_stage")
+        .expect("stage column");
+    let area_growth_idx = table
+        .header_index("phase_area_growth")
+        .expect("area growth");
+    let complete_cycle_idx = table
+        .header_index("complete_cycle")
+        .expect("complete cycle");
+    let combined_end_idx = table
+        .header_index("phase_GFP_combined_amount_at_end")
+        .expect("combined amount end");
+    let s_phase = table
+        .rows
+        .iter()
+        .find(|row| row[stage_idx].as_string_lossy() == "S")
+        .expect("S phase");
+    assert_eq!(s_phase[area_growth_idx].as_i64(), Some(6));
+    assert_eq!(s_phase[complete_cycle_idx].as_i64(), Some(1));
+    assert_eq!(s_phase[combined_end_idx].as_i64(), Some(75));
+}
+
+#[test]
+fn normalize_acdc_column_names_utility_renames_legacy_headers() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("legacy.csv");
+    let output_path = temp.path().join("normalized.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,Cell cycle stage,# of cycles,Relative's ID,Relationship,Emerg_frame_i,Division_frame_i,Discard,cell_area_um2\n",
+            "0,1,G1,2,-1,mother,0,5,0,10\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--normalize_acdc_column_names")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Normalized Cell-ACDC column names"));
+    let table = read_table(&output_path).expect("normalized table");
+    for column in [
+        "cell_cycle_stage",
+        "generation_num",
+        "relative_ID",
+        "relationship",
+        "emerg_frame_i",
+        "division_frame_i",
+        "is_cell_excluded",
+    ] {
+        assert!(table.maybe_header_index(column).is_some(), "{column}");
+    }
+    assert!(table.maybe_header_index("Cell cycle stage").is_none());
+    let generation_idx = table.header_index("generation_num").expect("generation");
+    assert_eq!(table.rows[0][generation_idx].as_i64(), Some(2));
+}
+
+#[test]
+fn fix_will_divide_utility_clears_stale_dividing_cycles() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("fixed.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,will_divide\n",
+            "0,1,G1,0,1\n",
+            "1,1,S,0,1\n",
+            "2,1,G1,1,0\n",
+            "0,2,S,3,1\n",
+            "1,2,S,3,1\n",
+            "0,3,,5,1\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--fix_will_divide")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Fixed will_divide values"));
+    let table = read_table(&output_path).expect("fixed table");
+    let frame_idx = table.header_index("frame_i").expect("frame_i column");
+    let cell_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let will_idx = table.header_index("will_divide").expect("will_divide");
+    let value_for = |frame_i: i64, cell_id: i64| {
+        table
+            .rows
+            .iter()
+            .find(|row| {
+                row[frame_idx].as_i64() == Some(frame_i) && row[cell_idx].as_i64() == Some(cell_id)
+            })
+            .and_then(|row| row[will_idx].as_i64())
+    };
+    assert_eq!(value_for(0, 1), Some(1));
+    assert_eq!(value_for(1, 1), Some(1));
+    assert_eq!(value_for(0, 2), Some(0));
+    assert_eq!(value_for(1, 2), Some(0));
+    assert_eq!(value_for(0, 3), Some(1));
+}
+
+#[test]
+fn fix_corrected_assignment_i_utility_migrates_legacy_column() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let input_path = temp.path().join("acdc_output.csv");
+    let output_path = temp.path().join("fixed_corrected.csv");
+    fs::write(
+        &input_path,
+        concat!(
+            "frame_i,Cell_ID,corrected_assignment\n",
+            "0,1,0\n",
+            "1,1,1\n",
+            "2,1,1\n",
+            "3,1,0\n",
+            "4,1,2\n",
+            "1,2,3\n",
+            "2,2,3\n",
+        ),
+    )
+    .expect("input table");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--fix_corrected_assignment_i")
+        .arg("--input_path")
+        .arg(&input_path)
+        .arg("--output_path")
+        .arg(&output_path)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Fixed corrected_assignment values"));
+    let table = read_table(&output_path).expect("fixed corrected table");
+    assert!(table.maybe_header_index("corrected_assignment").is_none());
+    let frame_idx = table.header_index("frame_i").expect("frame_i column");
+    let cell_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let corrected_idx = table
+        .header_index("corrected_on_frame_i")
+        .expect("corrected_on_frame_i");
+    let value_for = |frame_i: i64, cell_id: i64| {
+        table
+            .rows
+            .iter()
+            .find(|row| {
+                row[frame_idx].as_i64() == Some(frame_i) && row[cell_idx].as_i64() == Some(cell_id)
+            })
+            .and_then(|row| row[corrected_idx].as_i64())
+    };
+    assert_eq!(value_for(0, 1), Some(-1));
+    assert_eq!(value_for(1, 1), Some(1));
+    assert_eq!(value_for(2, 1), Some(1));
+    assert_eq!(value_for(3, 1), Some(-1));
+    assert_eq!(value_for(4, 1), Some(4));
+    assert_eq!(value_for(1, 2), Some(1));
+    assert_eq!(value_for(2, 2), Some(1));
 }
 
 #[test]
@@ -2066,6 +3000,1311 @@ fn old_subcommands_are_rejected() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unexpected argument 'run-position'"));
+}
+
+#[test]
+fn lineage_modes_are_mutually_exclusive() {
+    let output = run_bin(&[
+        "--mark_unknown_lineage",
+        "--set_lineage_parent",
+        "--frame_i",
+        "0",
+        "--cell_id",
+        "1",
+        "--parent_id",
+        "1",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Use only one of"));
+    assert!(stderr.contains("--mark_unknown_lineage"));
+    assert!(stderr.contains("--set_lineage_parent"));
+}
+
+#[test]
+fn parent_id_requires_lineage_mode() {
+    let output = run_bin(&["--parent_id", "1", "--cell_id", "1", "--frame_i", "0"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Utility path/layout flags require a utility mode"));
+}
+
+#[test]
+fn mother_id_requires_cell_cycle_mode() {
+    let output = run_bin(&["--mother_id", "1", "--cell_id", "2", "--frame_i", "0"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Utility path/layout flags require a utility mode"));
+}
+
+#[test]
+fn cell_cycle_stage_requires_cell_cycle_mode() {
+    let output = run_bin(&[
+        "--cell_cycle_stage",
+        "S",
+        "--cell_id",
+        "2",
+        "--frame_i",
+        "0",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Utility path/layout flags require a utility mode"));
+}
+
+#[test]
+fn relationship_requires_cell_cycle_mode() {
+    let output = run_bin(&[
+        "--relationship",
+        "bud",
+        "--relative_id",
+        "1",
+        "--cell_id",
+        "2",
+        "--frame_i",
+        "0",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Utility path/layout flags require a utility mode"));
+}
+
+#[test]
+fn generation_num_requires_cell_cycle_mode() {
+    let output = run_bin(&["--generation_num", "2", "--cell_id", "2", "--frame_i", "0"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Utility path/layout flags require a utility mode"));
+}
+
+#[test]
+fn cell_cycle_marker_args_require_cell_cycle_mode() {
+    let output = run_bin(&[
+        "--emerg_frame_i",
+        "0",
+        "--division_frame_i",
+        "3",
+        "--is_history_known",
+        "true",
+        "--cell_id",
+        "2",
+        "--frame_i",
+        "0",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Utility path/layout flags require a utility mode"));
+}
+
+#[test]
+fn set_cell_cycle_generation_utility_updates_selected_cells() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    let table_path = images_dir.join("demo_acdc_output.csv");
+    fs::write(
+        &table_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,1\n",
+            "0,2,S,0,1,bud,-1,-1,0\n",
+            "0,3,S,0,1,bud,-1,-1,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_cell_cycle_generation")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .arg("--cell_id")
+        .arg("3")
+        .arg("--generation_num")
+        .arg("2")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Set generation_num to 2 for 2 cell(s)"));
+    let table = read_table(&table_path).expect("updated acdc output");
+    let cell_id_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let generation_idx = table
+        .header_index("generation_num")
+        .expect("generation column");
+    for cell_id in [2, 3] {
+        let row = table
+            .rows
+            .iter()
+            .find(|row| row[cell_id_idx].as_i64() == Some(cell_id))
+            .expect("selected row");
+        assert_eq!(row[generation_idx].as_i64(), Some(2));
+    }
+}
+
+#[test]
+fn set_cell_cycle_generation_rejects_negative_generation() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_cell_cycle_generation")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .arg("--generation_num")
+        .arg("-1")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("generation_num must be >= 0"));
+}
+
+#[test]
+fn set_cell_cycle_markers_utility_updates_selected_cells() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    let table_path = images_dir.join("demo_acdc_output.csv");
+    fs::write(
+        &table_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,1\n",
+            "0,2,S,0,1,bud,-1,-1,0\n",
+            "0,3,S,0,1,bud,-1,-1,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_cell_cycle_markers")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .arg("--cell_id")
+        .arg("3")
+        .arg("--emerg_frame_i")
+        .arg("0")
+        .arg("--division_frame_i")
+        .arg("5")
+        .arg("--is_history_known")
+        .arg("true")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Set emerg_frame_i=0, division_frame_i=5, is_history_known=true"));
+    let table = read_table(&table_path).expect("updated acdc output");
+    let cell_id_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    for cell_id in [2, 3] {
+        let row_idx = table
+            .rows
+            .iter()
+            .position(|row| row[cell_id_idx].as_i64() == Some(cell_id))
+            .expect("selected row");
+        let row = table.row_map(row_idx);
+        assert_eq!(row["emerg_frame_i"].as_i64(), Some(0));
+        assert_eq!(row["division_frame_i"].as_i64(), Some(5));
+        assert_eq!(row["is_history_known"].as_string_lossy(), "true");
+    }
+    let row_1_idx = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(1))
+        .expect("untouched row");
+    let row_1 = table.row_map(row_1_idx);
+    assert_eq!(row_1["emerg_frame_i"].as_i64(), Some(-1));
+    assert_eq!(row_1["division_frame_i"].as_i64(), Some(-1));
+}
+
+#[test]
+fn set_cell_cycle_markers_requires_a_marker_option() {
+    let output = run_bin(&[
+        "--set_cell_cycle_markers",
+        "--position_dir",
+        "Position_1",
+        "--frame_i",
+        "0",
+        "--cell_id",
+        "2",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--set_cell_cycle_markers requires at least one of --emerg_frame_i"));
+}
+
+#[test]
+fn set_cell_cycle_markers_rejects_marker_below_unassigned() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_cell_cycle_markers")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .arg("--emerg_frame_i")
+        .arg("-2")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("emerg_frame_i must be >= -1"));
+}
+
+#[test]
+fn propagate_cell_cycle_utility_updates_source_and_future_rows() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,3\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    let table_path = images_dir.join("demo_acdc_output.csv");
+    fs::write(
+        &table_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,0\n",
+            "1,1,G1,1,-1,mother,-1,-1,0\n",
+            "2,1,G1,1,-1,mother,-1,-1,0\n",
+            "1,2,G1,1,-1,mother,-1,-1,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--propagate_cell_cycle")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .arg("--cell_cycle_stage")
+        .arg("S")
+        .arg("--generation_num")
+        .arg("2")
+        .arg("--emerg_frame_i")
+        .arg("0")
+        .arg("--is_history_known")
+        .arg("yes")
+        .arg("--end_frame")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Propagated cell-cycle edits for 1 cell(s) from frame 0 through frame 1")
+    );
+    let table = read_table(&table_path).expect("updated acdc output");
+    let frame_idx = table.header_index("frame_i").expect("frame column");
+    let cell_id_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let row_for = |frame: i64, cell_id: i64| {
+        let row_idx = table
+            .rows
+            .iter()
+            .position(|row| {
+                row[frame_idx].as_i64() == Some(frame) && row[cell_id_idx].as_i64() == Some(cell_id)
+            })
+            .expect("row");
+        table.row_map(row_idx)
+    };
+    for frame in [0, 1] {
+        let row = row_for(frame, 1);
+        assert_eq!(row["cell_cycle_stage"].as_string_lossy(), "S");
+        assert_eq!(row["generation_num"].as_i64(), Some(2));
+        assert_eq!(row["emerg_frame_i"].as_i64(), Some(0));
+        assert_eq!(row["is_history_known"].as_string_lossy(), "true");
+    }
+    let frame_2 = row_for(2, 1);
+    assert_eq!(frame_2["cell_cycle_stage"].as_string_lossy(), "G1");
+    assert_eq!(frame_2["generation_num"].as_i64(), Some(1));
+    let other_cell = row_for(1, 2);
+    assert_eq!(other_cell["cell_cycle_stage"].as_string_lossy(), "G1");
+}
+
+#[test]
+fn propagate_cell_cycle_requires_an_edit_option() {
+    let output = run_bin(&[
+        "--propagate_cell_cycle",
+        "--position_dir",
+        "Position_1",
+        "--frame_i",
+        "0",
+        "--cell_id",
+        "1",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--propagate_cell_cycle requires at least one cell-cycle edit option"));
+}
+
+#[test]
+fn propagate_cell_cycle_rejects_end_frame_before_source() {
+    let output = run_bin(&[
+        "--propagate_cell_cycle",
+        "--position_dir",
+        "Position_1",
+        "--frame_i",
+        "2",
+        "--cell_id",
+        "1",
+        "--generation_num",
+        "2",
+        "--end_frame",
+        "1",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--propagate_cell_cycle requires --end_frame >= --frame_i"));
+}
+
+#[test]
+fn check_cell_cycle_integrity_reports_frame_issues() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,S,0,2,mother,-1,-1,1\n",
+            "0,2,S,1,1,bud,-1,-1,0\n",
+            "0,3,S,0,1,bud,-1,-1,0\n",
+            "0,4,S,0,99,bud,-1,-1,0\n",
+            "0,5,G1,0,1,bud,-1,-1,0\n",
+            "1,1,G1,1,-1,mother,-1,-1,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--check_cell_cycle_integrity")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("integrity report json");
+    assert_eq!(payload["is_valid"], serde_json::json!(false));
+    assert_eq!(payload["frames_checked"], serde_json::json!([0]));
+    let issues = payload["issues"].as_array().expect("issues array");
+    let categories = issues
+        .iter()
+        .map(|issue| issue["category"].as_str().expect("category"))
+        .collect::<Vec<_>>();
+    assert!(categories.contains(&"S-phase cells whose relative_ID is missing"));
+    assert!(categories.contains(&"number of buds different from number of mothers in S phase"));
+    assert!(categories.contains(&"mother cells with multiple buds"));
+    assert!(categories.contains(&"buds whose generation number is not zero"));
+    assert!(categories.contains(&"mothers whose generation number is < 1"));
+    assert!(categories.contains(&"buds in G1"));
+    assert!(categories.contains(&"ID-relative_ID mismatches"));
+    let duplicate_mother_issue = issues
+        .iter()
+        .find(|issue| issue["category"] == "mother cells with multiple buds")
+        .expect("duplicate mother issue");
+    assert_eq!(duplicate_mother_issue["mother_ids"], serde_json::json!([1]));
+}
+
+#[test]
+fn check_cell_cycle_integrity_reports_valid_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,S,1,2,mother,-1,-1,1\n",
+            "0,2,S,0,1,bud,-1,-1,0\n",
+            "1,1,G1,1,-1,mother,-1,-1,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--check_cell_cycle_integrity")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("integrity report json");
+    assert_eq!(payload["is_valid"], serde_json::json!(true));
+    assert_eq!(payload["frames_checked"], serde_json::json!([0, 1]));
+    assert_eq!(payload["issues"], serde_json::json!([]));
+}
+
+#[test]
+fn check_cell_cycle_integrity_reports_global_cycles_without_g1() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,S,1,2,mother,-1,-1,1\n",
+            "0,2,S,0,1,bud,-1,-1,0\n",
+            "1,1,S,1,2,mother,-1,-1,1\n",
+            "1,2,S,0,1,bud,-1,-1,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--check_cell_cycle_integrity")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("integrity report json");
+    assert_eq!(payload["is_valid"], serde_json::json!(false));
+    let global_issue = payload["issues"]
+        .as_array()
+        .expect("issues array")
+        .iter()
+        .find(|issue| issue["category"] == "cell cycles without G1")
+        .expect("global cycle issue");
+    assert_eq!(global_issue["frame_i"], serde_json::json!(-1));
+    assert_eq!(
+        global_issue["cycles"],
+        serde_json::json!([{"cell_id": 1, "generation_num": 1}])
+    );
+
+    let frame_output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--check_cell_cycle_integrity")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .output()
+        .expect("run binary");
+    assert!(frame_output.status.success());
+    let frame_payload: serde_json::Value =
+        serde_json::from_slice(&frame_output.stdout).expect("frame report json");
+    let frame_categories = frame_payload["issues"]
+        .as_array()
+        .expect("issues array")
+        .iter()
+        .map(|issue| issue["category"].as_str().expect("category"))
+        .collect::<Vec<_>>();
+    assert!(!frame_categories.contains(&"cell cycles without G1"));
+}
+
+#[test]
+fn check_cell_cycle_integrity_reports_will_divide_without_next_generation() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,3\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known,will_divide\n",
+            "0,1,G1,1,-1,mother,-1,-1,1,1\n",
+            "1,1,S,1,2,mother,-1,-1,1,1\n",
+            "1,2,S,0,1,bud,-1,-1,0,0\n",
+            "2,1,G1,2,-1,mother,-1,-1,1,0\n",
+            "0,3,G1,1,-1,mother,-1,-1,1,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--check_cell_cycle_integrity")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("integrity report json");
+    let issue = payload["issues"]
+        .as_array()
+        .expect("issues array")
+        .iter()
+        .find(|issue| issue["category"] == "will_divide without next generation")
+        .expect("will_divide issue");
+    assert_eq!(
+        issue["cycles"],
+        serde_json::json!([{"cell_id": 3, "generation_num": 1}])
+    );
+}
+
+#[test]
+fn check_cell_cycle_integrity_rejects_cell_id_filter() {
+    let output = run_bin(&[
+        "--check_cell_cycle_integrity",
+        "--position_dir",
+        "Position_1",
+        "--cell_id",
+        "1",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(
+        "--check_cell_cycle_integrity checks full frames and does not support --cell_id"
+    ));
+}
+
+#[test]
+fn set_cell_cycle_relationship_utility_updates_selected_cells() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    let table_path = images_dir.join("demo_acdc_output.csv");
+    fs::write(
+        &table_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,S,1,2,mother,-1,-1,1\n",
+            "0,2,S,0,1,bud,-1,-1,0\n",
+            "0,3,G1,1,-1,mother,-1,-1,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_cell_cycle_relationship")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("3")
+        .arg("--relationship")
+        .arg("bud")
+        .arg("--relative_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Set relationship to \"bud\" for 1 cell"));
+    let table = read_table(&table_path).expect("updated acdc output");
+    let cell_id_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let row_idx = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(3))
+        .expect("updated row");
+    let row = table.row_map(row_idx);
+    assert_eq!(row["relationship"].as_string_lossy(), "bud");
+    assert_eq!(row["relative_ID"].as_i64(), Some(1));
+}
+
+#[test]
+fn set_cell_cycle_relationship_rejects_bud_without_relative_id() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_cell_cycle_relationship")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .arg("--relationship")
+        .arg("bud")
+        .arg("--relative_id")
+        .arg("-1")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Bud relationships require a positive relative_ID"));
+}
+
+#[test]
+fn set_cell_cycle_stage_utility_updates_selected_cells() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    let table_path = images_dir.join("demo_acdc_output.csv");
+    fs::write(
+        &table_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,1\n",
+            "0,2,G1,1,-1,mother,-1,-1,0\n",
+            "0,3,G1,1,-1,mother,-1,-1,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_cell_cycle_stage")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .arg("--cell_id")
+        .arg("3")
+        .arg("--cell_cycle_stage")
+        .arg("S")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Set cell-cycle stage to \"S\" for 2 cell(s)"));
+    let table = read_table(&table_path).expect("updated acdc output");
+    let cell_id_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let stage_idx = table
+        .header_index("cell_cycle_stage")
+        .expect("stage column");
+    for cell_id in [2, 3] {
+        let row = table
+            .rows
+            .iter()
+            .find(|row| row[cell_id_idx].as_i64() == Some(cell_id))
+            .expect("selected row");
+        assert_eq!(row[stage_idx].as_string_lossy(), "S");
+    }
+    let untouched = table
+        .rows
+        .iter()
+        .find(|row| row[cell_id_idx].as_i64() == Some(1))
+        .expect("untouched row");
+    assert_eq!(untouched[stage_idx].as_string_lossy(), "G1");
+}
+
+#[test]
+fn set_cell_cycle_stage_requires_stage() {
+    let output = run_bin(&[
+        "--set_cell_cycle_stage",
+        "--position_dir",
+        "Position_1",
+        "--frame_i",
+        "0",
+        "--cell_id",
+        "2",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--set_cell_cycle_stage requires --cell_cycle_stage"));
+}
+
+#[test]
+fn assign_mother_bud_utility_updates_cell_cycle_table() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    let table_path = images_dir.join("demo_acdc_output.csv");
+    fs::write(
+        &table_path,
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,emerg_frame_i,division_frame_i,is_history_known\n",
+            "0,1,G1,1,-1,mother,-1,-1,1\n",
+            "0,2,G1,1,-1,mother,-1,-1,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--assign_mother_bud")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .arg("--mother_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Assigned Cell_ID 2 as bud of mother Cell_ID 1"));
+    let table = read_table(&table_path).expect("updated acdc output");
+    let cell_id_idx = table.header_index("Cell_ID").expect("Cell_ID column");
+    let bud_idx = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(2))
+        .expect("bud row");
+    let mother_idx = table
+        .rows
+        .iter()
+        .position(|row| row[cell_id_idx].as_i64() == Some(1))
+        .expect("mother row");
+    let bud = table.row_map(bud_idx);
+    let mother = table.row_map(mother_idx);
+    assert_eq!(bud["cell_cycle_stage"].as_string_lossy(), "S");
+    assert_eq!(bud["generation_num"].as_i64(), Some(0));
+    assert_eq!(bud["relative_ID"].as_i64(), Some(1));
+    assert_eq!(bud["relationship"].as_string_lossy(), "bud");
+    assert_eq!(bud["emerg_frame_i"].as_i64(), Some(0));
+    assert_eq!(mother["cell_cycle_stage"].as_string_lossy(), "S");
+    assert_eq!(mother["relative_ID"].as_i64(), Some(2));
+    assert_eq!(mother["relationship"].as_string_lossy(), "mother");
+    assert_eq!(mother["is_history_known"].as_string_lossy(), "true");
+}
+
+#[test]
+fn assign_mother_bud_requires_mother_id() {
+    let output = run_bin(&[
+        "--assign_mother_bud",
+        "--position_dir",
+        "Position_1",
+        "--frame_i",
+        "0",
+        "--cell_id",
+        "2",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--assign_mother_bud requires --mother_id"));
+}
+
+#[test]
+fn find_lineage_mother_utility_reports_missing_previous_id_candidate() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+            "0,1,G1,1,-1,mother,1\n",
+            "0,2,G1,1,-1,mother,1\n",
+            "1,2,S,1,-1,mother,1\n",
+            "1,3,S,1,-1,mother,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--find_lineage_mother")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("1")
+        .arg("--cell_id")
+        .arg("3")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Lineage mother candidate for Cell_ID 3 in frame 1"));
+    let payload_idx = stdout.find('{').expect("json payload starts with {");
+    let payload: serde_json::Value = serde_json::from_str(&stdout[payload_idx..]).expect("json");
+    assert_eq!(payload["frame_i"], 1);
+    assert_eq!(payload["cell_id"], 3);
+    assert_eq!(payload["mother_candidate"], 1);
+}
+
+#[test]
+fn find_lineage_mother_utility_reports_null_without_missing_previous_ids() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+            "0,1,G1,1,-1,mother,1\n",
+            "1,1,S,1,-1,mother,1\n",
+            "1,2,S,1,-1,mother,0\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--find_lineage_mother")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("1")
+        .arg("--cell_id")
+        .arg("2")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload_idx = stdout.find('{').expect("json payload starts with {");
+    let payload: serde_json::Value = serde_json::from_str(&stdout[payload_idx..]).expect("json");
+    assert_eq!(payload["mother_candidate"], serde_json::Value::Null);
+}
+
+#[test]
+fn find_lineage_mother_requires_exactly_one_cell_id() {
+    let output = run_bin(&[
+        "--find_lineage_mother",
+        "--position_dir",
+        "Position_1",
+        "--frame_i",
+        "1",
+        "--cell_id",
+        "2",
+        "--cell_id",
+        "3",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--find_lineage_mother requires exactly one --cell_id"));
+}
+
+#[test]
+fn review_lineage_frame_utility_reports_lineage_changes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        concat!(
+            "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+            "0,1,G1,1,-1,mother,1\n",
+            "0,2,G1,1,-1,mother,1\n",
+            "1,2,S,1,-1,mother,1\n",
+            "1,3,S,2,2,bud,1\n",
+        ),
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--review_lineage_frame")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Lineage review for frame 1"));
+    let payload_idx = stdout.find('{').expect("json payload starts with {");
+    let payload: serde_json::Value = serde_json::from_str(&stdout[payload_idx..]).expect("json");
+    assert_eq!(payload["frame_i"], 1);
+    assert_eq!(payload["cells_with_parent"], serde_json::json!([[3, 2]]));
+    assert_eq!(payload["orphan_cells"], serde_json::json!([]));
+    assert_eq!(payload["lost_cells"], serde_json::json!([1]));
+}
+
+#[test]
+fn review_lineage_frame_requires_position_dir() {
+    let output = run_bin(&["--review_lineage_frame", "--frame_i", "1"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--review_lineage_frame requires --position_dir"));
+}
+
+#[test]
+fn mark_unknown_lineage_rejects_negative_frame_index() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--mark_unknown_lineage")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("-1")
+        .arg("--cell_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--mark_unknown_lineage requires a non-negative --frame_i"));
+}
+
+#[test]
+fn set_lineage_parent_rejects_negative_frame_index() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_lineage_parent")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("-1")
+        .arg("--cell_id")
+        .arg("1")
+        .arg("--parent_id")
+        .arg("0")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--set_lineage_parent requires a non-negative --frame_i"));
+}
+
+#[test]
+fn mark_unknown_lineage_rejects_experiment_dir() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--mark_unknown_lineage")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--mark_unknown_lineage supports --position_dir, not --experiment_dir"));
+}
+
+#[test]
+fn set_lineage_parent_rejects_experiment_dir() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_lineage_parent")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("1")
+        .arg("--parent_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--set_lineage_parent supports --position_dir, not --experiment_dir",));
+}
+
+#[test]
+fn set_lineage_parent_rejects_missing_cell() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--set_lineage_parent")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .arg("--parent_id")
+        .arg("1")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Missing row for frame 0, Cell_ID 2"));
+}
+
+#[test]
+fn mark_unknown_lineage_rejects_missing_cell() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+    )
+    .expect("metadata");
+    fs::write(
+        images_dir.join("demo_acdc_output.csv"),
+        "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n0,1,G1,1,-1,mother,1\n",
+    )
+    .expect("acdc output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--mark_unknown_lineage")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--cell_id")
+        .arg("2")
+        .output()
+        .expect("run binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Missing row for frame 0, Cell_ID 2"));
 }
 
 #[test]

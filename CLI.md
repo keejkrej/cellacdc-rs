@@ -36,9 +36,30 @@ cellacdc-rs --add_lineage_tree --input_path demo_acdc_output.csv --output_path d
 cellacdc-rs --add_lineage_tree --experiment_dir Experiment_1 --table_endname acdc_output
 cellacdc-rs --build_lineage_state --input_path demo_acdc_output.csv --output_path demo_lineage_state.csv
 cellacdc-rs --export_lineage_info --input_path demo_acdc_output.csv --output_path frame1_lineage_info.json --frame_i 1
+cellacdc-rs --mark_unknown_lineage --position_dir Position_1 --frame_i 0 --cell_id 2
+cellacdc-rs --set_lineage_parent --position_dir Position_1 --frame_i 0 --cell_id 2 --parent_id 1
+cellacdc-rs --review_lineage_frame --position_dir Position_1 --frame_i 1
+cellacdc-rs --find_lineage_mother --position_dir Position_1 --frame_i 1 --cell_id 3
+cellacdc-rs --assign_mother_bud --position_dir Position_1 --frame_i 0 --cell_id 2 --mother_id 1
+cellacdc-rs --set_cell_cycle_stage --position_dir Position_1 --frame_i 0 --cell_id 2 --cell_cycle_stage S
+cellacdc-rs --set_cell_cycle_relationship --position_dir Position_1 --frame_i 0 --cell_id 2 --relationship bud --relative_id 1
+cellacdc-rs --set_cell_cycle_generation --position_dir Position_1 --frame_i 0 --cell_id 2 --generation_num 2
+cellacdc-rs --set_cell_cycle_markers --position_dir Position_1 --frame_i 0 --cell_id 2 --emerg_frame_i 0 --division_frame_i 5 --is_history_known true
+cellacdc-rs --propagate_cell_cycle --position_dir Position_1 --frame_i 0 --cell_id 2 --cell_cycle_stage S --end_frame 5
+cellacdc-rs --check_cell_cycle_integrity --position_dir Position_1 --frame_i 0
+cellacdc-rs --add_derived_cell_cycle_columns --input_path demo_acdc_output.csv --output_path demo_derived_acdc_output.csv
+cellacdc-rs --add_will_divide_column --input_path demo_acdc_output.csv --output_path demo_will_divide_acdc_output.csv
+cellacdc-rs --add_missing_acdc_columns --input_path legacy_acdc_output.csv --output_path latest_acdc_output.csv
+cellacdc-rs --ensure_acdc_compatibility --input_path legacy_acdc_output.csv --output_path latest_acdc_output.csv
+cellacdc-rs --add_generation_num_relid --input_path demo_acdc_output.csv --output_path demo_relid_acdc_output.csv
+cellacdc-rs --fix_will_divide --input_path demo_acdc_output.csv --output_path demo_fixed_acdc_output.csv
+cellacdc-rs --fix_corrected_assignment_i --input_path legacy_acdc_output.csv --output_path corrected_acdc_output.csv
 cellacdc-rs --propagate_lineage --input_path edited_acdc_output.csv --output_path propagated_acdc_output.csv --frame_i 0 --cell_id 1
 cellacdc-rs --update_lineage_frame --input_path demo_acdc_output.csv --output_path updated_acdc_output.csv --frame_i 0 --edits_json_path lineage_edits.json
 cellacdc-rs --generate_mother_bud_total --input_path demo_acdc_output.csv --output_path demo_mother_bud_total.csv --column_operation cell_area_um2=sum
+cellacdc-rs --calculate_relatives_data --input_path cca_properties.csv --output_path cca_relatives.csv --channel_name GFP
+cellacdc-rs --calculate_per_phase_quantities --input_path cca_relatives.csv --output_path cca_phases.csv --channel_name GFP --grouping_column max_frame_pos --grouping_column Cell_ID --grouping_column generation_num --grouping_column position --grouping_column file --grouping_column cell_cycle_stage
+cellacdc-rs --normalize_acdc_column_names --input_path legacy_cc_stage.csv --output_path normalized_acdc_output.csv
 cellacdc-rs --combine_metrics --source_path channel1.csv --source_path channel2.csv --output_path combined.csv --formula "sum_signal=table1_signal + table2_signal"
 cellacdc-rs --compute_multi_channel --position_dir Position_1 --source_endname acdc_output_first --source_endname acdc_output_second --formula "sum_signal=signal_table1 + signal_table2"
 cellacdc-rs --concat_acdc_outputs --concat_experiment_dir Experiment_1 --table_endname acdc_output --output_format csv
@@ -180,6 +201,89 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
 - `--export_lineage_info`: export a JSON summary of cells with parents, orphan
   cells, and lost cells for one lineage frame. Required arguments are
   `--input_path`, `--output_path`, and `--frame_i`.
+- `--mark_unknown_lineage`: mark lineage rows as unknown for the selected
+  position/frame/cell IDs. Required arguments are `--position_dir`,
+  `--frame_i`, and `--cell_id` (repeatable).
+- `--set_lineage_parent`: set a parent ID for selected cells and mark them as
+  history known. Required arguments are `--position_dir`, `--frame_i`,
+  `--cell_id` (repeatable), and `--parent_id`.
+- `--review_lineage_frame`: review new, orphan, and lost lineage cells for one
+  position frame. Required arguments are `--position_dir` and `--frame_i`.
+- `--find_lineage_mother`: report the next missing previous-frame Cell ID that
+  can be used as a lineage mother candidate. Required arguments are
+  `--position_dir`, `--frame_i`, and exactly one `--cell_id`.
+- `--assign_mother_bud`: assign one Cell ID as a bud of a mother Cell ID in the
+  cell-cycle annotations. Required arguments are `--position_dir`, `--frame_i`,
+  exactly one `--cell_id`, and `--mother_id`.
+- `--set_cell_cycle_stage`: set the `cell_cycle_stage` value for one or more
+  cells in one frame. Required arguments are `--position_dir`, `--frame_i`,
+  `--cell_id` (repeatable), and `--cell_cycle_stage`.
+- `--set_cell_cycle_relationship`: set the `relationship` value and optional
+  `relative_ID` for one or more cells in one frame. Required arguments are
+  `--position_dir`, `--frame_i`, `--cell_id` (repeatable), and
+  `--relationship`; pass `--relative_id` for bud relationships.
+- `--set_cell_cycle_generation`: set the `generation_num` value for one or more
+  cells in one frame. Required arguments are `--position_dir`, `--frame_i`,
+  `--cell_id` (repeatable), and `--generation_num`.
+- `--set_cell_cycle_markers`: set one or more of `emerg_frame_i`,
+  `division_frame_i`, and `is_history_known` for selected cells in one frame.
+  Required arguments are `--position_dir`, `--frame_i`, `--cell_id`
+  (repeatable), and at least one marker option. Use `-1` for unknown emergence
+  or division frames.
+- `--propagate_cell_cycle`: apply cell-cycle edits at `--frame_i` and propagate
+  them to future rows with matching `Cell_ID`. Required arguments are
+  `--position_dir`, `--frame_i`, `--cell_id` (repeatable), and at least one
+  cell-cycle edit option such as `--cell_cycle_stage`, `--generation_num`,
+  `--relationship`, `--relative_id`, `--emerg_frame_i`, `--division_frame_i`,
+  or `--is_history_known`. Pass `--end_frame` to stop propagation at an
+  inclusive frame.
+- `--check_cell_cycle_integrity`: report frame-level cell-cycle annotation
+  consistency issues as JSON. It checks mother/bud count mismatches, multiple
+  buds assigned to one mother, invalid S-phase generation numbers, G1 buds,
+  missing/invalid `relative_ID` values, and reciprocal `relative_ID`
+  mismatches. When checking all frames it also reports known mother cell cycles
+  that never contain a G1 row, and, when the optional `will_divide` column is
+  present, cycles marked to divide without a next generation. Required argument
+  is `--position_dir`; pass `--frame_i` to check one frame, otherwise all frames
+  are checked.
+- `--add_derived_cell_cycle_columns`: add Python-compatible derived cell-cycle
+  columns to an `acdc_output` table. It extends `will_divide` to every row in a
+  marked `(Cell_ID, generation_num)` cycle and writes
+  `end_of_cell_cycle_frame_i` as the last S-phase frame with `will_divide > 0`
+  for that cycle, or `-1` when unavailable. Required arguments are
+  `--input_path` and `--output_path`.
+- `--add_will_divide_column`: add Python-compatible `will_divide` values from
+  mother-bud annotations when the column is missing. Tables without
+  `cell_cycle_stage`, and tables that already contain `will_divide`, are left
+  structurally unchanged. Required arguments are `--input_path` and
+  `--output_path`.
+- `--add_missing_acdc_columns`: add Python-compatible missing `acdc_output`
+  compatibility columns. `is_cell_excluded` and `is_cell_dead` are added with
+  `0` for every row. If `cell_cycle_stage` exists, missing cell-cycle columns
+  except `will_divide` are added with Cell-ACDC defaults through the last
+  annotated row and left empty afterward. Required arguments are `--input_path`
+  and `--output_path`.
+- `--ensure_acdc_compatibility`: apply the Rust port of Cell-ACDC's loaded
+  `acdc_output` compatibility pass. It removes redundant `index`/`level_0`
+  columns, fills empty non-annotation values with `0` when all base
+  cell-cycle annotation columns are present, sorts and de-duplicates rows by
+  `(frame_i, Cell_ID)`, adds missing compatibility columns, adds and fixes
+  `will_divide`, and migrates legacy `corrected_assignment`. Required
+  arguments are `--input_path` and `--output_path`.
+- `--add_generation_num_relid`: add `generation_num_relID`, the generation
+  number of each row's `relative_ID` in the same frame. Required arguments are
+  `--input_path` and `--output_path`; repeat `--grouping_column COLUMN` when
+  matching must stay within extra keys such as position or file.
+- `--fix_will_divide`: reset `will_divide` to `0` for annotated
+  `(Cell_ID, generation_num)` cycles marked to divide when the next generation
+  for that cell does not exist. Rows without `cell_cycle_stage` are left
+  unchanged. Required arguments are `--input_path` and `--output_path`.
+- `--fix_corrected_assignment_i`: migrate legacy `corrected_assignment` values
+  to `corrected_on_frame_i` and remove `corrected_assignment`. Contiguous
+  positive assignment blocks for each `Cell_ID` receive the first frame of the
+  block. If `corrected_on_frame_i` already contains assigned values, only the
+  legacy column is removed. Required arguments are `--input_path` and
+  `--output_path`.
 - `--propagate_lineage`: propagate lineage-tree values from one frame to future
   rows in an `acdc_output` table. Required arguments are `--input_path`,
   `--output_path`, and `--frame_i`. Repeat `--cell_id` to restrict propagation;
@@ -195,6 +299,27 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
   The entity label column defaults to `entity` and can be changed with
   `--entity_colname`; use `--no_copy_all_nonselected_columns` to keep only
   columns named by `--column_operation`.
+- `--calculate_relatives_data`: join each row to the row matching its
+  `relative_ID` in the same frame and position context, add `_rel` columns, and
+  calculate Python-compatible mother-bud combined amounts. Required arguments
+  are `--input_path` and `--output_path`; repeat `--channel_name CHANNEL` for
+  channels with `CHANNEL_corrected_amount` and `CHANNEL_raw_sum` columns.
+  Repeat `--grouping_column COLUMN` to add extra join keys beyond the standard
+  `frame_i`, `max_frame_pos`, `file`, `selection_subset`, `position`, and
+  `directory` columns that are present.
+- `--calculate_per_phase_quantities`: aggregate downstream Cell-ACDC
+  measurements by phase, matching Python `calculate_per_phase_quantities`.
+  Required arguments are `--input_path`, `--output_path`, and repeated
+  `--grouping_column COLUMN`. The grouping columns must include
+  `max_frame_pos`, `Cell_ID`, `generation_num`, `position`, and `file`; include
+  `cell_cycle_stage` when aggregating one row per phase. Repeat
+  `--channel_name CHANNEL` to add fluorescence phase columns for channels with
+  the expected `CHANNEL_corrected_*` and
+  `CHANNEL_combined_amount_mother_bud` columns.
+- `--normalize_acdc_column_names`: rename legacy Cell-ACDC annotation columns
+  to the current `acdc_output` names, matching Python `_rename_columns`.
+  Required arguments are `--input_path` and `--output_path`. The command fails
+  if normalization would create duplicate headers.
 - `--combine_metrics`: combine metrics from two or more CSV/XLSX tables using
   formulas. Repeat `--source_path PATH` for each table, pass `--output_path`,
   and repeat `--formula COLUMN=EXPRESSION` for each output metric. Expressions

@@ -5,6 +5,7 @@ use crate::lineage::{
 };
 use crate::mask_io::{load_mask_data, save_mask_data, MaskPathResolution, SegmentationLayout};
 use crate::measure::{measure_position, MeasurementRunConfig};
+use crate::metadata::read_metadata_summary;
 use crate::runner::OverwritePolicy;
 use crate::session::{open_position_session, ViewPlane};
 use crate::tabular::{read_table, write_table, Table, TableValue};
@@ -139,6 +140,42 @@ pub struct CellCycleEdit {
 pub struct CellCyclePropagationConfig {
     pub start_frame_i: i64,
     pub end_frame_i: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CellCycleIntegrityReport {
+    pub is_valid: bool,
+    pub frames_checked: Vec<i64>,
+    pub issues: Vec<CellCycleIntegrityIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CellCycleIntegrityIssue {
+    pub frame_i: i64,
+    pub category: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cell_ids: Vec<i64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cycles: Vec<CellCycleCycleId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mother_ids: Vec<i64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub relation_mismatches: Vec<CellCycleRelationMismatch>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CellCycleCycleId {
+    pub cell_id: i64,
+    pub generation_num: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CellCycleRelationMismatch {
+    pub cell_id: i64,
+    pub relative_id: i64,
+    pub relative_relative_id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,12 +494,7 @@ pub fn load_cell_cycle_annotations(
     position_dir: impl AsRef<Path>,
     segm_endname: Option<&str>,
 ) -> Result<CellCycleAnnotationTable> {
-    let position = open_position_session(position_dir.as_ref())?;
-    let path = acdc_output_path(
-        &position.spec.images_dir,
-        &position.spec.basename,
-        segm_endname,
-    );
+    let (path, _) = lineage_table_paths_for_position(position_dir, segm_endname)?;
     let table = read_table(&path)
         .with_context(|| format!("Failed to load Cell-ACDC output {}", path.display()))?;
     ensure_required_columns(&table, REQUIRED_CCA_COLUMNS)?;
@@ -518,6 +550,41 @@ pub fn propagate_cell_cycle_edits(
         }
     }
     cell_cycle_table_from_table(table.path.clone(), updated)
+}
+
+pub fn check_cell_cycle_integrity(
+    table: &CellCycleAnnotationTable,
+    frame_i: Option<i64>,
+) -> CellCycleIntegrityReport {
+    let mut frames = table
+        .records
+        .iter()
+        .map(|record| record.frame_i)
+        .collect::<BTreeSet<_>>();
+    if let Some(frame_i) = frame_i {
+        frames = frames
+            .into_iter()
+            .filter(|candidate| *candidate == frame_i)
+            .collect();
+    }
+    let frames_checked = frames.iter().copied().collect::<Vec<_>>();
+    let mut issues = Vec::new();
+    for frame_i in &frames_checked {
+        let records = table
+            .records
+            .iter()
+            .filter(|record| record.frame_i == *frame_i)
+            .collect::<Vec<_>>();
+        collect_cell_cycle_frame_issues(*frame_i, &records, &mut issues);
+    }
+    if frame_i.is_none() {
+        collect_cell_cycle_global_issues(table, &mut issues);
+    }
+    CellCycleIntegrityReport {
+        is_valid: issues.is_empty(),
+        frames_checked,
+        issues,
+    }
 }
 
 pub fn repeat_tracking_current_position(
@@ -657,6 +724,7 @@ pub fn assign_mother_bud(
                 frame_i,
                 cell_id: bud_id,
                 cell_cycle_stage: Some("S".to_string()),
+                generation_num: Some(0),
                 relative_id: Some(mother_id),
                 relationship: Some("bud".to_string()),
                 emerg_frame_i: Some(frame_i),
@@ -665,6 +733,8 @@ pub fn assign_mother_bud(
             CellCycleEdit {
                 frame_i,
                 cell_id: mother_id,
+                cell_cycle_stage: Some("S".to_string()),
+                relative_id: Some(bud_id),
                 relationship: Some("mother".to_string()),
                 is_history_known: Some(true),
                 ..Default::default()
@@ -726,6 +796,16 @@ pub fn set_lineage_parent_for_position(
     Ok(state)
 }
 
+pub fn lineage_table_paths_for_position(
+    position_dir: impl AsRef<Path>,
+    segm_endname: Option<&str>,
+) -> Result<(PathBuf, PathBuf)> {
+    let (images_dir, basename) = resolve_lineage_position_basename(position_dir.as_ref())?;
+    let acdc_path = acdc_output_path(&images_dir, &basename, segm_endname);
+    let lineage_path = lineage_output_path(&acdc_path);
+    Ok((acdc_path, lineage_path))
+}
+
 pub fn propagate_lineage_for_position(
     position_dir: impl AsRef<Path>,
     segm_endname: Option<&str>,
@@ -743,13 +823,7 @@ fn load_or_initialize_lineage(
     position_dir: &Path,
     segm_endname: Option<&str>,
 ) -> Result<(PathBuf, LineageState)> {
-    let position = open_position_session(position_dir)?;
-    let acdc_path = acdc_output_path(
-        &position.spec.images_dir,
-        &position.spec.basename,
-        segm_endname,
-    );
-    let lineage_path = lineage_output_path(&acdc_path);
+    let (acdc_path, lineage_path) = lineage_table_paths_for_position(position_dir, segm_endname)?;
     if lineage_path.exists() {
         let table = read_table(&lineage_path)?;
         let state = build_lineage_state(&table)?;
@@ -759,6 +833,65 @@ fn load_or_initialize_lineage(
     let state = build_lineage_state(&source)?;
     write_table(&lineage_path, &state.to_table())?;
     Ok((lineage_path, state))
+}
+
+fn resolve_lineage_position_basename(position_dir: &Path) -> Result<(PathBuf, String)> {
+    let images_dir = if position_dir.file_name().and_then(|name| name.to_str()) == Some("Images") {
+        position_dir.to_path_buf()
+    } else {
+        position_dir.join("Images")
+    };
+    if !images_dir.is_dir() {
+        bail!(
+            "Expected a Cell-ACDC position directory or Images directory, got {}",
+            position_dir.display()
+        );
+    }
+
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&images_dir)
+        .with_context(|| format!("Failed to read {}", images_dir.display()))?
+    {
+        files.push(entry?.path());
+    }
+    files.sort();
+
+    let metadata_path = files
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with("metadata.csv"))
+                .unwrap_or(false)
+        })
+        .cloned();
+    if let Some(path) = metadata_path {
+        if let Some(basename) = read_metadata_summary(&path)?.basename {
+            if !basename.is_empty() {
+                return Ok((images_dir, basename));
+            }
+        }
+    }
+
+    infer_basename_from_acdc_output(&files)
+        .map(|basename| (images_dir.clone(), basename))
+        .ok_or_else(|| {
+            anyhow!(
+                "Failed to determine Cell-ACDC basename in {}",
+                images_dir.display()
+            )
+        })
+}
+
+fn infer_basename_from_acdc_output(files: &[PathBuf]) -> Option<String> {
+    files.iter().find_map(|path| {
+        let name = path.file_name()?.to_str()?;
+        if name.contains("_lineage") {
+            return None;
+        }
+        name.strip_suffix("acdc_output.csv")
+            .map(|basename| basename.to_string())
+    })
 }
 
 fn cell_cycle_table_from_table(path: PathBuf, table: Table) -> Result<CellCycleAnnotationTable> {
@@ -785,6 +918,253 @@ fn cell_cycle_table_from_table(path: PathBuf, table: Table) -> Result<CellCycleA
     })
 }
 
+fn collect_cell_cycle_frame_issues(
+    frame_i: i64,
+    records: &[&CellCycleAnnotationRecord],
+    issues: &mut Vec<CellCycleIntegrityIssue>,
+) {
+    let cell_ids = records
+        .iter()
+        .map(|record| record.cell_id)
+        .collect::<BTreeSet<_>>();
+    let by_cell_id = records
+        .iter()
+        .map(|record| (record.cell_id, *record))
+        .collect::<BTreeMap<_, _>>();
+    let s_records = records
+        .iter()
+        .copied()
+        .filter(|record| record.cell_cycle_stage == "S")
+        .collect::<Vec<_>>();
+
+    let lonely_cells = s_records
+        .iter()
+        .filter(|record| !cell_ids.contains(&record.relative_id))
+        .map(|record| record.cell_id)
+        .collect::<Vec<_>>();
+    if !lonely_cells.is_empty() {
+        issues.push(cell_cycle_issue(
+            frame_i,
+            "S-phase cells whose relative_ID is missing",
+            lonely_cells,
+        ));
+    }
+
+    let num_buds = s_records
+        .iter()
+        .filter(|record| record.relationship == "bud")
+        .count();
+    let num_mothers = s_records
+        .iter()
+        .filter(|record| record.relationship == "mother")
+        .count();
+    if num_buds != num_mothers {
+        let mut counts = BTreeMap::new();
+        counts.insert("buds".to_string(), num_buds);
+        counts.insert("mothers_in_s".to_string(), num_mothers);
+        issues.push(CellCycleIntegrityIssue {
+            frame_i,
+            category: "number of buds different from number of mothers in S phase".to_string(),
+            cell_ids: Vec::new(),
+            cycles: Vec::new(),
+            mother_ids: Vec::new(),
+            relation_mismatches: Vec::new(),
+            counts,
+        });
+    }
+
+    let mut buds_per_mother = BTreeMap::<i64, usize>::new();
+    for record in s_records
+        .iter()
+        .filter(|record| record.relationship == "bud")
+    {
+        *buds_per_mother.entry(record.relative_id).or_default() += 1;
+    }
+    let mother_ids = buds_per_mother
+        .into_iter()
+        .filter_map(|(mother_id, count)| (count > 1).then_some(mother_id))
+        .collect::<Vec<_>>();
+    if !mother_ids.is_empty() {
+        issues.push(CellCycleIntegrityIssue {
+            frame_i,
+            category: "mother cells with multiple buds".to_string(),
+            cell_ids: Vec::new(),
+            cycles: Vec::new(),
+            mother_ids,
+            relation_mismatches: Vec::new(),
+            counts: BTreeMap::new(),
+        });
+    }
+
+    let bud_ids_gen_num_nonzero = s_records
+        .iter()
+        .filter(|record| record.relationship == "bud" && record.generation_num != 0)
+        .map(|record| record.cell_id)
+        .collect::<Vec<_>>();
+    if !bud_ids_gen_num_nonzero.is_empty() {
+        issues.push(cell_cycle_issue(
+            frame_i,
+            "buds whose generation number is not zero",
+            bud_ids_gen_num_nonzero,
+        ));
+    }
+
+    let mother_ids_gen_num_less_one = s_records
+        .iter()
+        .filter(|record| record.relationship == "mother" && record.generation_num < 1)
+        .map(|record| record.cell_id)
+        .collect::<Vec<_>>();
+    if !mother_ids_gen_num_less_one.is_empty() {
+        issues.push(cell_cycle_issue(
+            frame_i,
+            "mothers whose generation number is < 1",
+            mother_ids_gen_num_less_one,
+        ));
+    }
+
+    let buds_g1 = records
+        .iter()
+        .filter(|record| record.relationship == "bud" && record.cell_cycle_stage == "G1")
+        .map(|record| record.cell_id)
+        .collect::<Vec<_>>();
+    if !buds_g1.is_empty() {
+        issues.push(cell_cycle_issue(frame_i, "buds in G1", buds_g1));
+    }
+
+    let s_cells_without_relative = s_records
+        .iter()
+        .filter(|record| record.relative_id < 1)
+        .map(|record| record.cell_id)
+        .collect::<Vec<_>>();
+    if !s_cells_without_relative.is_empty() {
+        issues.push(cell_cycle_issue(
+            frame_i,
+            "S-phase cells without positive relative_ID",
+            s_cells_without_relative,
+        ));
+    }
+
+    let relation_mismatches = s_records
+        .iter()
+        .filter_map(|record| {
+            let relative = by_cell_id.get(&record.relative_id)?;
+            (relative.relative_id != record.cell_id).then_some(CellCycleRelationMismatch {
+                cell_id: record.cell_id,
+                relative_id: record.relative_id,
+                relative_relative_id: relative.relative_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    if !relation_mismatches.is_empty() {
+        issues.push(CellCycleIntegrityIssue {
+            frame_i,
+            category: "ID-relative_ID mismatches".to_string(),
+            cell_ids: Vec::new(),
+            cycles: Vec::new(),
+            mother_ids: Vec::new(),
+            relation_mismatches,
+            counts: BTreeMap::new(),
+        });
+    }
+}
+
+fn collect_cell_cycle_global_issues(
+    table: &CellCycleAnnotationTable,
+    issues: &mut Vec<CellCycleIntegrityIssue>,
+) {
+    let mut cycles = BTreeMap::<(i64, i64), bool>::new();
+    for record in table
+        .records
+        .iter()
+        .filter(|record| record.relationship == "mother" && record.is_history_known)
+    {
+        let key = (record.cell_id, record.generation_num);
+        let has_g1 = record.cell_cycle_stage == "G1";
+        cycles
+            .entry(key)
+            .and_modify(|existing_has_g1| *existing_has_g1 |= has_g1)
+            .or_insert(has_g1);
+    }
+    let missing_g1 = cycles
+        .into_iter()
+        .filter_map(|((cell_id, generation_num), has_g1)| {
+            (!has_g1).then_some(CellCycleCycleId {
+                cell_id,
+                generation_num,
+            })
+        })
+        .collect::<Vec<_>>();
+    if !missing_g1.is_empty() {
+        issues.push(CellCycleIntegrityIssue {
+            frame_i: -1,
+            category: "cell cycles without G1".to_string(),
+            cell_ids: Vec::new(),
+            cycles: missing_g1,
+            mother_ids: Vec::new(),
+            relation_mismatches: Vec::new(),
+            counts: BTreeMap::new(),
+        });
+    }
+
+    if let Some(will_divide_idx) = table.source_table.maybe_header_index("will_divide") {
+        let existing_cycles = table
+            .records
+            .iter()
+            .map(|record| (record.cell_id, record.generation_num))
+            .collect::<BTreeSet<_>>();
+        let mut bad_cycles = BTreeSet::<(i64, i64)>::new();
+        for (row_idx, row) in table.source_table.rows.iter().enumerate() {
+            let will_divide = row
+                .get(will_divide_idx)
+                .and_then(TableValue::as_f64)
+                .unwrap_or(0.0);
+            if will_divide <= 0.0 {
+                continue;
+            }
+            let cell_id = row_i64(&table.source_table, row_idx, "Cell_ID").unwrap_or_default();
+            let generation_num =
+                row_i64(&table.source_table, row_idx, "generation_num").unwrap_or_default();
+            if !existing_cycles.contains(&(cell_id, generation_num + 1)) {
+                bad_cycles.insert((cell_id, generation_num));
+            }
+        }
+        let bad_cycles = bad_cycles
+            .into_iter()
+            .map(|(cell_id, generation_num)| CellCycleCycleId {
+                cell_id,
+                generation_num,
+            })
+            .collect::<Vec<_>>();
+        if !bad_cycles.is_empty() {
+            issues.push(CellCycleIntegrityIssue {
+                frame_i: -1,
+                category: "will_divide without next generation".to_string(),
+                cell_ids: Vec::new(),
+                cycles: bad_cycles,
+                mother_ids: Vec::new(),
+                relation_mismatches: Vec::new(),
+                counts: BTreeMap::new(),
+            });
+        }
+    }
+}
+
+fn cell_cycle_issue(
+    frame_i: i64,
+    category: impl Into<String>,
+    cell_ids: Vec<i64>,
+) -> CellCycleIntegrityIssue {
+    CellCycleIntegrityIssue {
+        frame_i,
+        category: category.into(),
+        cell_ids,
+        cycles: Vec::new(),
+        mother_ids: Vec::new(),
+        relation_mismatches: Vec::new(),
+        counts: BTreeMap::new(),
+    }
+}
+
 fn validate_cell_cycle_edit(edit: &CellCycleEdit) -> Result<()> {
     if let Some(generation_num) = edit.generation_num {
         if generation_num < 0 {
@@ -794,6 +1174,16 @@ fn validate_cell_cycle_edit(edit: &CellCycleEdit) -> Result<()> {
     if let Some(relative_id) = edit.relative_id {
         if relative_id < -1 {
             bail!("relative_ID must be >= -1");
+        }
+    }
+    if let Some(emerg_frame_i) = edit.emerg_frame_i {
+        if emerg_frame_i < -1 {
+            bail!("emerg_frame_i must be >= -1");
+        }
+    }
+    if let Some(division_frame_i) = edit.division_frame_i {
+        if division_frame_i < -1 {
+            bail!("division_frame_i must be >= -1");
         }
     }
     if let Some(relationship) = &edit.relationship {
@@ -1049,6 +1439,75 @@ mod tests {
         .unwrap();
         assert_eq!(propagated.records[1].relationship, "bud");
         assert_eq!(propagated.records[1].relative_id, 4);
+    }
+
+    #[test]
+    fn reports_cell_cycle_integrity_issues() {
+        let source_table = Table {
+            headers: REQUIRED_CCA_COLUMNS
+                .iter()
+                .map(|column| (*column).to_string())
+                .collect(),
+            rows: vec![
+                vec![
+                    TableValue::Number(0.0),
+                    TableValue::Number(1.0),
+                    TableValue::Text("S".into()),
+                    TableValue::Number(0.0),
+                    TableValue::Number(2.0),
+                    TableValue::Text("mother".into()),
+                    TableValue::Number(-1.0),
+                    TableValue::Number(-1.0),
+                    TableValue::Bool(true),
+                ],
+                vec![
+                    TableValue::Number(0.0),
+                    TableValue::Number(2.0),
+                    TableValue::Text("S".into()),
+                    TableValue::Number(1.0),
+                    TableValue::Number(1.0),
+                    TableValue::Text("bud".into()),
+                    TableValue::Number(-1.0),
+                    TableValue::Number(-1.0),
+                    TableValue::Bool(false),
+                ],
+                vec![
+                    TableValue::Number(0.0),
+                    TableValue::Number(3.0),
+                    TableValue::Text("S".into()),
+                    TableValue::Number(0.0),
+                    TableValue::Number(1.0),
+                    TableValue::Text("bud".into()),
+                    TableValue::Number(-1.0),
+                    TableValue::Number(-1.0),
+                    TableValue::Bool(false),
+                ],
+            ],
+        };
+        let table = cell_cycle_table_from_table(PathBuf::from("demo.csv"), source_table).unwrap();
+
+        let report = check_cell_cycle_integrity(&table, Some(0));
+
+        assert!(!report.is_valid);
+        assert_eq!(report.frames_checked, vec![0]);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.category == "mother cells with multiple buds"
+                && issue.mother_ids == vec![1]));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.category == "ID-relative_ID mismatches"));
+
+        let global_report = check_cell_cycle_integrity(&table, None);
+        assert!(global_report.issues.iter().any(|issue| issue.category
+            == "cell cycles without G1"
+            && issue.cycles
+                == vec![CellCycleCycleId {
+                    cell_id: 1,
+                    generation_num: 0
+                }]));
     }
 
     #[test]

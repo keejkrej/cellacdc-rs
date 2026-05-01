@@ -279,6 +279,71 @@ pub struct GenerateMotherBudTotalConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalculateRelativesDataConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub channels: Vec<String>,
+    pub grouping_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalculatePerPhaseQuantitiesConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub channels: Vec<String>,
+    pub grouping_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizeAcdcColumnNamesConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedCellCycleColumnsConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddWillDivideColumnConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddMissingAcdcColumnsConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureAcdcCompatibilityConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenerationNumRelIdConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub grouping_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixWillDivideConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixCorrectedAssignmentConfig {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConvertFileFormatConfig {
     pub input_path: PathBuf,
     pub output_path: PathBuf,
@@ -1170,6 +1235,123 @@ pub fn generate_mother_bud_total(
     )?;
     let headers = infer_headers_from_rows(&output_rows);
     write_table(&config.output_path, &rows_to_table(&headers, &output_rows))?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn calculate_relatives_data(
+    config: CalculateRelativesDataConfig,
+) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table =
+        calculate_relatives_data_to_table(&table, &config.channels, &config.grouping_columns)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn calculate_per_phase_quantities(
+    config: CalculatePerPhaseQuantitiesConfig,
+) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = calculate_per_phase_quantities_to_table(
+        &table,
+        &config.grouping_columns,
+        &config.channels,
+    )?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn normalize_acdc_column_names(
+    config: NormalizeAcdcColumnNamesConfig,
+) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = normalize_acdc_column_names_to_table(&table)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn add_derived_cell_cycle_columns(
+    config: DerivedCellCycleColumnsConfig,
+) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = add_derived_cell_cycle_columns_to_table(&table)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn add_will_divide_column(config: AddWillDivideColumnConfig) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = add_will_divide_column_to_table(&table)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn add_missing_acdc_columns(config: AddMissingAcdcColumnsConfig) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = add_missing_acdc_columns_to_table(&table)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn ensure_acdc_compatibility(
+    config: EnsureAcdcCompatibilityConfig,
+) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = ensure_acdc_compatibility_to_table(&table)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn add_generation_num_relid(config: GenerationNumRelIdConfig) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = add_generation_num_relid_to_table(&table, &config.grouping_columns)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn fix_will_divide(config: FixWillDivideConfig) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = fix_will_divide_to_table(&table)?;
+    write_table(&config.output_path, &output_table)?;
+    Ok(UtilityOutputPaths {
+        primary_path: config.output_path,
+        secondary_paths: Vec::new(),
+    })
+}
+
+pub fn fix_corrected_assignment(
+    config: FixCorrectedAssignmentConfig,
+) -> Result<UtilityOutputPaths> {
+    let table = read_table(&config.input_path)?;
+    let output_table = fix_corrected_assignment_to_table(&table)?;
+    write_table(&config.output_path, &output_table)?;
     Ok(UtilityOutputPaths {
         primary_path: config.output_path,
         secondary_paths: Vec::new(),
@@ -3461,6 +3643,1098 @@ fn generate_mother_bud_total_rows(
     Ok(output)
 }
 
+fn calculate_relatives_data_to_table(
+    table: &Table,
+    channels: &[String],
+    grouping_columns: &[String],
+) -> Result<Table> {
+    ensure_required_columns(
+        table,
+        &[
+            "frame_i",
+            "Cell_ID",
+            "relative_ID",
+            "cell_cycle_stage",
+            "cell_vol_fl",
+        ],
+    )?;
+    for column in grouping_columns {
+        table.header_index(column)?;
+    }
+
+    let original_headers = table.headers.clone();
+    let mut shared_key_columns = vec!["frame_i".to_string()];
+    for column in [
+        "max_frame_pos",
+        "file",
+        "selection_subset",
+        "position",
+        "directory",
+    ] {
+        if table.maybe_header_index(column).is_some() {
+            shared_key_columns.push(column.to_string());
+        }
+    }
+    for column in grouping_columns {
+        if !shared_key_columns.iter().any(|existing| existing == column) {
+            shared_key_columns.push(column.clone());
+        }
+    }
+
+    let mut headers = table.headers.clone();
+    let mut header_indices = headers
+        .iter()
+        .enumerate()
+        .map(|(idx, header)| (header.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
+    let mut rel_column_pairs = Vec::<(usize, usize)>::new();
+    for (source_idx, header) in original_headers.iter().enumerate() {
+        if header.ends_with("_rel") || shared_key_columns.iter().any(|column| column == header) {
+            continue;
+        }
+        let rel_header = format!("{header}_rel");
+        let rel_idx = match header_indices.get(&rel_header).copied() {
+            Some(idx) => idx,
+            None => {
+                let idx = headers.len();
+                headers.push(rel_header.clone());
+                header_indices.insert(rel_header, idx);
+                idx
+            }
+        };
+        rel_column_pairs.push((source_idx, rel_idx));
+    }
+
+    let mut derived_columns = Vec::<DerivedRelativeColumn>::new();
+    for channel in channels {
+        let corrected = format!("{channel}_corrected_amount");
+        let corrected_rel = format!("{channel}_corrected_amount_rel");
+        let combined = format!("{channel}_combined_amount_mother_bud");
+        if let (Some(base_idx), Some(rel_idx)) = (
+            header_indices.get(&corrected).copied(),
+            header_indices.get(&corrected_rel).copied(),
+        ) {
+            let output_idx = ensure_header_index(&mut headers, &mut header_indices, &combined);
+            derived_columns.push(DerivedRelativeColumn {
+                base_idx,
+                rel_idx,
+                output_idx,
+            });
+        }
+
+        let raw_sum = format!("{channel}_raw_sum");
+        let raw_sum_rel = format!("{channel}_raw_sum_rel");
+        let combined_raw = format!("{channel}_combined_raw_sum_mother_bud");
+        if let (Some(base_idx), Some(rel_idx)) = (
+            header_indices.get(&raw_sum).copied(),
+            header_indices.get(&raw_sum_rel).copied(),
+        ) {
+            let output_idx = ensure_header_index(&mut headers, &mut header_indices, &combined_raw);
+            derived_columns.push(DerivedRelativeColumn {
+                base_idx,
+                rel_idx,
+                output_idx,
+            });
+        }
+    }
+
+    let volume_output_idx = ensure_header_index(
+        &mut headers,
+        &mut header_indices,
+        "combined_mother_bud_volume",
+    );
+    let volume_base_idx = table.header_index("cell_vol_fl")?;
+    let volume_rel_idx = header_indices
+        .get("cell_vol_fl_rel")
+        .copied()
+        .ok_or_else(|| anyhow!("Missing generated relative-volume column"))?;
+    derived_columns.push(DerivedRelativeColumn {
+        base_idx: volume_base_idx,
+        rel_idx: volume_rel_idx,
+        output_idx: volume_output_idx,
+    });
+
+    let cell_idx = table.header_index("Cell_ID")?;
+    let relative_idx = table.header_index("relative_ID")?;
+    let stage_idx = table.header_index("cell_cycle_stage")?;
+    let shared_key_indices = shared_key_columns
+        .iter()
+        .map(|column| table.header_index(column))
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut row_by_relative_key = BTreeMap::<Vec<String>, usize>::new();
+    for (row_idx, row) in table.rows.iter().enumerate() {
+        let mut key = shared_key_indices
+            .iter()
+            .map(|idx| row[*idx].as_string_lossy())
+            .collect::<Vec<_>>();
+        key.push(row[cell_idx].as_string_lossy());
+        row_by_relative_key.entry(key).or_insert(row_idx);
+    }
+
+    let mut rows = table.rows.clone();
+    for row in &mut rows {
+        row.resize(headers.len(), TableValue::Empty);
+    }
+
+    for row_idx in 0..rows.len() {
+        let mut key = shared_key_indices
+            .iter()
+            .map(|idx| rows[row_idx][*idx].as_string_lossy())
+            .collect::<Vec<_>>();
+        key.push(rows[row_idx][relative_idx].as_string_lossy());
+        let relative_row_idx = row_by_relative_key.get(&key).copied();
+
+        for (source_idx, rel_idx) in &rel_column_pairs {
+            rows[row_idx][*rel_idx] = relative_row_idx
+                .and_then(|idx| table.rows.get(idx))
+                .and_then(|rel_row| rel_row.get(*source_idx))
+                .cloned()
+                .unwrap_or(TableValue::Empty);
+        }
+
+        let is_s_phase = rows[row_idx][stage_idx].as_string_lossy() == "S";
+        for column in &derived_columns {
+            let value = if is_s_phase {
+                let base = rows[row_idx][column.base_idx].as_f64().unwrap_or(f64::NAN);
+                let rel = rows[row_idx][column.rel_idx].as_f64().unwrap_or(f64::NAN);
+                TableValue::Number(base + rel)
+            } else {
+                rows[row_idx][column.base_idx].clone()
+            };
+            rows[row_idx][column.output_idx] = value;
+        }
+    }
+
+    Ok(Table { headers, rows })
+}
+
+fn calculate_per_phase_quantities_to_table(
+    table: &Table,
+    grouping_columns: &[String],
+    channels: &[String],
+) -> Result<Table> {
+    if grouping_columns.is_empty() {
+        bail!("calculate_per_phase_quantities requires at least one grouping column");
+    }
+    let mut seen_group_cols = BTreeSet::new();
+    for column in grouping_columns {
+        if !seen_group_cols.insert(column) {
+            bail!("Duplicate grouping column {column:?}");
+        }
+        table.header_index(column)?;
+    }
+    for required in [
+        "max_frame_pos",
+        "Cell_ID",
+        "generation_num",
+        "position",
+        "file",
+    ] {
+        if !grouping_columns.iter().any(|column| column == required) {
+            bail!("calculate_per_phase_quantities requires grouping column {required:?}");
+        }
+    }
+    ensure_required_columns(
+        table,
+        &[
+            "frame_i",
+            "cell_area_um2",
+            "cell_vol_fl",
+            "cell_area_um2_rel",
+            "cell_vol_fl_rel",
+            "combined_mother_bud_volume",
+            "max_frame_pos",
+            "Cell_ID",
+            "generation_num",
+            "position",
+            "file",
+        ],
+    )?;
+
+    let frame_idx = table.header_index("frame_i")?;
+    let area_idx = table.header_index("cell_area_um2")?;
+    let volume_idx = table.header_index("cell_vol_fl")?;
+    let rel_area_idx = table.header_index("cell_area_um2_rel")?;
+    let rel_volume_idx = table.header_index("cell_vol_fl_rel")?;
+    let combined_volume_idx = table.header_index("combined_mother_bud_volume")?;
+    let max_frame_idx = table.header_index("max_frame_pos")?;
+    let max_t_idx = table.maybe_header_index("max_t");
+    let group_indices = grouping_columns
+        .iter()
+        .map(|column| table.header_index(column))
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut channel_aggs = Vec::new();
+    for channel in channels {
+        let Some(mean_idx) = table.maybe_header_index(&format!("{channel}_corrected_mean")) else {
+            continue;
+        };
+        let amount_idx = table.header_index(&format!("{channel}_corrected_amount"))?;
+        let concentration_idx =
+            table.header_index(&format!("{channel}_corrected_concentration"))?;
+        let combined_amount_idx =
+            table.header_index(&format!("{channel}_combined_amount_mother_bud"))?;
+        channel_aggs.push(ChannelPhaseAggregation {
+            channel: channel.clone(),
+            amount_idx,
+            mean_idx,
+            concentration_idx,
+            combined_amount_idx,
+        });
+    }
+
+    let mut groups = BTreeMap::<Vec<String>, Vec<usize>>::new();
+    for (row_idx, row) in table.rows.iter().enumerate() {
+        let key = group_indices
+            .iter()
+            .map(|idx| row[*idx].as_string_lossy())
+            .collect::<Vec<_>>();
+        groups.entry(key).or_default().push(row_idx);
+    }
+
+    let mut headers = grouping_columns.to_vec();
+    headers.extend(
+        [
+            "phase_area_growth",
+            "phase_volume_growth",
+            "phase_area_at_beginning",
+            "phase_volume_at_beginning",
+            "phase_volume_at_end",
+            "phase_daughter_area_growth",
+            "phase_daughter_volume_growth",
+            "phase_length",
+            "phase_begin",
+            "phase_end",
+            "phase_combined_volume_at_end",
+            "complete_phase",
+            "complete_cycle",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    for agg in &channel_aggs {
+        headers.extend(
+            [
+                format!("phase_{}_amount_at_beginning", agg.channel),
+                format!("phase_{}_mean_at_beginning", agg.channel),
+                format!("phase_{}_concentration_at_beginning", agg.channel),
+                format!("phase_{}_concentration_at_end", agg.channel),
+                format!("phase_{}_combined_amount_at_beginning", agg.channel),
+                format!("phase_{}_combined_amount_at_end", agg.channel),
+            ]
+            .into_iter(),
+        );
+    }
+
+    let mut rows = Vec::new();
+    for row_indices in groups.values_mut() {
+        row_indices.sort_by(|left, right| {
+            compare_table_values(
+                &table.rows[*left][frame_idx],
+                &table.rows[*right][frame_idx],
+            )
+        });
+        let first_idx = row_indices[0];
+        let last_idx = *row_indices.last().expect("group row");
+        let first = &table.rows[first_idx];
+        let last = &table.rows[last_idx];
+        let phase_begin = row_indices
+            .iter()
+            .filter_map(|row_idx| table.rows[*row_idx][frame_idx].as_f64())
+            .fold(f64::INFINITY, f64::min);
+        let phase_end = row_indices
+            .iter()
+            .filter_map(|row_idx| table.rows[*row_idx][frame_idx].as_f64())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let max_frame_pos = first[max_frame_idx].as_f64().unwrap_or(f64::NAN);
+        let mut complete_phase = phase_begin > 0.0 && phase_end < max_frame_pos;
+        if let Some(max_t_idx) = max_t_idx {
+            complete_phase &= phase_end < first[max_t_idx].as_f64().unwrap_or(f64::NAN);
+        }
+
+        let mut row = group_indices
+            .iter()
+            .map(|idx| first[*idx].clone())
+            .collect::<Vec<_>>();
+        row.extend([
+            number_value(
+                last[area_idx].as_f64().unwrap_or(f64::NAN)
+                    - first[area_idx].as_f64().unwrap_or(f64::NAN),
+            ),
+            number_value(
+                last[volume_idx].as_f64().unwrap_or(f64::NAN)
+                    - first[volume_idx].as_f64().unwrap_or(f64::NAN),
+            ),
+            first[area_idx].clone(),
+            first[volume_idx].clone(),
+            last[volume_idx].clone(),
+            number_value(
+                last[rel_area_idx].as_f64().unwrap_or(f64::NAN)
+                    - first[rel_area_idx].as_f64().unwrap_or(f64::NAN),
+            ),
+            number_value(
+                last[rel_volume_idx].as_f64().unwrap_or(f64::NAN)
+                    - first[rel_volume_idx].as_f64().unwrap_or(f64::NAN),
+            ),
+            number_value(phase_end - phase_begin),
+            number_value(phase_begin),
+            number_value(phase_end),
+            last[combined_volume_idx].clone(),
+            number_value(if complete_phase { 1.0 } else { 0.0 }),
+            number_value(0.0),
+        ]);
+
+        for agg in &channel_aggs {
+            row.extend([
+                first[agg.amount_idx].clone(),
+                first[agg.mean_idx].clone(),
+                first[agg.concentration_idx].clone(),
+                last[agg.concentration_idx].clone(),
+                first[agg.combined_amount_idx].clone(),
+                last[agg.combined_amount_idx].clone(),
+            ]);
+        }
+        rows.push(row);
+    }
+
+    let cell_idx = header_index_in_slice(&headers, "Cell_ID")?;
+    let generation_idx = header_index_in_slice(&headers, "generation_num")?;
+    let position_idx = header_index_in_slice(&headers, "position")?;
+    let file_idx = header_index_in_slice(&headers, "file")?;
+    let complete_phase_idx = header_index_in_slice(&headers, "complete_phase")?;
+    let complete_cycle_idx = header_index_in_slice(&headers, "complete_cycle")?;
+    let mut complete_phases_by_cycle = BTreeMap::<Vec<String>, i64>::new();
+    for row in &rows {
+        let key = [cell_idx, generation_idx, position_idx, file_idx]
+            .into_iter()
+            .map(|idx| row[idx].as_string_lossy())
+            .collect::<Vec<_>>();
+        let complete_phase = row[complete_phase_idx].as_i64().unwrap_or(0);
+        *complete_phases_by_cycle.entry(key).or_default() += complete_phase;
+    }
+    for row in &mut rows {
+        let key = [cell_idx, generation_idx, position_idx, file_idx]
+            .into_iter()
+            .map(|idx| row[idx].as_string_lossy())
+            .collect::<Vec<_>>();
+        if complete_phases_by_cycle.get(&key).copied() == Some(2) {
+            row[complete_cycle_idx] = number_value(1.0);
+        }
+    }
+
+    Ok(Table { headers, rows })
+}
+
+fn normalize_acdc_column_names_to_table(table: &Table) -> Result<Table> {
+    let headers = table
+        .headers
+        .iter()
+        .map(|header| normalize_acdc_column_name(header).to_string())
+        .collect::<Vec<_>>();
+    let mut seen = BTreeSet::new();
+    for header in &headers {
+        if !seen.insert(header.clone()) {
+            bail!("Normalizing legacy Cell-ACDC column names would create duplicate header {header:?}");
+        }
+    }
+    Ok(Table {
+        headers,
+        rows: table.rows.clone(),
+    })
+}
+
+fn normalize_acdc_column_name(header: &str) -> &str {
+    match header {
+        "Cell cycle stage" => "cell_cycle_stage",
+        "# of cycles" => "generation_num",
+        "Relative's ID" => "relative_ID",
+        "Relationship" => "relationship",
+        "Emerg_frame_i" => "emerg_frame_i",
+        "Division_frame_i" => "division_frame_i",
+        "Discard" => "is_cell_excluded",
+        other => other,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ChannelPhaseAggregation {
+    channel: String,
+    amount_idx: usize,
+    mean_idx: usize,
+    concentration_idx: usize,
+    combined_amount_idx: usize,
+}
+
+fn number_value(value: f64) -> TableValue {
+    TableValue::Number(value)
+}
+
+fn header_index_in_slice(headers: &[String], name: &str) -> Result<usize> {
+    headers
+        .iter()
+        .position(|header| header == name)
+        .ok_or_else(|| anyhow!("Missing table column {name:?}"))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DerivedRelativeColumn {
+    base_idx: usize,
+    rel_idx: usize,
+    output_idx: usize,
+}
+
+fn ensure_header_index(
+    headers: &mut Vec<String>,
+    header_indices: &mut BTreeMap<String, usize>,
+    header: &str,
+) -> usize {
+    match header_indices.get(header).copied() {
+        Some(idx) => idx,
+        None => {
+            let idx = headers.len();
+            headers.push(header.to_string());
+            header_indices.insert(header.to_string(), idx);
+            idx
+        }
+    }
+}
+
+fn add_derived_cell_cycle_columns_to_table(table: &Table) -> Result<Table> {
+    ensure_required_columns(
+        table,
+        &[
+            "frame_i",
+            "Cell_ID",
+            "cell_cycle_stage",
+            "generation_num",
+            "will_divide",
+        ],
+    )?;
+    let frame_idx = table.header_index("frame_i")?;
+    let cell_idx = table.header_index("Cell_ID")?;
+    let stage_idx = table.header_index("cell_cycle_stage")?;
+    let generation_idx = table.header_index("generation_num")?;
+    let will_divide_idx = table.header_index("will_divide")?;
+    let mut headers = table.headers.clone();
+    let end_idx = match table.maybe_header_index("end_of_cell_cycle_frame_i") {
+        Some(idx) => idx,
+        None => {
+            headers.push("end_of_cell_cycle_frame_i".to_string());
+            headers.len() - 1
+        }
+    };
+
+    let mut rows = table.rows.clone();
+    for row in &mut rows {
+        if row.len() < headers.len() {
+            row.resize(headers.len(), TableValue::Empty);
+        }
+        row[end_idx] = TableValue::Number(-1.0);
+    }
+
+    let mut cycles_with_will_divide = BTreeSet::<(i64, i64)>::new();
+    for row in &rows {
+        let will_divide = row[will_divide_idx].as_f64().unwrap_or(0.0);
+        if will_divide <= 0.0 {
+            continue;
+        }
+        let Some(cell_id) = row[cell_idx].as_i64() else {
+            continue;
+        };
+        let Some(generation_num) = row[generation_idx].as_i64() else {
+            continue;
+        };
+        let key = (cell_id, generation_num);
+        cycles_with_will_divide.insert(key);
+    }
+
+    let mut end_frame_by_cycle = BTreeMap::<(i64, i64), i64>::new();
+    for row in &rows {
+        let cell_id = row[cell_idx].as_i64();
+        let generation_num = row[generation_idx].as_i64();
+        let Some(key) = cell_id.zip(generation_num) else {
+            continue;
+        };
+        if !cycles_with_will_divide.contains(&key) || row[stage_idx].as_string_lossy() != "S" {
+            continue;
+        }
+        if let Some(frame_i) = row[frame_idx].as_i64() {
+            end_frame_by_cycle
+                .entry(key)
+                .and_modify(|current| *current = (*current).max(frame_i))
+                .or_insert(frame_i);
+        }
+    }
+
+    for row in &mut rows {
+        let cell_id = row[cell_idx].as_i64();
+        let generation_num = row[generation_idx].as_i64();
+        let Some(key) = cell_id.zip(generation_num) else {
+            continue;
+        };
+        if cycles_with_will_divide.contains(&key) {
+            row[will_divide_idx] = TableValue::Number(1.0);
+        }
+        if let Some(end_frame_i) = end_frame_by_cycle.get(&key) {
+            row[end_idx] = TableValue::Number(*end_frame_i as f64);
+        }
+    }
+
+    let mut output = Table { headers, rows };
+    sort_table_by_keys(&mut output, &["frame_i", "Cell_ID"]);
+    Ok(output)
+}
+
+fn add_will_divide_column_to_table(table: &Table) -> Result<Table> {
+    let Some(stage_idx) = table.maybe_header_index("cell_cycle_stage") else {
+        return Ok(table.clone());
+    };
+    if table.maybe_header_index("will_divide").is_some() {
+        return Ok(table.clone());
+    }
+    ensure_required_columns(
+        table,
+        &[
+            "frame_i",
+            "Cell_ID",
+            "generation_num",
+            "relative_ID",
+            "relationship",
+        ],
+    )?;
+    let frame_idx = table.header_index("frame_i")?;
+    let cell_idx = table.header_index("Cell_ID")?;
+    let generation_idx = table.header_index("generation_num")?;
+    let rel_idx = table.header_index("relative_ID")?;
+    let relationship_idx = table.header_index("relationship")?;
+
+    let mut headers = table.headers.clone();
+    headers.push("will_divide".to_string());
+    let will_divide_idx = headers.len() - 1;
+    let last_annotated_row_idx = table
+        .rows
+        .iter()
+        .rposition(|row| !row[stage_idx].as_string_lossy().is_empty());
+
+    let mut rows = table.rows.clone();
+    for (row_idx, row) in rows.iter_mut().enumerate() {
+        row.resize(headers.len(), TableValue::Empty);
+        if last_annotated_row_idx.is_some_and(|last_idx| row_idx <= last_idx) {
+            row[will_divide_idx] = TableValue::Number(0.0);
+        }
+    }
+
+    let Some(last_annotated_row_idx) = last_annotated_row_idx else {
+        return Ok(Table { headers, rows });
+    };
+
+    let mut rows_by_cell = BTreeMap::<i64, Vec<usize>>::new();
+    let mut row_by_frame_cell = BTreeMap::<(i64, i64), usize>::new();
+    for (row_idx, row) in rows.iter().enumerate().take(last_annotated_row_idx + 1) {
+        let Some(cell_id) = row[cell_idx].as_i64() else {
+            continue;
+        };
+        rows_by_cell.entry(cell_id).or_default().push(row_idx);
+        if let Some(frame_i) = row[frame_idx].as_i64() {
+            row_by_frame_cell.insert((frame_i, cell_id), row_idx);
+        }
+    }
+
+    for row_indices in rows_by_cell.values() {
+        let bud_row_indices = row_indices
+            .iter()
+            .copied()
+            .filter(|row_idx| rows[*row_idx][relationship_idx].as_string_lossy() == "bud")
+            .collect::<Vec<_>>();
+        if bud_row_indices.is_empty() {
+            continue;
+        }
+        let has_future_generation = row_indices.iter().copied().any(|row_idx| {
+            rows[row_idx][generation_idx]
+                .as_f64()
+                .is_some_and(|generation_num| generation_num > 0.0)
+        });
+        if !has_future_generation {
+            continue;
+        }
+
+        for row_idx in &bud_row_indices {
+            rows[*row_idx][will_divide_idx] = TableValue::Number(1.0);
+        }
+
+        let first_bud_row_idx = bud_row_indices[0];
+        let Some(mother_id) = rows[first_bud_row_idx][rel_idx].as_i64() else {
+            continue;
+        };
+        let Some(first_bud_frame_i) = rows[first_bud_row_idx][frame_idx].as_i64() else {
+            continue;
+        };
+        let Some(mother_row_idx) = row_by_frame_cell
+            .get(&(first_bud_frame_i, mother_id))
+            .copied()
+        else {
+            bail!(
+                "Cannot add will_divide because mother Cell_ID {} is missing at frame_i {}",
+                mother_id,
+                first_bud_frame_i
+            );
+        };
+        let Some(mother_generation_num) = rows[mother_row_idx][generation_idx].as_i64() else {
+            continue;
+        };
+        if let Some(mother_rows) = rows_by_cell.get(&mother_id) {
+            for row_idx in mother_rows {
+                if rows[*row_idx][generation_idx].as_i64() == Some(mother_generation_num) {
+                    rows[*row_idx][will_divide_idx] = TableValue::Number(1.0);
+                }
+            }
+        }
+    }
+
+    let mut output = Table { headers, rows };
+    sort_table_by_keys(&mut output, &["frame_i", "Cell_ID"]);
+    Ok(output)
+}
+
+fn add_missing_acdc_columns_to_table(table: &Table) -> Result<Table> {
+    let mut output = table.clone();
+    add_column_if_missing(&mut output, "is_cell_excluded", |_| TableValue::Number(0.0));
+    add_column_if_missing(&mut output, "is_cell_dead", |_| TableValue::Number(0.0));
+
+    let Some(stage_idx) = output.maybe_header_index("cell_cycle_stage") else {
+        return Ok(output);
+    };
+    let last_annotated_row_idx = output
+        .rows
+        .iter()
+        .rposition(|row| !row[stage_idx].as_string_lossy().is_empty());
+    let defaults = [
+        ("generation_num", TableValue::Number(2.0)),
+        ("relative_ID", TableValue::Number(-1.0)),
+        ("relationship", TableValue::Text("mother".into())),
+        ("emerg_frame_i", TableValue::Number(-1.0)),
+        ("division_frame_i", TableValue::Number(-1.0)),
+        ("is_history_known", TableValue::Bool(false)),
+        ("corrected_on_frame_i", TableValue::Number(-1.0)),
+        (
+            "daughter_disappears_before_division",
+            TableValue::Number(0.0),
+        ),
+        ("disappears_before_division", TableValue::Number(0.0)),
+    ];
+    for (column, default) in defaults {
+        let default = default.clone();
+        add_column_if_missing(&mut output, column, |row_idx| {
+            if last_annotated_row_idx.is_some_and(|last_idx| row_idx <= last_idx) {
+                default.clone()
+            } else {
+                TableValue::Empty
+            }
+        });
+    }
+    Ok(output)
+}
+
+fn add_column_if_missing(
+    table: &mut Table,
+    column: &str,
+    value_for_row: impl Fn(usize) -> TableValue,
+) {
+    if table.maybe_header_index(column).is_some() {
+        return;
+    }
+    table.headers.push(column.to_string());
+    for (row_idx, row) in table.rows.iter_mut().enumerate() {
+        row.push(value_for_row(row_idx));
+    }
+}
+
+fn ensure_acdc_compatibility_to_table(table: &Table) -> Result<Table> {
+    ensure_required_columns(table, &["frame_i", "Cell_ID"])?;
+    let mut parsed = drop_table_columns_by_names(table, &["index", "level_0"]);
+    fill_empty_non_cca_values(&mut parsed);
+    sort_table_by_keys(&mut parsed, &["frame_i", "Cell_ID"]);
+    deduplicate_table_by_keys(&mut parsed, &["frame_i", "Cell_ID"]);
+
+    let parsed = add_missing_acdc_columns_to_table(&parsed)?;
+    let parsed = add_will_divide_column_to_table(&parsed)?;
+    let parsed = fix_will_divide_to_table(&parsed)?;
+    let mut parsed = fix_corrected_assignment_to_table(&parsed)?;
+    sort_table_by_keys(&mut parsed, &["frame_i", "Cell_ID"]);
+    Ok(parsed)
+}
+
+fn fill_empty_non_cca_values(table: &mut Table) {
+    let cca_columns = base_cca_column_names();
+    if !cca_columns
+        .iter()
+        .all(|column| table.maybe_header_index(column).is_some())
+    {
+        return;
+    }
+    for (column_idx, header) in table.headers.iter().enumerate() {
+        if cca_columns.contains(header.as_str()) {
+            continue;
+        }
+        for row in &mut table.rows {
+            if matches!(row.get(column_idx), Some(TableValue::Empty)) {
+                row[column_idx] = TableValue::Number(0.0);
+            }
+        }
+    }
+}
+
+fn base_cca_column_names() -> BTreeSet<&'static str> {
+    [
+        "cell_cycle_stage",
+        "generation_num",
+        "relative_ID",
+        "relationship",
+        "emerg_frame_i",
+        "division_frame_i",
+        "is_history_known",
+        "corrected_on_frame_i",
+        "will_divide",
+        "daughter_disappears_before_division",
+        "disappears_before_division",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn add_generation_num_relid_to_table(table: &Table, grouping_columns: &[String]) -> Result<Table> {
+    ensure_required_columns(
+        table,
+        &["frame_i", "Cell_ID", "relative_ID", "generation_num"],
+    )?;
+    for column in grouping_columns {
+        table.header_index(column)?;
+    }
+    let frame_idx = table.header_index("frame_i")?;
+    let cell_idx = table.header_index("Cell_ID")?;
+    let rel_idx = table.header_index("relative_ID")?;
+    let generation_idx = table.header_index("generation_num")?;
+    let grouping_indices = grouping_columns
+        .iter()
+        .map(|column| table.header_index(column))
+        .collect::<Result<Vec<_>>>()?;
+    let mut headers = table.headers.clone();
+    let rel_generation_idx = match table.maybe_header_index("generation_num_relID") {
+        Some(idx) => idx,
+        None => {
+            headers.push("generation_num_relID".to_string());
+            headers.len() - 1
+        }
+    };
+
+    let mut rows = table.rows.clone();
+    for row in &mut rows {
+        if row.len() < headers.len() {
+            row.resize(headers.len(), TableValue::Empty);
+        }
+        row[rel_generation_idx] = TableValue::Number(-1.0);
+    }
+
+    let mut reciprocal_generation = BTreeMap::<Vec<String>, i64>::new();
+    let mut generation_by_cell = BTreeMap::<Vec<String>, i64>::new();
+    for row in &rows {
+        let Some(frame_i) = row[frame_idx].as_i64() else {
+            continue;
+        };
+        let Some(cell_id) = row[cell_idx].as_i64() else {
+            continue;
+        };
+        let Some(relative_id) = row[rel_idx].as_i64() else {
+            continue;
+        };
+        let Some(generation_num) = row[generation_idx].as_i64() else {
+            continue;
+        };
+        let prefix = grouping_key(row, &grouping_indices);
+        let mut reciprocal_key = prefix.clone();
+        reciprocal_key.push(frame_i.to_string());
+        reciprocal_key.push(relative_id.to_string());
+        reciprocal_key.push(cell_id.to_string());
+        reciprocal_generation.insert(reciprocal_key, generation_num);
+
+        let mut cell_key = prefix;
+        cell_key.push(frame_i.to_string());
+        cell_key.push(cell_id.to_string());
+        generation_by_cell.insert(cell_key, generation_num);
+    }
+
+    for row in &mut rows {
+        let Some(frame_i) = row[frame_idx].as_i64() else {
+            continue;
+        };
+        let Some(cell_id) = row[cell_idx].as_i64() else {
+            continue;
+        };
+        let Some(relative_id) = row[rel_idx].as_i64() else {
+            continue;
+        };
+        let prefix = grouping_key(row, &grouping_indices);
+        let mut reciprocal_key = prefix.clone();
+        reciprocal_key.push(frame_i.to_string());
+        reciprocal_key.push(cell_id.to_string());
+        reciprocal_key.push(relative_id.to_string());
+        let generation = reciprocal_generation
+            .get(&reciprocal_key)
+            .copied()
+            .or_else(|| {
+                let mut cell_key = prefix;
+                cell_key.push(frame_i.to_string());
+                cell_key.push(relative_id.to_string());
+                generation_by_cell.get(&cell_key).copied()
+            })
+            .unwrap_or(-1);
+        row[rel_generation_idx] = TableValue::Number(generation as f64);
+    }
+
+    let mut output = Table { headers, rows };
+    sort_table_by_keys(&mut output, &["frame_i", "Cell_ID"]);
+    Ok(output)
+}
+
+fn fix_corrected_assignment_to_table(table: &Table) -> Result<Table> {
+    let Some(assignment_idx) = table.maybe_header_index("corrected_assignment") else {
+        return Ok(table.clone());
+    };
+    ensure_required_columns(table, &["frame_i", "Cell_ID"])?;
+    let frame_idx = table.header_index("frame_i")?;
+    let cell_idx = table.header_index("Cell_ID")?;
+
+    if let Some(corrected_idx) = table.maybe_header_index("corrected_on_frame_i") {
+        let has_existing_correction = table.rows.iter().any(|row| {
+            row[corrected_idx]
+                .as_f64()
+                .is_some_and(|value| value > -1.0)
+        });
+        if has_existing_correction {
+            return Ok(drop_table_column(table, assignment_idx));
+        }
+    }
+
+    let mut headers = table.headers.clone();
+    let corrected_idx = match table.maybe_header_index("corrected_on_frame_i") {
+        Some(idx) => idx,
+        None => {
+            headers.push("corrected_on_frame_i".to_string());
+            headers.len() - 1
+        }
+    };
+    let mut rows = table.rows.clone();
+    for row in &mut rows {
+        if row.len() < headers.len() {
+            row.resize(headers.len(), TableValue::Empty);
+        }
+        row[corrected_idx] = TableValue::Number(-1.0);
+    }
+
+    let mut row_indices_by_cell = BTreeMap::<i64, Vec<usize>>::new();
+    for (row_idx, row) in rows.iter().enumerate() {
+        if let Some(cell_id) = row[cell_idx].as_i64() {
+            row_indices_by_cell
+                .entry(cell_id)
+                .or_default()
+                .push(row_idx);
+        }
+    }
+
+    for row_indices in row_indices_by_cell.values_mut() {
+        row_indices.sort_by_key(|row_idx| {
+            (
+                rows[*row_idx][frame_idx].as_i64().unwrap_or(i64::MAX),
+                *row_idx,
+            )
+        });
+        let mut previous_assignment: Option<String> = None;
+        let mut current_positive_block = Vec::<usize>::new();
+        for row_idx in row_indices.iter().copied() {
+            let assignment_key = rows[row_idx][assignment_idx].as_string_lossy();
+            if previous_assignment
+                .as_ref()
+                .is_some_and(|previous| previous != &assignment_key)
+            {
+                apply_corrected_assignment_block(
+                    &mut rows,
+                    &current_positive_block,
+                    frame_idx,
+                    corrected_idx,
+                );
+                current_positive_block.clear();
+            }
+            if rows[row_idx][assignment_idx]
+                .as_f64()
+                .is_some_and(|value| value > 0.0)
+            {
+                current_positive_block.push(row_idx);
+            }
+            previous_assignment = Some(assignment_key);
+        }
+        apply_corrected_assignment_block(
+            &mut rows,
+            &current_positive_block,
+            frame_idx,
+            corrected_idx,
+        );
+    }
+
+    let table = Table { headers, rows };
+    let mut output = drop_table_column(&table, assignment_idx);
+    sort_table_by_keys(&mut output, &["frame_i", "Cell_ID"]);
+    Ok(output)
+}
+
+fn apply_corrected_assignment_block(
+    rows: &mut [Vec<TableValue>],
+    row_indices: &[usize],
+    frame_idx: usize,
+    corrected_idx: usize,
+) {
+    if row_indices.is_empty() {
+        return;
+    }
+    let Some(correction_frame_i) = row_indices
+        .iter()
+        .filter_map(|row_idx| rows[*row_idx][frame_idx].as_i64())
+        .min()
+    else {
+        return;
+    };
+    for row_idx in row_indices {
+        rows[*row_idx][corrected_idx] = TableValue::Number(correction_frame_i as f64);
+    }
+}
+
+fn fix_will_divide_to_table(table: &Table) -> Result<Table> {
+    let Some(stage_idx) = table.maybe_header_index("cell_cycle_stage") else {
+        return Ok(table.clone());
+    };
+    ensure_required_columns(
+        table,
+        &["frame_i", "Cell_ID", "generation_num", "will_divide"],
+    )?;
+    let cell_idx = table.header_index("Cell_ID")?;
+    let generation_idx = table.header_index("generation_num")?;
+    let will_divide_idx = table.header_index("will_divide")?;
+
+    let mut existing_cycles = BTreeSet::<(i64, i64)>::new();
+    let mut dividing_cycles = BTreeSet::<(i64, i64)>::new();
+    for row in &table.rows {
+        if row[stage_idx].as_string_lossy().is_empty() {
+            continue;
+        }
+        let Some(cell_id) = row[cell_idx].as_i64() else {
+            continue;
+        };
+        let Some(generation_num) = row[generation_idx].as_i64() else {
+            continue;
+        };
+        let key = (cell_id, generation_num);
+        existing_cycles.insert(key);
+        if row[will_divide_idx].as_f64().unwrap_or(0.0) > 0.0 {
+            dividing_cycles.insert(key);
+        }
+    }
+
+    let stale_cycles = dividing_cycles
+        .into_iter()
+        .filter(|(cell_id, generation_num)| {
+            !existing_cycles.contains(&(*cell_id, generation_num.saturating_add(1)))
+        })
+        .collect::<BTreeSet<_>>();
+
+    let mut rows = table.rows.clone();
+    for row in &mut rows {
+        if row[stage_idx].as_string_lossy().is_empty() {
+            continue;
+        }
+        let cell_id = row[cell_idx].as_i64();
+        let generation_num = row[generation_idx].as_i64();
+        let Some(key) = cell_id.zip(generation_num) else {
+            continue;
+        };
+        if stale_cycles.contains(&key) {
+            row[will_divide_idx] = TableValue::Number(0.0);
+        }
+    }
+
+    let mut output = Table {
+        headers: table.headers.clone(),
+        rows,
+    };
+    sort_table_by_keys(&mut output, &["frame_i", "Cell_ID"]);
+    Ok(output)
+}
+
+fn grouping_key(row: &[TableValue], grouping_indices: &[usize]) -> Vec<String> {
+    grouping_indices
+        .iter()
+        .map(|idx| row[*idx].as_string_lossy())
+        .collect()
+}
+
+fn drop_table_column(table: &Table, drop_idx: usize) -> Table {
+    let headers = table
+        .headers
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, header)| (idx != drop_idx).then(|| header.clone()))
+        .collect::<Vec<_>>();
+    let rows = table
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .filter_map(|(idx, value)| (idx != drop_idx).then(|| value.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    Table { headers, rows }
+}
+
+fn drop_table_columns_by_names(table: &Table, column_names: &[&str]) -> Table {
+    let drop_indices = column_names
+        .iter()
+        .filter_map(|column| table.maybe_header_index(column))
+        .collect::<BTreeSet<_>>();
+    let headers = table
+        .headers
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, header)| (!drop_indices.contains(&idx)).then(|| header.clone()))
+        .collect::<Vec<_>>();
+    let rows = table
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .filter_map(|(idx, value)| (!drop_indices.contains(&idx)).then(|| value.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    Table { headers, rows }
+}
+
+fn deduplicate_table_by_keys(table: &mut Table, keys: &[&str]) {
+    let indices = keys
+        .iter()
+        .filter_map(|key| table.maybe_header_index(key))
+        .collect::<Vec<_>>();
+    let mut seen = BTreeSet::<Vec<String>>::new();
+    table.rows.retain(|row| {
+        let key = indices
+            .iter()
+            .map(|idx| row[*idx].as_string_lossy())
+            .collect::<Vec<_>>();
+        seen.insert(key)
+    });
+}
+
 fn ensure_required_columns(table: &Table, columns: &[&str]) -> Result<()> {
     for column in columns {
         table.header_index(column)?;
@@ -5025,6 +6299,923 @@ mod tests {
         assert!(table.rows.iter().any(|row| {
             row[table.header_index("entity").expect("entity")].as_string_lossy() == "Total"
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn calculates_relatives_data_with_combined_mother_bud_values() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "relative_ID".into(),
+                "cell_cycle_stage".into(),
+                "cell_vol_fl".into(),
+                "position".into(),
+                "GFP_corrected_amount".into(),
+                "GFP_raw_sum".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("relative_ID", (-1.0f64).into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("cell_vol_fl", 8.0.into()),
+                    ("position", "Position_1".into()),
+                    ("GFP_corrected_amount", 80.0.into()),
+                    ("GFP_raw_sum", 800.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("cell_vol_fl", 10.0.into()),
+                    ("position", "Position_1".into()),
+                    ("GFP_corrected_amount", 100.0.into()),
+                    ("GFP_raw_sum", 1000.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("cell_vol_fl", 4.0.into()),
+                    ("position", "Position_1".into()),
+                    ("GFP_corrected_amount", 25.0.into()),
+                    ("GFP_raw_sum", 200.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("cell_vol_fl", 99.0.into()),
+                    ("position", "Position_2".into()),
+                    ("GFP_corrected_amount", 900.0.into()),
+                    ("GFP_raw_sum", 9000.0.into()),
+                ]),
+            ],
+        );
+
+        let output = calculate_relatives_data_to_table(&table, &["GFP".into()], &[])?;
+        let amount_idx = output.header_index("GFP_combined_amount_mother_bud")?;
+        let raw_idx = output.header_index("GFP_combined_raw_sum_mother_bud")?;
+        let volume_idx = output.header_index("combined_mother_bud_volume")?;
+        let rel_volume_idx = output.header_index("cell_vol_fl_rel")?;
+        let cell_idx = output.header_index("Cell_ID")?;
+        let frame_idx = output.header_index("frame_i")?;
+        let position_idx = output.header_index("position")?;
+
+        let find_row = |frame_i: i64, cell_id: i64, position: &str| {
+            output
+                .rows
+                .iter()
+                .find(|row| {
+                    row[frame_idx].as_i64() == Some(frame_i)
+                        && row[cell_idx].as_i64() == Some(cell_id)
+                        && row[position_idx].as_string_lossy() == position
+                })
+                .expect("row")
+        };
+
+        let g1 = find_row(0, 1, "Position_1");
+        assert_eq!(g1[amount_idx].as_i64(), Some(80));
+        assert_eq!(g1[volume_idx].as_i64(), Some(8));
+
+        let mother = find_row(1, 1, "Position_1");
+        assert_eq!(mother[amount_idx].as_i64(), Some(125));
+        assert_eq!(mother[raw_idx].as_i64(), Some(1200));
+        assert_eq!(mother[volume_idx].as_i64(), Some(14));
+        assert_eq!(mother[rel_volume_idx].as_i64(), Some(4));
+
+        let other_position = find_row(1, 2, "Position_2");
+        assert!(other_position[amount_idx]
+            .as_f64()
+            .expect("NaN value")
+            .is_nan());
+        Ok(())
+    }
+
+    #[test]
+    fn calculates_per_phase_quantities_with_complete_cycle_flags() -> Result<()> {
+        let headers = vec![
+            "frame_i".into(),
+            "Cell_ID".into(),
+            "generation_num".into(),
+            "position".into(),
+            "file".into(),
+            "max_frame_pos".into(),
+            "cell_cycle_stage".into(),
+            "cell_area_um2".into(),
+            "cell_vol_fl".into(),
+            "cell_area_um2_rel".into(),
+            "cell_vol_fl_rel".into(),
+            "combined_mother_bud_volume".into(),
+            "GFP_corrected_amount".into(),
+            "GFP_corrected_mean".into(),
+            "GFP_corrected_concentration".into(),
+            "GFP_combined_amount_mother_bud".into(),
+        ];
+        let rows = [
+            (1.0, "G1", 10.0, 5.0, 1.0, 0.5, 5.0, 50.0, 2.0, 10.0),
+            (2.0, "G1", 13.0, 7.0, 1.5, 0.8, 7.0, 55.0, 2.5, 12.0),
+            (3.0, "S", 13.0, 7.0, 2.0, 1.0, 9.0, 60.0, 3.0, 15.0),
+            (4.0, "S", 19.0, 11.0, 3.0, 1.5, 14.0, 70.0, 4.0, 20.0),
+        ]
+        .into_iter()
+        .map(
+            |(
+                frame_i,
+                stage,
+                area,
+                volume,
+                rel_area,
+                rel_volume,
+                combined_volume,
+                amount,
+                mean,
+                concentration,
+            )| {
+                row(vec![
+                    ("frame_i", frame_i.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("generation_num", 0.0.into()),
+                    ("position", "Position_1".into()),
+                    ("file", "demo.tif".into()),
+                    ("max_frame_pos", 5.0.into()),
+                    ("cell_cycle_stage", stage.into()),
+                    ("cell_area_um2", area.into()),
+                    ("cell_vol_fl", volume.into()),
+                    ("cell_area_um2_rel", rel_area.into()),
+                    ("cell_vol_fl_rel", rel_volume.into()),
+                    ("combined_mother_bud_volume", combined_volume.into()),
+                    ("GFP_corrected_amount", amount.into()),
+                    ("GFP_corrected_mean", mean.into()),
+                    ("GFP_corrected_concentration", concentration.into()),
+                    ("GFP_combined_amount_mother_bud", (amount + 5.0).into()),
+                ])
+            },
+        )
+        .collect::<Vec<_>>();
+        let table = rows_to_table(&headers, &rows);
+        let grouping_columns = vec![
+            "max_frame_pos".into(),
+            "Cell_ID".into(),
+            "generation_num".into(),
+            "position".into(),
+            "file".into(),
+            "cell_cycle_stage".into(),
+        ];
+
+        let output =
+            calculate_per_phase_quantities_to_table(&table, &grouping_columns, &["GFP".into()])?;
+        assert_eq!(output.rows.len(), 2);
+        let stage_idx = output.header_index("cell_cycle_stage")?;
+        let area_growth_idx = output.header_index("phase_area_growth")?;
+        let volume_end_idx = output.header_index("phase_volume_at_end")?;
+        let daughter_volume_growth_idx = output.header_index("phase_daughter_volume_growth")?;
+        let phase_length_idx = output.header_index("phase_length")?;
+        let complete_phase_idx = output.header_index("complete_phase")?;
+        let complete_cycle_idx = output.header_index("complete_cycle")?;
+        let gfp_amount_begin_idx = output.header_index("phase_GFP_amount_at_beginning")?;
+        let gfp_conc_end_idx = output.header_index("phase_GFP_concentration_at_end")?;
+        let gfp_combined_end_idx = output.header_index("phase_GFP_combined_amount_at_end")?;
+
+        let phase = |stage: &str| {
+            output
+                .rows
+                .iter()
+                .find(|row| row[stage_idx].as_string_lossy() == stage)
+                .expect("phase row")
+        };
+        let g1 = phase("G1");
+        assert_eq!(g1[area_growth_idx].as_i64(), Some(3));
+        assert_eq!(g1[volume_end_idx].as_i64(), Some(7));
+        assert_eq!(
+            g1[daughter_volume_growth_idx].as_f64(),
+            Some(0.30000000000000004)
+        );
+        assert_eq!(g1[phase_length_idx].as_i64(), Some(1));
+        assert_eq!(g1[complete_phase_idx].as_i64(), Some(1));
+        assert_eq!(g1[complete_cycle_idx].as_i64(), Some(1));
+        assert_eq!(g1[gfp_amount_begin_idx].as_i64(), Some(50));
+        assert_eq!(g1[gfp_conc_end_idx].as_i64(), Some(12));
+
+        let s_phase = phase("S");
+        assert_eq!(s_phase[area_growth_idx].as_i64(), Some(6));
+        assert_eq!(s_phase[gfp_combined_end_idx].as_i64(), Some(75));
+        assert_eq!(s_phase[complete_cycle_idx].as_i64(), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn normalizes_legacy_acdc_column_names() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "Cell cycle stage".into(),
+                "# of cycles".into(),
+                "Relative's ID".into(),
+                "Relationship".into(),
+                "Emerg_frame_i".into(),
+                "Division_frame_i".into(),
+                "Discard".into(),
+                "cell_area_um2".into(),
+            ],
+            &[row(vec![
+                ("Cell cycle stage", "G1".into()),
+                ("# of cycles", 2.0.into()),
+                ("Relative's ID", (-1.0f64).into()),
+                ("Relationship", "mother".into()),
+                ("Emerg_frame_i", 0.0.into()),
+                ("Division_frame_i", 5.0.into()),
+                ("Discard", 0.0.into()),
+                ("cell_area_um2", 10.0.into()),
+            ])],
+        );
+
+        let output = normalize_acdc_column_names_to_table(&table)?;
+        assert_eq!(
+            output.headers,
+            vec![
+                "cell_cycle_stage",
+                "generation_num",
+                "relative_ID",
+                "relationship",
+                "emerg_frame_i",
+                "division_frame_i",
+                "is_cell_excluded",
+                "cell_area_um2",
+            ]
+        );
+        assert_eq!(
+            output.rows[0][output.header_index("generation_num")?].as_i64(),
+            Some(2)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normalizing_legacy_acdc_column_names_rejects_duplicate_headers() {
+        let table = rows_to_table(
+            &["Cell cycle stage".into(), "cell_cycle_stage".into()],
+            &[row(vec![
+                ("Cell cycle stage", "G1".into()),
+                ("cell_cycle_stage", "S".into()),
+            ])],
+        );
+
+        let err = normalize_acdc_column_names_to_table(&table).expect_err("duplicate header");
+        assert!(err.to_string().contains("duplicate header"));
+    }
+
+    #[test]
+    fn adds_derived_cell_cycle_columns_to_table() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "generation_num".into(),
+                "will_divide".into(),
+                "end_of_cell_cycle_frame_i".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("will_divide", 0.0.into()),
+                    ("end_of_cell_cycle_frame_i", 99.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("generation_num", 0.0.into()),
+                    ("will_divide", 0.0.into()),
+                    ("end_of_cell_cycle_frame_i", 99.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("will_divide", 1.0.into()),
+                    ("end_of_cell_cycle_frame_i", 99.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 1.0.into()),
+                    ("will_divide", 0.0.into()),
+                    ("end_of_cell_cycle_frame_i", 99.0.into()),
+                ]),
+            ],
+        );
+
+        let output = add_derived_cell_cycle_columns_to_table(&table)?;
+        let end_idx = output.header_index("end_of_cell_cycle_frame_i")?;
+        let will_divide_idx = output.header_index("will_divide")?;
+        let frame_idx = output.header_index("frame_i")?;
+        let cell_idx = output.header_index("Cell_ID")?;
+
+        for row in &output.rows {
+            if row[cell_idx].as_i64() == Some(1) {
+                assert_eq!(row[will_divide_idx].as_i64(), Some(1));
+                assert_eq!(row[end_idx].as_i64(), Some(2));
+            }
+            if row[cell_idx].as_i64() == Some(2) {
+                assert_eq!(row[will_divide_idx].as_i64(), Some(0));
+                assert_eq!(row[end_idx].as_i64(), Some(-1));
+            }
+        }
+        assert_eq!(output.rows[0][frame_idx].as_i64(), Some(0));
+        assert_eq!(output.rows[0][cell_idx].as_i64(), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn adds_will_divide_column_from_bud_annotations() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "generation_num".into(),
+                "relative_ID".into(),
+                "relationship".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 2.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("relationship", "mother".into()),
+                ]),
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("relationship", "bud".into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 2.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("relationship", "mother".into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("relationship", "bud".into()),
+                ]),
+                row(vec![
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("generation_num", 1.0.into()),
+                    ("relative_ID", (-1.0).into()),
+                    ("relationship", "mother".into()),
+                ]),
+                row(vec![
+                    ("frame_i", 3.0.into()),
+                    ("Cell_ID", 3.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("relationship", "bud".into()),
+                ]),
+                row(vec![
+                    ("frame_i", 4.0.into()),
+                    ("Cell_ID", 4.0.into()),
+                    ("cell_cycle_stage", "".into()),
+                    ("generation_num", 0.0.into()),
+                    ("relative_ID", (-1.0).into()),
+                    ("relationship", "mother".into()),
+                ]),
+            ],
+        );
+
+        let output = add_will_divide_column_to_table(&table)?;
+        let frame_idx = output.header_index("frame_i")?;
+        let cell_idx = output.header_index("Cell_ID")?;
+        let will_divide_idx = output.header_index("will_divide")?;
+        let value_for = |frame_i: i64, cell_id: i64| -> Option<i64> {
+            output.rows.iter().find_map(|row| {
+                (row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id))
+                .then(|| row[will_divide_idx].as_i64())
+                .flatten()
+            })
+        };
+
+        assert_eq!(value_for(0, 1), Some(1));
+        assert_eq!(value_for(1, 1), Some(1));
+        assert_eq!(value_for(0, 2), Some(1));
+        assert_eq!(value_for(1, 2), Some(1));
+        assert_eq!(value_for(2, 2), Some(0));
+        assert_eq!(value_for(3, 3), Some(0));
+        assert_eq!(value_for(4, 4), None);
+        Ok(())
+    }
+
+    #[test]
+    fn adds_missing_acdc_columns_with_python_defaults() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "will_divide".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("will_divide", 0.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("will_divide", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "".into()),
+                    ("will_divide", 0.0.into()),
+                ]),
+            ],
+        );
+
+        let output = add_missing_acdc_columns_to_table(&table)?;
+        let generation_idx = output.header_index("generation_num")?;
+        let relative_idx = output.header_index("relative_ID")?;
+        let relationship_idx = output.header_index("relationship")?;
+        let history_idx = output.header_index("is_history_known")?;
+        let corrected_idx = output.header_index("corrected_on_frame_i")?;
+        let excluded_idx = output.header_index("is_cell_excluded")?;
+        let dead_idx = output.header_index("is_cell_dead")?;
+        let will_divide_idx = output.header_index("will_divide")?;
+
+        assert_eq!(output.rows[0][generation_idx].as_i64(), Some(2));
+        assert_eq!(output.rows[1][relative_idx].as_i64(), Some(-1));
+        assert_eq!(output.rows[1][relationship_idx].as_string_lossy(), "mother");
+        assert_eq!(output.rows[1][history_idx].as_i64(), Some(0));
+        assert_eq!(output.rows[1][corrected_idx].as_i64(), Some(-1));
+        assert_eq!(output.rows[2][generation_idx], TableValue::Empty);
+        assert_eq!(output.rows[2][excluded_idx].as_i64(), Some(0));
+        assert_eq!(output.rows[2][dead_idx].as_i64(), Some(0));
+        assert_eq!(output.rows[1][will_divide_idx].as_i64(), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn adds_only_exclusion_columns_without_cell_cycle_stage() -> Result<()> {
+        let table = rows_to_table(
+            &["frame_i".into(), "Cell_ID".into()],
+            &[row(vec![("frame_i", 0.0.into()), ("Cell_ID", 1.0.into())])],
+        );
+
+        let output = add_missing_acdc_columns_to_table(&table)?;
+        assert!(output.maybe_header_index("generation_num").is_none());
+        let excluded_idx = output.header_index("is_cell_excluded")?;
+        let dead_idx = output.header_index("is_cell_dead")?;
+        assert_eq!(output.rows[0][excluded_idx].as_i64(), Some(0));
+        assert_eq!(output.rows[0][dead_idx].as_i64(), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn ensures_acdc_compatibility_like_python_loader() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "level_0".into(),
+                "index".into(),
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "generation_num".into(),
+                "relative_ID".into(),
+                "relationship".into(),
+                "corrected_assignment".into(),
+            ],
+            &[
+                row(vec![
+                    ("level_0", 99.0.into()),
+                    ("index", 99.0.into()),
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 2.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("relationship", "mother".into()),
+                    ("corrected_assignment", 1.0.into()),
+                ]),
+                row(vec![
+                    ("level_0", 98.0.into()),
+                    ("index", 98.0.into()),
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 2.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("relationship", "mother".into()),
+                    ("corrected_assignment", 1.0.into()),
+                ]),
+                row(vec![
+                    ("level_0", 97.0.into()),
+                    ("index", 97.0.into()),
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("generation_num", 9.0.into()),
+                    ("relative_ID", (-1.0).into()),
+                    ("relationship", "mother".into()),
+                    ("corrected_assignment", 0.0.into()),
+                ]),
+                row(vec![
+                    ("level_0", 96.0.into()),
+                    ("index", 96.0.into()),
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("relationship", "bud".into()),
+                    ("corrected_assignment", 0.0.into()),
+                ]),
+                row(vec![
+                    ("level_0", 95.0.into()),
+                    ("index", 95.0.into()),
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("relationship", "bud".into()),
+                    ("corrected_assignment", 0.0.into()),
+                ]),
+                row(vec![
+                    ("level_0", 94.0.into()),
+                    ("index", 94.0.into()),
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("generation_num", 1.0.into()),
+                    ("relative_ID", (-1.0).into()),
+                    ("relationship", "mother".into()),
+                    ("corrected_assignment", 0.0.into()),
+                ]),
+            ],
+        );
+
+        let output = ensure_acdc_compatibility_to_table(&table)?;
+        assert!(output.maybe_header_index("level_0").is_none());
+        assert!(output.maybe_header_index("index").is_none());
+        assert!(output.maybe_header_index("corrected_assignment").is_none());
+        assert_eq!(output.rows.len(), 5);
+        let frame_idx = output.header_index("frame_i")?;
+        let cell_idx = output.header_index("Cell_ID")?;
+        let generation_idx = output.header_index("generation_num")?;
+        let will_idx = output.header_index("will_divide")?;
+        let corrected_idx = output.header_index("corrected_on_frame_i")?;
+        let excluded_idx = output.header_index("is_cell_excluded")?;
+        let value_for = |frame_i: i64, cell_id: i64, column_idx: usize| -> Option<i64> {
+            output.rows.iter().find_map(|row| {
+                (row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id))
+                .then(|| row[column_idx].as_i64())
+                .flatten()
+            })
+        };
+
+        assert_eq!(value_for(0, 1, generation_idx), Some(2));
+        assert_eq!(value_for(0, 1, will_idx), Some(0));
+        assert_eq!(value_for(1, 1, will_idx), Some(0));
+        assert_eq!(value_for(0, 2, will_idx), Some(1));
+        assert_eq!(value_for(2, 2, will_idx), Some(0));
+        assert_eq!(value_for(0, 1, corrected_idx), Some(0));
+        assert_eq!(value_for(1, 1, corrected_idx), Some(0));
+        assert_eq!(value_for(2, 2, excluded_idx), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_acdc_compatibility_fills_empty_non_cca_values() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "generation_num".into(),
+                "relative_ID".into(),
+                "relationship".into(),
+                "emerg_frame_i".into(),
+                "division_frame_i".into(),
+                "is_history_known".into(),
+                "corrected_on_frame_i".into(),
+                "will_divide".into(),
+                "daughter_disappears_before_division".into(),
+                "disappears_before_division".into(),
+                "signal".into(),
+            ],
+            &[row(vec![
+                ("frame_i", 0.0.into()),
+                ("Cell_ID", 1.0.into()),
+                ("cell_cycle_stage", "G1".into()),
+                ("generation_num", 2.0.into()),
+                ("relative_ID", (-1.0).into()),
+                ("relationship", "mother".into()),
+                ("emerg_frame_i", (-1.0).into()),
+                ("division_frame_i", (-1.0).into()),
+                ("is_history_known", 0.0.into()),
+                ("corrected_on_frame_i", (-1.0).into()),
+                ("will_divide", 0.0.into()),
+                ("daughter_disappears_before_division", 0.0.into()),
+                ("disappears_before_division", 0.0.into()),
+                ("signal", RowValue(TableValue::Empty)),
+            ])],
+        );
+
+        let output = ensure_acdc_compatibility_to_table(&table)?;
+        let signal_idx = output.header_index("signal")?;
+        let stage_idx = output.header_index("cell_cycle_stage")?;
+        assert_eq!(output.rows[0][signal_idx].as_i64(), Some(0));
+        assert_eq!(output.rows[0][stage_idx].as_string_lossy(), "G1");
+        Ok(())
+    }
+
+    #[test]
+    fn adds_generation_num_relid_to_table_with_grouping_and_fallback() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "Position_n".into(),
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "relative_ID".into(),
+                "generation_num".into(),
+                "generation_num_relID".into(),
+            ],
+            &[
+                row(vec![
+                    ("Position_n", "Position_1".into()),
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("generation_num", 3.0.into()),
+                    ("generation_num_relID", 99.0.into()),
+                ]),
+                row(vec![
+                    ("Position_n", "Position_1".into()),
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("generation_num", 0.0.into()),
+                    ("generation_num_relID", 99.0.into()),
+                ]),
+                row(vec![
+                    ("Position_n", "Position_1".into()),
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("generation_num", 2.0.into()),
+                    ("generation_num_relID", 99.0.into()),
+                ]),
+                row(vec![
+                    ("Position_n", "Position_1".into()),
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("relative_ID", (-1.0).into()),
+                    ("generation_num", 4.0.into()),
+                    ("generation_num_relID", 99.0.into()),
+                ]),
+                row(vec![
+                    ("Position_n", "Position_2".into()),
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("relative_ID", 2.0.into()),
+                    ("generation_num", 3.0.into()),
+                    ("generation_num_relID", 99.0.into()),
+                ]),
+                row(vec![
+                    ("Position_n", "Position_2".into()),
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("relative_ID", 1.0.into()),
+                    ("generation_num", 7.0.into()),
+                    ("generation_num_relID", 99.0.into()),
+                ]),
+            ],
+        );
+
+        let output = add_generation_num_relid_to_table(&table, &["Position_n".into()])?;
+        let position_idx = output.header_index("Position_n")?;
+        let frame_idx = output.header_index("frame_i")?;
+        let cell_idx = output.header_index("Cell_ID")?;
+        let rel_generation_idx = output.header_index("generation_num_relID")?;
+        let value_for = |position: &str, frame_i: i64, cell_id: i64| -> Option<i64> {
+            output.rows.iter().find_map(|row| {
+                (row[position_idx].as_string_lossy() == position
+                    && row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id))
+                .then(|| row[rel_generation_idx].as_i64())
+                .flatten()
+            })
+        };
+
+        assert_eq!(value_for("Position_1", 0, 1), Some(0));
+        assert_eq!(value_for("Position_1", 0, 2), Some(3));
+        assert_eq!(value_for("Position_1", 1, 1), Some(4));
+        assert_eq!(value_for("Position_1", 1, 2), Some(-1));
+        assert_eq!(value_for("Position_2", 0, 1), Some(7));
+        Ok(())
+    }
+
+    #[test]
+    fn fixes_will_divide_cycles_without_next_generation() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "generation_num".into(),
+                "will_divide".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("generation_num", 0.0.into()),
+                    ("will_divide", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 0.0.into()),
+                    ("will_divide", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("generation_num", 1.0.into()),
+                    ("will_divide", 0.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 3.0.into()),
+                    ("will_divide", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("cell_cycle_stage", "S".into()),
+                    ("generation_num", 3.0.into()),
+                    ("will_divide", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 3.0.into()),
+                    ("cell_cycle_stage", "".into()),
+                    ("generation_num", 5.0.into()),
+                    ("will_divide", 1.0.into()),
+                ]),
+            ],
+        );
+
+        let output = fix_will_divide_to_table(&table)?;
+        let frame_idx = output.header_index("frame_i")?;
+        let cell_idx = output.header_index("Cell_ID")?;
+        let will_divide_idx = output.header_index("will_divide")?;
+        let value_for = |frame_i: i64, cell_id: i64| -> Option<i64> {
+            output.rows.iter().find_map(|row| {
+                (row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id))
+                .then(|| row[will_divide_idx].as_i64())
+                .flatten()
+            })
+        };
+
+        assert_eq!(value_for(0, 1), Some(1));
+        assert_eq!(value_for(1, 1), Some(1));
+        assert_eq!(value_for(0, 2), Some(0));
+        assert_eq!(value_for(1, 2), Some(0));
+        assert_eq!(value_for(0, 3), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn fixes_corrected_assignment_blocks() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "corrected_assignment".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("corrected_assignment", 0.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("corrected_assignment", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("corrected_assignment", 1.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 3.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("corrected_assignment", 0.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 4.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("corrected_assignment", 2.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("corrected_assignment", 3.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 2.0.into()),
+                    ("corrected_assignment", 3.0.into()),
+                ]),
+            ],
+        );
+
+        let output = fix_corrected_assignment_to_table(&table)?;
+        assert!(output.maybe_header_index("corrected_assignment").is_none());
+        let frame_idx = output.header_index("frame_i")?;
+        let cell_idx = output.header_index("Cell_ID")?;
+        let corrected_idx = output.header_index("corrected_on_frame_i")?;
+        let value_for = |frame_i: i64, cell_id: i64| -> Option<i64> {
+            output.rows.iter().find_map(|row| {
+                (row[frame_idx].as_i64() == Some(frame_i)
+                    && row[cell_idx].as_i64() == Some(cell_id))
+                .then(|| row[corrected_idx].as_i64())
+                .flatten()
+            })
+        };
+
+        assert_eq!(value_for(0, 1), Some(-1));
+        assert_eq!(value_for(1, 1), Some(1));
+        assert_eq!(value_for(2, 1), Some(1));
+        assert_eq!(value_for(3, 1), Some(-1));
+        assert_eq!(value_for(4, 1), Some(4));
+        assert_eq!(value_for(1, 2), Some(1));
+        assert_eq!(value_for(2, 2), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn fixing_corrected_assignment_keeps_existing_correction_column() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "corrected_assignment".into(),
+                "corrected_on_frame_i".into(),
+            ],
+            &[row(vec![
+                ("frame_i", 0.0.into()),
+                ("Cell_ID", 1.0.into()),
+                ("corrected_assignment", 1.0.into()),
+                ("corrected_on_frame_i", 7.0.into()),
+            ])],
+        );
+
+        let output = fix_corrected_assignment_to_table(&table)?;
+        assert!(output.maybe_header_index("corrected_assignment").is_none());
+        let corrected_idx = output.header_index("corrected_on_frame_i")?;
+        assert_eq!(output.rows[0][corrected_idx].as_i64(), Some(7));
         Ok(())
     }
 

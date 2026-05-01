@@ -121,6 +121,7 @@ pub fn build_lineage_state(table: &Table) -> Result<LineageState> {
             .map(|row| sister_values(row, &normalized_sister_columns).len())
             .max()
             .unwrap_or(0)
+            .max(sister_columns.len())
             .max(1);
         normalized_sister_columns = normalized_sister_headers(max_sisters);
         ensure_headers(
@@ -131,12 +132,20 @@ pub fn build_lineage_state(table: &Table) -> Result<LineageState> {
             normalize_loaded_lineage_row(row, &normalized_sister_columns)?;
         }
     } else {
-        normalized_sister_columns = normalized_sister_headers(1);
+        normalized_sister_columns = if has_cell_cycle_lineage_columns(table) {
+            cell_cycle_sister_headers(&rows)?
+        } else {
+            normalized_sister_headers(1)
+        };
         ensure_headers(
             &mut headers,
             normalized_lineage_headers(&normalized_sister_columns),
         );
-        initialize_root_lineage(&mut rows, &normalized_sister_columns)?;
+        if has_cell_cycle_lineage_columns(table) {
+            initialize_cell_cycle_lineage(&mut rows, &normalized_sister_columns)?;
+        } else {
+            initialize_root_lineage(&mut rows, &normalized_sister_columns)?;
+        }
     }
 
     Ok(LineageState::new(headers, rows, normalized_sister_columns))
@@ -305,18 +314,22 @@ pub fn lineage_mother_candidates(
     frame_i: i64,
     cell_id: i64,
 ) -> Result<LineageCandidateSet> {
-    let mut candidates = state
+    if !state.cell_ids_in_frame(frame_i).contains(&cell_id) {
+        bail!("Missing row for frame {frame_i}, Cell_ID {cell_id}");
+    }
+    let curr_ids = state
         .cell_ids_in_frame(frame_i)
         .into_iter()
-        .filter(|candidate| *candidate != cell_id)
-        .collect::<Vec<_>>();
-    if candidates.is_empty() && frame_i > 0 {
-        candidates = state
+        .collect::<BTreeSet<_>>();
+    let mut candidates = if frame_i > 0 {
+        state
             .cell_ids_in_frame(frame_i - 1)
             .into_iter()
-            .filter(|candidate| *candidate != cell_id)
-            .collect::<Vec<_>>();
-    }
+            .filter(|candidate| !curr_ids.contains(candidate))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     candidates.sort_unstable();
     candidates.dedup();
     Ok(LineageCandidateSet {
@@ -508,6 +521,134 @@ fn initialize_root_lineage(rows: &mut [Row], sister_columns: &[String]) -> Resul
     Ok(())
 }
 
+fn has_cell_cycle_lineage_columns(table: &Table) -> bool {
+    ["generation_num", "relative_ID", "relationship"]
+        .iter()
+        .all(|column| table.headers.iter().any(|header| header == column))
+}
+
+fn cell_cycle_sister_headers(rows: &[Row]) -> Result<Vec<String>> {
+    let mut daughters_by_parent = BTreeMap::<(i64, i64), BTreeSet<i64>>::new();
+    for row in rows {
+        let frame_i = get_required_i64(row, "frame_i")?;
+        let cell_id = get_required_i64(row, "Cell_ID")?;
+        if let Some(parent_id) = cell_cycle_parent_id(row) {
+            daughters_by_parent
+                .entry((frame_i, parent_id))
+                .or_default()
+                .insert(cell_id);
+        }
+    }
+    let max_sisters = daughters_by_parent
+        .values()
+        .map(|daughters| daughters.len().saturating_sub(1))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    Ok(normalized_sister_headers(max_sisters))
+}
+
+fn initialize_cell_cycle_lineage(rows: &mut [Row], sister_columns: &[String]) -> Result<()> {
+    let mut row_lookup = BTreeMap::<(i64, i64), usize>::new();
+    let mut first_row_by_cell = BTreeMap::<i64, usize>::new();
+    for (idx, row) in rows.iter().enumerate() {
+        let frame_i = get_required_i64(row, "frame_i")?;
+        let cell_id = get_required_i64(row, "Cell_ID")?;
+        row_lookup.insert((frame_i, cell_id), idx);
+        first_row_by_cell.entry(cell_id).or_insert(idx);
+    }
+
+    for row in rows.iter_mut() {
+        let cell_id = get_required_i64(row, "Cell_ID")?;
+        row.insert("Cell_ID_tree".into(), TableValue::Number(cell_id as f64));
+        row.insert(
+            "generation_num_tree".into(),
+            TableValue::Number(get_or_default_i64(row, "generation_num", 1) as f64),
+        );
+        row.insert("parent_ID_tree".into(), TableValue::Number(-1.0));
+        row.insert("root_ID_tree".into(), TableValue::Number(cell_id as f64));
+        row.insert(HISTORY_COLUMN.into(), TableValue::Bool(false));
+        set_sister_values(row, &[]);
+        ensure_sister_capacity(row, sister_columns);
+    }
+
+    let parent_links = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, row)| cell_cycle_parent_id(row).map(|parent_id| (idx, parent_id)))
+        .collect::<Vec<_>>();
+    for (idx, parent_id) in parent_links {
+        let frame_i = get_required_i64(&rows[idx], "frame_i")?;
+        let parent_idx = row_lookup
+            .get(&(frame_i, parent_id))
+            .copied()
+            .or_else(|| first_row_by_cell.get(&parent_id).copied());
+        let (generation, root_id) = if let Some(parent_idx) = parent_idx {
+            (
+                get_or_default_i64(&rows[parent_idx], "generation_num_tree", 1) + 1,
+                get_or_default_i64(&rows[parent_idx], "root_ID_tree", parent_id),
+            )
+        } else {
+            (
+                get_or_default_i64(&rows[idx], "generation_num", 2).max(2),
+                parent_id,
+            )
+        };
+        rows[idx].insert(
+            "parent_ID_tree".into(),
+            TableValue::Number(parent_id as f64),
+        );
+        rows[idx].insert(
+            "generation_num_tree".into(),
+            TableValue::Number(generation as f64),
+        );
+        rows[idx].insert("root_ID_tree".into(), TableValue::Number(root_id as f64));
+        rows[idx].insert(HISTORY_COLUMN.into(), TableValue::Bool(true));
+    }
+
+    let mut daughters_by_parent = BTreeMap::<(i64, i64), Vec<i64>>::new();
+    for row in rows.iter() {
+        let Some(parent_id) = get_optional_i64(row, "parent_ID_tree").filter(|value| *value > 0)
+        else {
+            continue;
+        };
+        daughters_by_parent
+            .entry((get_required_i64(row, "frame_i")?, parent_id))
+            .or_default()
+            .push(get_required_i64(row, "Cell_ID")?);
+    }
+    for ((frame_i, _), mut daughter_ids) in daughters_by_parent {
+        daughter_ids.sort_unstable();
+        daughter_ids.dedup();
+        for daughter_id in &daughter_ids {
+            let sisters = daughter_ids
+                .iter()
+                .copied()
+                .filter(|candidate| candidate != daughter_id)
+                .collect::<Vec<_>>();
+            if let Some(idx) = row_lookup.get(&(frame_i, *daughter_id)).copied() {
+                set_sister_values(&mut rows[idx], &sisters);
+                ensure_sister_capacity(&mut rows[idx], sister_columns);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cell_cycle_parent_id(row: &Row) -> Option<i64> {
+    let parent_id = get_optional_i64(row, "relative_ID")?;
+    if parent_id <= 0 {
+        return None;
+    }
+    let relationship = row
+        .get("relationship")
+        .map(TableValue::as_string_lossy)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    (relationship != "mother").then_some(parent_id)
+}
+
 fn normalize_loaded_lineage_row(row: &mut Row, sister_columns: &[String]) -> Result<()> {
     let cell_id = get_required_i64(row, "Cell_ID")?;
     let cell_id_tree = get_or_default_i64(row, "Cell_ID_tree", cell_id);
@@ -629,7 +770,7 @@ fn recompute_sister_groups(state: &mut LineageState, roots: &BTreeSet<(i64, i64)
         let needed_columns = normalized_sister_headers(sibling_ids.len().max(1));
         if needed_columns.len() > state.sister_columns.len() {
             for column in needed_columns.iter().skip(state.sister_columns.len()) {
-                state.headers.push(column.clone());
+                extend_header_order(&mut state.headers, [column.clone()]);
             }
             state.sister_columns = needed_columns;
             let sister_columns = state.sister_columns.clone();

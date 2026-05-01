@@ -9,36 +9,46 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use cellacdc_rs::{
-    add_lineage_tree, add_lineage_tree_to_tables, apply_alignment, apply_tracking_from_table,
-    apply_tracking_from_trackmate_xml, build_import_plan, build_lineage_state_file,
-    classify_import_layout, combine_channels, combine_metrics, compute_alignment_shifts,
-    compute_background_roi_archives, compute_multi_channel, concat_acdc_outputs, connect_3d_segm,
-    connect_3d_segm_in_positions, convert_file_format, count_objects, count_objects_in_positions,
-    discover_import_sources, discover_measurement_experiment, execute_import_plan,
+    add_derived_cell_cycle_columns, add_generation_num_relid, add_lineage_tree,
+    add_lineage_tree_to_tables, add_missing_acdc_columns, add_will_divide_column, apply_alignment,
+    apply_cell_cycle_edits, apply_tracking_from_table, apply_tracking_from_trackmate_xml,
+    assign_mother_bud, build_import_plan, build_lineage_state_file, calculate_per_phase_quantities,
+    calculate_relatives_data, check_cell_cycle_integrity, classify_import_layout, combine_channels,
+    combine_metrics, compute_alignment_shifts, compute_background_roi_archives,
+    compute_multi_channel, concat_acdc_outputs, connect_3d_segm, connect_3d_segm_in_positions,
+    convert_file_format, count_objects, count_objects_in_positions, discover_import_sources,
+    discover_measurement_experiment, ensure_acdc_compatibility, execute_import_plan,
     export_frame_image, export_frame_sequence, export_lineage_info_file, fill_holes,
-    fill_holes_in_positions, filter_segm_from_table_in_positions, generate_mother_bud_total,
-    images_to_positions, inspect_position_frame, load_data_prep_state, measure_experiment,
-    measure_position, move_channel_tiffs_to_positions, open_position_session,
-    prepare_zstack_segm_info, probe_import_source, propagate_lineage_file,
-    read_background_roi_json, rename_files, repeat_tracking_current_position,
-    resolve_measurement_position, run_workflow_file, segmentation_to_object_coords,
-    segmentation_to_object_coords_in_positions, stack_2d_segm_to_3d_in_positions,
-    update_lineage_frame_file, AlignmentRunConfig, ApplyTrackingConfig,
-    ApplyTrackingFromTrackMateXmlConfig, CombineChannelsConfig, CombineMetricsConfig,
-    ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
-    ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
-    CountObjectsBatchConfig, CountObjectsConfig, DataPrepState, FillHolesBatchConfig,
-    FillHolesConfig, FrameInspection, FrameInspectionConfig, FrameProjection,
-    GenerateMotherBudTotalConfig, ImageExportFormat, ImagesToPositionsConfig, ImportConflictMode,
-    ImportExecutionConfig, ImportLayoutKind, ImportOutputFormat, ImportReaderBackend,
-    ImportSelection, LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig,
-    LineageTreeBatchConfig, LineageTreeConfig, LineageUpdateConfig, MaskPathResolution,
-    MeasurementExperimentConfig, MeasurementRunConfig, MetadataReusePolicy, MoveChannelTiffsConfig,
-    ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverlapDenominator, OverlayRenderStyle,
-    OverwritePolicy, PrepareSegmInfoTarget, PrepareZStackSegmInfoConfig, RenameFilesConfig,
-    RenderFrameRequest, ScaleBarStyle, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
-    Stack2DSegmTo3DConfig, TableFormat, TimestampStyle, TrackingColumnMap, TrackingConfig,
-    TrackingRunScope, WorkflowRunOptions,
+    fill_holes_in_positions, filter_segm_from_table_in_positions, find_next_mother_candidate,
+    fix_corrected_assignment, fix_will_divide, generate_mother_bud_total, images_to_positions,
+    inspect_position_frame, lineage_table_paths_for_position, load_cell_cycle_annotations,
+    load_data_prep_state, mark_unknown_lineage, measure_experiment, measure_position,
+    move_channel_tiffs_to_positions, normalize_acdc_column_names, open_position_session,
+    prepare_zstack_segm_info, probe_import_source, propagate_cell_cycle_edits,
+    propagate_lineage_file, read_background_roi_json, rename_files,
+    repeat_tracking_current_position, resolve_measurement_position, review_lineage_frame,
+    run_workflow_file, save_cell_cycle_annotations, segmentation_to_object_coords,
+    segmentation_to_object_coords_in_positions, set_lineage_parent_for_position,
+    stack_2d_segm_to_3d_in_positions, update_lineage_frame_file, AddMissingAcdcColumnsConfig,
+    AddWillDivideColumnConfig, AlignmentRunConfig, ApplyTrackingConfig,
+    ApplyTrackingFromTrackMateXmlConfig, CalculatePerPhaseQuantitiesConfig,
+    CalculateRelativesDataConfig, CellCycleEdit, CellCyclePropagationConfig, CombineChannelsConfig,
+    CombineMetricsConfig, ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig,
+    Connect3DSegmConfig, ConvertFileFormatConfig, CoordinateFilterBatchConfig,
+    CoordinateFilterConfig, CountObjectsBatchConfig, CountObjectsConfig, DataPrepState,
+    DerivedCellCycleColumnsConfig, EnsureAcdcCompatibilityConfig, FillHolesBatchConfig,
+    FillHolesConfig, FixCorrectedAssignmentConfig, FixWillDivideConfig, FrameInspection,
+    FrameInspectionConfig, FrameProjection, GenerateMotherBudTotalConfig, GenerationNumRelIdConfig,
+    ImageExportFormat, ImagesToPositionsConfig, ImportConflictMode, ImportExecutionConfig,
+    ImportLayoutKind, ImportOutputFormat, ImportReaderBackend, ImportSelection, LineageBuildConfig,
+    LineageFrameEdit, LineageInfoConfig, LineagePropagateConfig, LineageTreeBatchConfig,
+    LineageTreeConfig, LineageUpdateConfig, MaskPathResolution, MeasurementExperimentConfig,
+    MeasurementRunConfig, MetadataReusePolicy, MoveChannelTiffsConfig,
+    NormalizeAcdcColumnNamesConfig, ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig,
+    OverlapDenominator, OverlayRenderStyle, OverwritePolicy, PrepareSegmInfoTarget,
+    PrepareZStackSegmInfoConfig, RenameFilesConfig, RenderFrameRequest, ScaleBarStyle,
+    SegmentationLayout, Stack2DSegmTo3DBatchConfig, Stack2DSegmTo3DConfig, TableFormat,
+    TimestampStyle, TrackingColumnMap, TrackingConfig, TrackingRunScope, WorkflowRunOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -225,11 +235,137 @@ struct Cli {
     )]
     update_lineage_frame: bool,
     #[arg(
+        long = "mark_unknown_lineage",
+        action = ArgAction::SetTrue,
+        help = "Mark one or more lineage rows as unknown for a frame and cell ID"
+    )]
+    mark_unknown_lineage: bool,
+    #[arg(
+        long = "set_lineage_parent",
+        action = ArgAction::SetTrue,
+        help = "Set parent relationship for one or more lineage rows at a given frame"
+    )]
+    set_lineage_parent: bool,
+    #[arg(
+        long = "review_lineage_frame",
+        action = ArgAction::SetTrue,
+        help = "Review new, orphan, and lost lineage cells for one frame"
+    )]
+    review_lineage_frame: bool,
+    #[arg(
+        long = "find_lineage_mother",
+        action = ArgAction::SetTrue,
+        help = "Find the next missing previous-frame cell ID candidate for a lineage child"
+    )]
+    find_lineage_mother: bool,
+    #[arg(
+        long = "assign_mother_bud",
+        action = ArgAction::SetTrue,
+        help = "Assign a Cell-ACDC cell-cycle mother-bud relationship for one frame"
+    )]
+    assign_mother_bud: bool,
+    #[arg(
+        long = "set_cell_cycle_stage",
+        action = ArgAction::SetTrue,
+        help = "Set the Cell-ACDC cell-cycle stage for one or more cells in a frame"
+    )]
+    set_cell_cycle_stage: bool,
+    #[arg(
+        long = "set_cell_cycle_relationship",
+        action = ArgAction::SetTrue,
+        help = "Set the Cell-ACDC relationship and optional relative ID for one or more cells"
+    )]
+    set_cell_cycle_relationship: bool,
+    #[arg(
+        long = "set_cell_cycle_generation",
+        action = ArgAction::SetTrue,
+        help = "Set the Cell-ACDC generation number for one or more cells in a frame"
+    )]
+    set_cell_cycle_generation: bool,
+    #[arg(
+        long = "set_cell_cycle_markers",
+        action = ArgAction::SetTrue,
+        help = "Set Cell-ACDC emergence/division frame markers and history-known state"
+    )]
+    set_cell_cycle_markers: bool,
+    #[arg(
+        long = "propagate_cell_cycle",
+        action = ArgAction::SetTrue,
+        help = "Apply cell-cycle edits at one frame and propagate them to future rows"
+    )]
+    propagate_cell_cycle: bool,
+    #[arg(
+        long = "check_cell_cycle_integrity",
+        action = ArgAction::SetTrue,
+        help = "Report Cell-ACDC cell-cycle annotation consistency issues"
+    )]
+    check_cell_cycle_integrity: bool,
+    #[arg(
+        long = "add_derived_cell_cycle_columns",
+        action = ArgAction::SetTrue,
+        help = "Add Python-compatible derived cell-cycle columns to an acdc_output table"
+    )]
+    add_derived_cell_cycle_columns: bool,
+    #[arg(
+        long = "add_will_divide_column",
+        action = ArgAction::SetTrue,
+        help = "Add Python-compatible will_divide values from mother-bud annotations"
+    )]
+    add_will_divide_column: bool,
+    #[arg(
+        long = "add_missing_acdc_columns",
+        action = ArgAction::SetTrue,
+        help = "Add Python-compatible missing acdc_output compatibility columns"
+    )]
+    add_missing_acdc_columns: bool,
+    #[arg(
+        long = "ensure_acdc_compatibility",
+        action = ArgAction::SetTrue,
+        help = "Apply Python-compatible acdc_output loader compatibility fixes"
+    )]
+    ensure_acdc_compatibility: bool,
+    #[arg(
+        long = "add_generation_num_relid",
+        action = ArgAction::SetTrue,
+        help = "Add generation_num_relID values from each row's relative_ID"
+    )]
+    add_generation_num_relid: bool,
+    #[arg(
+        long = "fix_will_divide",
+        action = ArgAction::SetTrue,
+        help = "Reset stale will_divide cycles that do not have a next generation"
+    )]
+    fix_will_divide: bool,
+    #[arg(
+        long = "fix_corrected_assignment_i",
+        action = ArgAction::SetTrue,
+        help = "Migrate legacy corrected_assignment to corrected_on_frame_i"
+    )]
+    fix_corrected_assignment_i: bool,
+    #[arg(
         long = "generate_mother_bud_total",
         action = ArgAction::SetTrue,
         help = "Generate G1/mother/bud/total rows from an acdc_output table"
     )]
     generate_mother_bud_total: bool,
+    #[arg(
+        long = "calculate_relatives_data",
+        action = ArgAction::SetTrue,
+        help = "Join rows to their relative_ID rows and add mother-bud combined measurements"
+    )]
+    calculate_relatives_data: bool,
+    #[arg(
+        long = "calculate_per_phase_quantities",
+        action = ArgAction::SetTrue,
+        help = "Aggregate Cell-ACDC downstream measurements per cell-cycle phase"
+    )]
+    calculate_per_phase_quantities: bool,
+    #[arg(
+        long = "normalize_acdc_column_names",
+        action = ArgAction::SetTrue,
+        help = "Rename legacy Cell-ACDC columns to current acdc_output names"
+    )]
+    normalize_acdc_column_names: bool,
     #[arg(
         long = "combine_metrics",
         action = ArgAction::SetTrue,
@@ -474,7 +610,7 @@ struct Cli {
         long = "grouping_column",
         value_name = "COLUMN",
         action = ArgAction::Append,
-        help = "Grouping column for --generate_mother_bud_total"
+        help = "Extra grouping/join column for table utilities"
     )]
     grouping_columns: Vec<String>,
     #[arg(
@@ -600,6 +736,7 @@ struct Cli {
     #[arg(
         long = "frame_i",
         value_name = "INDEX",
+        allow_hyphen_values = true,
         help = "Frame index for frame and lineage helper modes"
     )]
     frame_i: Option<i64>,
@@ -679,6 +816,65 @@ struct Cli {
         help = "Cell ID for lineage helper modes; repeat to select multiple cells"
     )]
     cell_ids: Vec<i64>,
+    #[arg(
+        long = "parent_id",
+        value_name = "ID",
+        help = "Parent cell ID for --set_lineage_parent"
+    )]
+    parent_id: Option<i64>,
+    #[arg(
+        long = "mother_id",
+        value_name = "ID",
+        help = "Mother Cell ID for --assign_mother_bud"
+    )]
+    mother_id: Option<i64>,
+    #[arg(
+        long = "cell_cycle_stage",
+        value_name = "STAGE",
+        help = "Cell-cycle stage value for --set_cell_cycle_stage"
+    )]
+    cell_cycle_stage: Option<String>,
+    #[arg(
+        long = "relationship",
+        value_name = "RELATIONSHIP",
+        help = "Relationship value for --set_cell_cycle_relationship"
+    )]
+    relationship: Option<String>,
+    #[arg(
+        long = "relative_id",
+        value_name = "ID",
+        allow_hyphen_values = true,
+        help = "Relative Cell ID for --set_cell_cycle_relationship"
+    )]
+    relative_id: Option<i64>,
+    #[arg(
+        long = "generation_num",
+        value_name = "N",
+        allow_hyphen_values = true,
+        help = "Generation number for --set_cell_cycle_generation"
+    )]
+    generation_num: Option<i64>,
+    #[arg(
+        long = "emerg_frame_i",
+        value_name = "FRAME",
+        allow_hyphen_values = true,
+        help = "Emergence frame marker for --set_cell_cycle_markers; use -1 for unknown"
+    )]
+    emerg_frame_i: Option<i64>,
+    #[arg(
+        long = "division_frame_i",
+        value_name = "FRAME",
+        allow_hyphen_values = true,
+        help = "Division frame marker for --set_cell_cycle_markers; use -1 for unknown"
+    )]
+    division_frame_i: Option<i64>,
+    #[arg(
+        long = "is_history_known",
+        value_name = "BOOL",
+        value_parser = parse_bool_arg,
+        help = "History-known flag for --set_cell_cycle_markers"
+    )]
+    is_history_known: Option<bool>,
     #[arg(
         long = "edits_table_path",
         value_name = "PATH_TO_TABLE",
@@ -831,7 +1027,28 @@ fn main() -> Result<()> {
         + usize::from(cli.export_lineage_info)
         + usize::from(cli.propagate_lineage)
         + usize::from(cli.update_lineage_frame)
+        + usize::from(cli.mark_unknown_lineage)
+        + usize::from(cli.set_lineage_parent)
+        + usize::from(cli.review_lineage_frame)
+        + usize::from(cli.find_lineage_mother)
+        + usize::from(cli.assign_mother_bud)
+        + usize::from(cli.set_cell_cycle_stage)
+        + usize::from(cli.set_cell_cycle_relationship)
+        + usize::from(cli.set_cell_cycle_generation)
+        + usize::from(cli.set_cell_cycle_markers)
+        + usize::from(cli.propagate_cell_cycle)
+        + usize::from(cli.check_cell_cycle_integrity)
+        + usize::from(cli.add_derived_cell_cycle_columns)
+        + usize::from(cli.add_will_divide_column)
+        + usize::from(cli.add_missing_acdc_columns)
+        + usize::from(cli.ensure_acdc_compatibility)
+        + usize::from(cli.add_generation_num_relid)
+        + usize::from(cli.fix_will_divide)
+        + usize::from(cli.fix_corrected_assignment_i)
         + usize::from(cli.generate_mother_bud_total)
+        + usize::from(cli.calculate_relatives_data)
+        + usize::from(cli.calculate_per_phase_quantities)
+        + usize::from(cli.normalize_acdc_column_names)
         + usize::from(cli.combine_metrics)
         + usize::from(cli.compute_multi_channel)
         + usize::from(cli.concat_acdc_outputs)
@@ -843,7 +1060,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --data_prep_state, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --data_prep_state, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --mark_unknown_lineage, --set_lineage_parent, --review_lineage_frame, --find_lineage_mother, --assign_mother_bud, --set_cell_cycle_stage, --set_cell_cycle_relationship, --set_cell_cycle_generation, --set_cell_cycle_markers, --propagate_cell_cycle, --check_cell_cycle_integrity, --add_derived_cell_cycle_columns, --add_will_divide_column, --add_missing_acdc_columns, --ensure_acdc_compatibility, --add_generation_num_relid, --fix_will_divide, --fix_corrected_assignment_i, --generate_mother_bud_total, --calculate_relatives_data, --calculate_per_phase_quantities, --normalize_acdc_column_names, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -984,8 +1201,113 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.mark_unknown_lineage {
+        println!("{}", run_mark_unknown_lineage(&cli)?);
+        return Ok(());
+    }
+
+    if cli.set_lineage_parent {
+        println!("{}", run_set_lineage_parent(&cli)?);
+        return Ok(());
+    }
+
+    if cli.review_lineage_frame {
+        println!("{}", run_review_lineage_frame(&cli)?);
+        return Ok(());
+    }
+
+    if cli.find_lineage_mother {
+        println!("{}", run_find_lineage_mother(&cli)?);
+        return Ok(());
+    }
+
+    if cli.assign_mother_bud {
+        println!("{}", run_assign_mother_bud(&cli)?);
+        return Ok(());
+    }
+
+    if cli.set_cell_cycle_stage {
+        println!("{}", run_set_cell_cycle_stage(&cli)?);
+        return Ok(());
+    }
+
+    if cli.set_cell_cycle_relationship {
+        println!("{}", run_set_cell_cycle_relationship(&cli)?);
+        return Ok(());
+    }
+
+    if cli.set_cell_cycle_generation {
+        println!("{}", run_set_cell_cycle_generation(&cli)?);
+        return Ok(());
+    }
+
+    if cli.set_cell_cycle_markers {
+        println!("{}", run_set_cell_cycle_markers(&cli)?);
+        return Ok(());
+    }
+
+    if cli.propagate_cell_cycle {
+        println!("{}", run_propagate_cell_cycle(&cli)?);
+        return Ok(());
+    }
+
+    if cli.check_cell_cycle_integrity {
+        println!("{}", run_check_cell_cycle_integrity(&cli)?);
+        return Ok(());
+    }
+
+    if cli.add_derived_cell_cycle_columns {
+        println!("{}", run_add_derived_cell_cycle_columns(&cli)?);
+        return Ok(());
+    }
+
+    if cli.add_will_divide_column {
+        println!("{}", run_add_will_divide_column(&cli)?);
+        return Ok(());
+    }
+
+    if cli.add_missing_acdc_columns {
+        println!("{}", run_add_missing_acdc_columns(&cli)?);
+        return Ok(());
+    }
+
+    if cli.ensure_acdc_compatibility {
+        println!("{}", run_ensure_acdc_compatibility(&cli)?);
+        return Ok(());
+    }
+
+    if cli.add_generation_num_relid {
+        println!("{}", run_add_generation_num_relid(&cli)?);
+        return Ok(());
+    }
+
+    if cli.fix_will_divide {
+        println!("{}", run_fix_will_divide(&cli)?);
+        return Ok(());
+    }
+
+    if cli.fix_corrected_assignment_i {
+        println!("{}", run_fix_corrected_assignment_i(&cli)?);
+        return Ok(());
+    }
+
     if cli.generate_mother_bud_total {
         println!("{}", run_generate_mother_bud_total(&cli)?);
+        return Ok(());
+    }
+
+    if cli.calculate_relatives_data {
+        println!("{}", run_calculate_relatives_data(&cli)?);
+        return Ok(());
+    }
+
+    if cli.calculate_per_phase_quantities {
+        println!("{}", run_calculate_per_phase_quantities(&cli)?);
+        return Ok(());
+    }
+
+    if cli.normalize_acdc_column_names {
+        println!("{}", run_normalize_acdc_column_names(&cli)?);
         return Ok(());
     }
 
@@ -1836,6 +2158,22 @@ fn required_nonnegative_frame_i(cli: &Cli, mode: &str) -> Result<usize> {
     Ok(frame_i as usize)
 }
 
+fn optional_nonempty_arg(
+    value: Option<&str>,
+    mode: &str,
+    arg_name: &str,
+) -> Result<Option<String>> {
+    value
+        .map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                bail!("{mode} requires non-empty {arg_name}");
+            }
+            Ok(trimmed.to_string())
+        })
+        .transpose()
+}
+
 fn frame_projection(cli: &Cli) -> FrameProjection {
     cli.z_slice
         .map(FrameProjection::ZSlice)
@@ -2118,6 +2456,559 @@ fn run_update_lineage_frame(cli: &Cli) -> Result<String> {
     ))
 }
 
+fn run_mark_unknown_lineage(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--mark_unknown_lineage supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--mark_unknown_lineage requires --position_dir"))?;
+    if cli.cell_ids.is_empty() {
+        bail!("--mark_unknown_lineage requires --cell_id");
+    }
+    let frame_i = required_nonnegative_frame_i(cli, "--mark_unknown_lineage")?;
+    for &cell_id in &cli.cell_ids {
+        mark_unknown_lineage(
+            &position_dir,
+            cli.segm_endname.as_deref(),
+            frame_i as i64,
+            cell_id,
+        )?;
+    }
+    let (_, lineage_path) =
+        lineage_table_paths_for_position(&position_dir, cli.segm_endname.as_deref())?;
+    Ok(format!(
+        "Marked lineage unknown for {} cell(s) in frame {} and saved {}",
+        cli.cell_ids.len(),
+        frame_i,
+        lineage_path.display()
+    ))
+}
+
+fn run_set_lineage_parent(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--set_lineage_parent supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--set_lineage_parent requires --position_dir"))?;
+    if cli.cell_ids.is_empty() {
+        bail!("--set_lineage_parent requires --cell_id");
+    }
+    let parent_id = cli
+        .parent_id
+        .ok_or_else(|| anyhow::anyhow!("--set_lineage_parent requires --parent_id"))?;
+    let frame_i = required_nonnegative_frame_i(cli, "--set_lineage_parent")?;
+    for &cell_id in &cli.cell_ids {
+        let edit = LineageFrameEdit {
+            frame_i: frame_i as i64,
+            cell_id,
+            parent_id,
+        };
+        set_lineage_parent_for_position(&position_dir, cli.segm_endname.as_deref(), edit)?;
+    }
+    let (_, lineage_path) =
+        lineage_table_paths_for_position(&position_dir, cli.segm_endname.as_deref())?;
+    Ok(format!(
+        "Set lineage parent for {} cell(s) in frame {} and saved {}",
+        cli.cell_ids.len(),
+        frame_i,
+        lineage_path.display()
+    ))
+}
+
+fn run_review_lineage_frame(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--review_lineage_frame supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--review_lineage_frame requires --position_dir"))?;
+    let frame_i = required_nonnegative_frame_i(cli, "--review_lineage_frame")?;
+    let review = review_lineage_frame(&position_dir, cli.segm_endname.as_deref(), frame_i as i64)?;
+    let payload = serde_json::json!({
+        "frame_i": frame_i,
+        "cells_with_parent": review
+            .cells_with_parent
+            .into_iter()
+            .map(|(cell_id, parent_id)| serde_json::json!([cell_id, parent_id]))
+            .collect::<Vec<_>>(),
+        "orphan_cells": review.orphan_cells,
+        "lost_cells": review.lost_cells,
+    });
+    let details = serde_json::to_string_pretty(&payload)?;
+    Ok(format!("Lineage review for frame {frame_i}:\n{details}"))
+}
+
+fn run_find_lineage_mother(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--find_lineage_mother supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--find_lineage_mother requires --position_dir"))?;
+    if cli.cell_ids.len() != 1 {
+        bail!("--find_lineage_mother requires exactly one --cell_id");
+    }
+    let frame_i = required_nonnegative_frame_i(cli, "--find_lineage_mother")?;
+    let cell_id = cli.cell_ids[0];
+    let candidate = find_next_mother_candidate(
+        &position_dir,
+        cli.segm_endname.as_deref(),
+        frame_i as i64,
+        cell_id,
+    )?;
+    let payload = serde_json::json!({
+        "frame_i": frame_i,
+        "cell_id": cell_id,
+        "mother_candidate": candidate,
+    });
+    let details = serde_json::to_string_pretty(&payload)?;
+    Ok(format!(
+        "Lineage mother candidate for Cell_ID {cell_id} in frame {frame_i}:\n{details}"
+    ))
+}
+
+fn run_assign_mother_bud(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--assign_mother_bud supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--assign_mother_bud requires --position_dir"))?;
+    if cli.cell_ids.len() != 1 {
+        bail!("--assign_mother_bud requires exactly one --cell_id for the bud");
+    }
+    let mother_id = cli
+        .mother_id
+        .ok_or_else(|| anyhow::anyhow!("--assign_mother_bud requires --mother_id"))?;
+    let frame_i = required_nonnegative_frame_i(cli, "--assign_mother_bud")?;
+    let bud_id = cli.cell_ids[0];
+    let table = assign_mother_bud(
+        &position_dir,
+        cli.segm_endname.as_deref(),
+        frame_i as i64,
+        bud_id,
+        mother_id,
+    )?;
+    Ok(format!(
+        "Assigned Cell_ID {bud_id} as bud of mother Cell_ID {mother_id} in frame {} and saved {}",
+        frame_i,
+        table.path.display()
+    ))
+}
+
+fn run_set_cell_cycle_stage(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--set_cell_cycle_stage supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--set_cell_cycle_stage requires --position_dir"))?;
+    if cli.cell_ids.is_empty() {
+        bail!("--set_cell_cycle_stage requires --cell_id");
+    }
+    let stage = cli
+        .cell_cycle_stage
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("--set_cell_cycle_stage requires --cell_cycle_stage"))?;
+    let frame_i = required_nonnegative_frame_i(cli, "--set_cell_cycle_stage")?;
+    let table = load_cell_cycle_annotations(&position_dir, cli.segm_endname.as_deref())?;
+    let edits = cli
+        .cell_ids
+        .iter()
+        .map(|cell_id| CellCycleEdit {
+            frame_i: frame_i as i64,
+            cell_id: *cell_id,
+            cell_cycle_stage: Some(stage.to_string()),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let updated = apply_cell_cycle_edits(&table, &edits)?;
+    let path = save_cell_cycle_annotations(&updated)?;
+    Ok(format!(
+        "Set cell-cycle stage to {stage:?} for {} cell(s) in frame {} and saved {}",
+        cli.cell_ids.len(),
+        frame_i,
+        path.display()
+    ))
+}
+
+fn run_set_cell_cycle_relationship(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--set_cell_cycle_relationship supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--set_cell_cycle_relationship requires --position_dir"))?;
+    if cli.cell_ids.is_empty() {
+        bail!("--set_cell_cycle_relationship requires --cell_id");
+    }
+    let relationship = cli
+        .relationship
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("--set_cell_cycle_relationship requires --relationship"))?;
+    let frame_i = required_nonnegative_frame_i(cli, "--set_cell_cycle_relationship")?;
+    let table = load_cell_cycle_annotations(&position_dir, cli.segm_endname.as_deref())?;
+    let edits = cli
+        .cell_ids
+        .iter()
+        .map(|cell_id| CellCycleEdit {
+            frame_i: frame_i as i64,
+            cell_id: *cell_id,
+            relationship: Some(relationship.to_string()),
+            relative_id: cli.relative_id,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let updated = apply_cell_cycle_edits(&table, &edits)?;
+    let path = save_cell_cycle_annotations(&updated)?;
+    Ok(format!(
+        "Set relationship to {relationship:?} for {} cell(s) in frame {} and saved {}",
+        cli.cell_ids.len(),
+        frame_i,
+        path.display()
+    ))
+}
+
+fn run_set_cell_cycle_generation(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--set_cell_cycle_generation supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--set_cell_cycle_generation requires --position_dir"))?;
+    if cli.cell_ids.is_empty() {
+        bail!("--set_cell_cycle_generation requires --cell_id");
+    }
+    let generation_num = cli
+        .generation_num
+        .ok_or_else(|| anyhow::anyhow!("--set_cell_cycle_generation requires --generation_num"))?;
+    let frame_i = required_nonnegative_frame_i(cli, "--set_cell_cycle_generation")?;
+    let table = load_cell_cycle_annotations(&position_dir, cli.segm_endname.as_deref())?;
+    let edits = cli
+        .cell_ids
+        .iter()
+        .map(|cell_id| CellCycleEdit {
+            frame_i: frame_i as i64,
+            cell_id: *cell_id,
+            generation_num: Some(generation_num),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let updated = apply_cell_cycle_edits(&table, &edits)?;
+    let path = save_cell_cycle_annotations(&updated)?;
+    Ok(format!(
+        "Set generation_num to {} for {} cell(s) in frame {} and saved {}",
+        generation_num,
+        cli.cell_ids.len(),
+        frame_i,
+        path.display()
+    ))
+}
+
+fn run_set_cell_cycle_markers(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--set_cell_cycle_markers supports --position_dir, not --experiment_dir");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--set_cell_cycle_markers requires --position_dir"))?;
+    if cli.cell_ids.is_empty() {
+        bail!("--set_cell_cycle_markers requires --cell_id");
+    }
+    if cli.emerg_frame_i.is_none()
+        && cli.division_frame_i.is_none()
+        && cli.is_history_known.is_none()
+    {
+        bail!("--set_cell_cycle_markers requires at least one of --emerg_frame_i, --division_frame_i, or --is_history_known");
+    }
+    let frame_i = required_nonnegative_frame_i(cli, "--set_cell_cycle_markers")?;
+    let table = load_cell_cycle_annotations(&position_dir, cli.segm_endname.as_deref())?;
+    let edits = cli
+        .cell_ids
+        .iter()
+        .map(|cell_id| CellCycleEdit {
+            frame_i: frame_i as i64,
+            cell_id: *cell_id,
+            emerg_frame_i: cli.emerg_frame_i,
+            division_frame_i: cli.division_frame_i,
+            is_history_known: cli.is_history_known,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let updated = apply_cell_cycle_edits(&table, &edits)?;
+    let path = save_cell_cycle_annotations(&updated)?;
+    let mut changed = Vec::new();
+    if let Some(value) = cli.emerg_frame_i {
+        changed.push(format!("emerg_frame_i={value}"));
+    }
+    if let Some(value) = cli.division_frame_i {
+        changed.push(format!("division_frame_i={value}"));
+    }
+    if let Some(value) = cli.is_history_known {
+        changed.push(format!("is_history_known={value}"));
+    }
+    Ok(format!(
+        "Set {} for {} cell(s) in frame {} and saved {}",
+        changed.join(", "),
+        cli.cell_ids.len(),
+        frame_i,
+        path.display()
+    ))
+}
+
+fn run_propagate_cell_cycle(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--propagate_cell_cycle supports --position_dir, not --experiment_dir");
+    }
+    if cli.start_frame.is_some() {
+        bail!("--propagate_cell_cycle uses --frame_i as the source frame, not --start_frame");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--propagate_cell_cycle requires --position_dir"))?;
+    if cli.cell_ids.is_empty() {
+        bail!("--propagate_cell_cycle requires --cell_id");
+    }
+    let frame_i = required_nonnegative_frame_i(cli, "--propagate_cell_cycle")?;
+    if let Some(end_frame) = cli.end_frame {
+        if end_frame < frame_i {
+            bail!("--propagate_cell_cycle requires --end_frame >= --frame_i");
+        }
+    }
+    let cell_cycle_stage = optional_nonempty_arg(
+        cli.cell_cycle_stage.as_deref(),
+        "--propagate_cell_cycle",
+        "--cell_cycle_stage",
+    )?;
+    let relationship = optional_nonempty_arg(
+        cli.relationship.as_deref(),
+        "--propagate_cell_cycle",
+        "--relationship",
+    )?;
+    if cell_cycle_stage.is_none()
+        && cli.generation_num.is_none()
+        && cli.relative_id.is_none()
+        && relationship.is_none()
+        && cli.emerg_frame_i.is_none()
+        && cli.division_frame_i.is_none()
+        && cli.is_history_known.is_none()
+    {
+        bail!("--propagate_cell_cycle requires at least one cell-cycle edit option");
+    }
+
+    let table = load_cell_cycle_annotations(&position_dir, cli.segm_endname.as_deref())?;
+    let edits = cli
+        .cell_ids
+        .iter()
+        .map(|cell_id| CellCycleEdit {
+            frame_i: frame_i as i64,
+            cell_id: *cell_id,
+            cell_cycle_stage: cell_cycle_stage.clone(),
+            generation_num: cli.generation_num,
+            relative_id: cli.relative_id,
+            relationship: relationship.clone(),
+            emerg_frame_i: cli.emerg_frame_i,
+            division_frame_i: cli.division_frame_i,
+            is_history_known: cli.is_history_known,
+        })
+        .collect::<Vec<_>>();
+    let updated = propagate_cell_cycle_edits(
+        &table,
+        &edits,
+        &CellCyclePropagationConfig {
+            start_frame_i: frame_i as i64,
+            end_frame_i: cli.end_frame.map(|value| value as i64),
+        },
+    )?;
+    let path = save_cell_cycle_annotations(&updated)?;
+    let through = cli
+        .end_frame
+        .map(|end| format!("through frame {end}"))
+        .unwrap_or_else(|| "through the last frame".to_string());
+    Ok(format!(
+        "Propagated cell-cycle edits for {} cell(s) from frame {} {} and saved {}",
+        cli.cell_ids.len(),
+        frame_i,
+        through,
+        path.display()
+    ))
+}
+
+fn run_check_cell_cycle_integrity(cli: &Cli) -> Result<String> {
+    if cli.experiment_dir.is_some() {
+        bail!("--check_cell_cycle_integrity supports --position_dir, not --experiment_dir");
+    }
+    if cli.start_frame.is_some() || cli.end_frame.is_some() {
+        bail!(
+            "--check_cell_cycle_integrity uses optional --frame_i, not --start_frame/--end_frame"
+        );
+    }
+    if !cli.cell_ids.is_empty() {
+        bail!("--check_cell_cycle_integrity checks full frames and does not support --cell_id");
+    }
+    let position_dir = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--check_cell_cycle_integrity requires --position_dir"))?;
+    let frame_i = match cli.frame_i {
+        Some(value) if value < 0 => {
+            bail!("--check_cell_cycle_integrity requires a non-negative --frame_i")
+        }
+        Some(value) => Some(value),
+        None => None,
+    };
+    let table = load_cell_cycle_annotations(&position_dir, cli.segm_endname.as_deref())?;
+    let report = check_cell_cycle_integrity(&table, frame_i);
+    Ok(serde_json::to_string_pretty(&report)?)
+}
+
+fn run_add_derived_cell_cycle_columns(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_derived_cell_cycle_columns requires --input_path"))?;
+    let output_path = cli.output_path.clone().ok_or_else(|| {
+        anyhow::anyhow!("--add_derived_cell_cycle_columns requires --output_path")
+    })?;
+    let result = add_derived_cell_cycle_columns(DerivedCellCycleColumnsConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Added derived cell-cycle columns to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_add_will_divide_column(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_will_divide_column requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_will_divide_column requires --output_path"))?;
+    let result = add_will_divide_column(AddWillDivideColumnConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Added will_divide column to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_add_missing_acdc_columns(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_missing_acdc_columns requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_missing_acdc_columns requires --output_path"))?;
+    let result = add_missing_acdc_columns(AddMissingAcdcColumnsConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Added missing acdc_output columns to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_ensure_acdc_compatibility(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--ensure_acdc_compatibility requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--ensure_acdc_compatibility requires --output_path"))?;
+    let result = ensure_acdc_compatibility(EnsureAcdcCompatibilityConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Ensured acdc_output compatibility in {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_add_generation_num_relid(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_generation_num_relid requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--add_generation_num_relid requires --output_path"))?;
+    let result = add_generation_num_relid(GenerationNumRelIdConfig {
+        input_path,
+        output_path,
+        grouping_columns: cli.grouping_columns.clone(),
+    })?;
+    Ok(format!(
+        "Added generation_num_relID to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_fix_will_divide(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--fix_will_divide requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--fix_will_divide requires --output_path"))?;
+    let result = fix_will_divide(FixWillDivideConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Fixed will_divide values in {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_fix_corrected_assignment_i(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--fix_corrected_assignment_i requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--fix_corrected_assignment_i requires --output_path"))?;
+    let result = fix_corrected_assignment(FixCorrectedAssignmentConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Fixed corrected_assignment values in {}",
+        result.primary_path.display()
+    ))
+}
+
 fn run_generate_mother_bud_total(cli: &Cli) -> Result<String> {
     let input_path = cli
         .input_path
@@ -2137,6 +3028,66 @@ fn run_generate_mother_bud_total(cli: &Cli) -> Result<String> {
     })?;
     Ok(format!(
         "Saved mother-bud-total table to {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_calculate_relatives_data(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--calculate_relatives_data requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--calculate_relatives_data requires --output_path"))?;
+    let result = calculate_relatives_data(CalculateRelativesDataConfig {
+        input_path,
+        output_path,
+        channels: cli.channel_names.clone(),
+        grouping_columns: cli.grouping_columns.clone(),
+    })?;
+    Ok(format!(
+        "Calculated relatives data in {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_calculate_per_phase_quantities(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--calculate_per_phase_quantities requires --input_path"))?;
+    let output_path = cli.output_path.clone().ok_or_else(|| {
+        anyhow::anyhow!("--calculate_per_phase_quantities requires --output_path")
+    })?;
+    let result = calculate_per_phase_quantities(CalculatePerPhaseQuantitiesConfig {
+        input_path,
+        output_path,
+        channels: cli.channel_names.clone(),
+        grouping_columns: cli.grouping_columns.clone(),
+    })?;
+    Ok(format!(
+        "Calculated per-phase quantities in {}",
+        result.primary_path.display()
+    ))
+}
+
+fn run_normalize_acdc_column_names(cli: &Cli) -> Result<String> {
+    let input_path = cli
+        .input_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--normalize_acdc_column_names requires --input_path"))?;
+    let output_path = cli
+        .output_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--normalize_acdc_column_names requires --output_path"))?;
+    let result = normalize_acdc_column_names(NormalizeAcdcColumnNamesConfig {
+        input_path,
+        output_path,
+    })?;
+    Ok(format!(
+        "Normalized Cell-ACDC column names in {}",
         result.primary_path.display()
     ))
 }
@@ -2486,6 +3437,34 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.z_col.is_some()
         || cli.frame_col.is_some()
         || cli.frame_i.is_some()
+        || cli.parent_id.is_some()
+        || cli.mother_id.is_some()
+        || cli.cell_cycle_stage.is_some()
+        || cli.relationship.is_some()
+        || cli.relative_id.is_some()
+        || cli.generation_num.is_some()
+        || cli.emerg_frame_i.is_some()
+        || cli.division_frame_i.is_some()
+        || cli.is_history_known.is_some()
+        || cli.review_lineage_frame
+        || cli.find_lineage_mother
+        || cli.assign_mother_bud
+        || cli.set_cell_cycle_stage
+        || cli.set_cell_cycle_relationship
+        || cli.set_cell_cycle_generation
+        || cli.set_cell_cycle_markers
+        || cli.propagate_cell_cycle
+        || cli.check_cell_cycle_integrity
+        || cli.add_derived_cell_cycle_columns
+        || cli.add_will_divide_column
+        || cli.add_missing_acdc_columns
+        || cli.ensure_acdc_compatibility
+        || cli.add_generation_num_relid
+        || cli.fix_will_divide
+        || cli.fix_corrected_assignment_i
+        || cli.calculate_relatives_data
+        || cli.calculate_per_phase_quantities
+        || cli.normalize_acdc_column_names
         || cli.selected_label.is_some()
         || cli.z_slice.is_some()
         || cli.no_overlay
@@ -2513,8 +3492,29 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.delete_untracked_ids
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
+        || cli.mark_unknown_lineage
+        || cli.set_lineage_parent
+        || cli.review_lineage_frame
+        || cli.find_lineage_mother
+        || cli.assign_mother_bud
+        || cli.set_cell_cycle_stage
+        || cli.set_cell_cycle_relationship
+        || cli.set_cell_cycle_generation
+        || cli.set_cell_cycle_markers
+        || cli.propagate_cell_cycle
+        || cli.check_cell_cycle_integrity
+        || cli.add_derived_cell_cycle_columns
+        || cli.add_will_divide_column
+        || cli.add_missing_acdc_columns
+        || cli.ensure_acdc_compatibility
+        || cli.add_generation_num_relid
+        || cli.fix_will_divide
+        || cli.fix_corrected_assignment_i
+        || cli.calculate_relatives_data
+        || cli.calculate_per_phase_quantities
+        || cli.normalize_acdc_column_names
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --data_prep_state, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --data_prep_state, --inspect_frame, --export_frame_image, --export_frame_sequence, --apply_tracking_from_table, --repeat_tracking, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --mark_unknown_lineage, --set_lineage_parent, --review_lineage_frame, --find_lineage_mother, --assign_mother_bud, --set_cell_cycle_stage, --set_cell_cycle_relationship, --set_cell_cycle_generation, --set_cell_cycle_markers, --propagate_cell_cycle, --check_cell_cycle_integrity, --add_derived_cell_cycle_columns, --add_will_divide_column, --add_missing_acdc_columns, --ensure_acdc_compatibility, --add_generation_num_relid, --fix_will_divide, --fix_corrected_assignment_i, --generate_mother_bud_total, --calculate_relatives_data, --calculate_per_phase_quantities, --normalize_acdc_column_names, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --import_experiment, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }
@@ -2574,6 +3574,14 @@ fn normalize_choice(value: &str) -> String {
         .filter(|ch| *ch != '_' && *ch != '-' && !ch.is_whitespace())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn parse_bool_arg(value: &str) -> Result<bool, String> {
+    match normalize_choice(value).as_str() {
+        "true" | "t" | "yes" | "y" | "1" => Ok(true),
+        "false" | "f" | "no" | "n" | "0" => Ok(false),
+        _ => Err("expected one of true, false, yes, no, 1, or 0".to_string()),
+    }
 }
 
 fn parse_segmentation_layout(value: &str) -> Result<SegmentationLayout, String> {
