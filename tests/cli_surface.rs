@@ -550,6 +550,66 @@ fn connect_3d_segm_utility_writes_connected_mask() {
 }
 
 #[test]
+fn connect_3d_segm_utility_connects_experiment_positions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for pos in ["Position_1", "Position_2"] {
+        let images_dir = temp.path().join(pos).join("Images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        let segm_path = images_dir.join("demo_segm.npz");
+        let file = File::create(segm_path).expect("segm npz");
+        let mut writer = NpzWriter::new(file);
+        let masks = Array3::from_shape_vec(
+            (2, 2, 2),
+            vec![
+                0u32, 1, //
+                0, 0, //
+                0, 0, //
+                0, 1,
+            ],
+        )
+        .expect("mask shape");
+        writer.add_array("arr_0", &masks).expect("write mask");
+        writer.finish().expect("finish npz");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--connect_3d_segm")
+        .arg("--experiment_dir")
+        .arg(temp.path())
+        .arg("--segm_endname")
+        .arg("segm")
+        .arg("--segm_append_name")
+        .arg("connected3d")
+        .arg("--segm_layout")
+        .arg("ZYX")
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Saved 3D-connected segmentation masks for 2 position(s)"));
+    for pos in ["Position_1", "Position_2"] {
+        let output_path = temp
+            .path()
+            .join(pos)
+            .join("Images")
+            .join("demo_segm_connected3d.npz");
+        let mut npz =
+            NpzReader::new(File::open(output_path).expect("connected npz")).expect("read npz");
+        let connected: Array3<u32> = npz.by_name("arr_0.npy").expect("connected array");
+        assert_eq!(
+            connected.iter().copied().collect::<Vec<_>>(),
+            vec![
+                0, 0, //
+                0, 1, //
+                0, 0, //
+                0, 1,
+            ]
+        );
+    }
+}
+
+#[test]
 fn stack_2d_segm_to_3d_utility_writes_stacked_mask() {
     let temp = tempfile::tempdir().expect("temp dir");
     let segm_path = temp.path().join("segm.npz");
