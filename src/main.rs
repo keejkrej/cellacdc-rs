@@ -16,7 +16,7 @@ use cellacdc_rs::{
     count_objects, count_objects_in_positions, discover_measurement_experiment,
     export_lineage_info_file, fill_holes, fill_holes_in_positions,
     filter_segm_from_table_in_positions, generate_mother_bud_total, images_to_positions,
-    measure_experiment, measure_position, move_channel_tiffs_to_positions,
+    inspect_position_frame, measure_experiment, measure_position, move_channel_tiffs_to_positions,
     prepare_zstack_segm_info, propagate_lineage_file, read_background_roi_json, rename_files,
     resolve_measurement_position, run_workflow_file, segmentation_to_object_coords,
     segmentation_to_object_coords_in_positions, stack_2d_segm_to_3d_in_positions,
@@ -25,9 +25,10 @@ use cellacdc_rs::{
     ComputeMultiChannelConfig, ConcatConfig, Connect3DSegmBatchConfig, Connect3DSegmConfig,
     ConvertFileFormatConfig, CoordinateFilterBatchConfig, CoordinateFilterConfig,
     CountObjectsBatchConfig, CountObjectsConfig, FillHolesBatchConfig, FillHolesConfig,
-    GenerateMotherBudTotalConfig, ImagesToPositionsConfig, LineageBuildConfig, LineageInfoConfig,
-    LineagePropagateConfig, LineageTreeBatchConfig, LineageTreeConfig, LineageUpdateConfig,
-    MaskPathResolution, MeasurementExperimentConfig, MeasurementRunConfig, MoveChannelTiffsConfig,
+    FrameInspection, FrameInspectionConfig, FrameProjection, GenerateMotherBudTotalConfig,
+    ImagesToPositionsConfig, LineageBuildConfig, LineageInfoConfig, LineagePropagateConfig,
+    LineageTreeBatchConfig, LineageTreeConfig, LineageUpdateConfig, MaskPathResolution,
+    MeasurementExperimentConfig, MeasurementRunConfig, MoveChannelTiffsConfig,
     ObjectCoordinatesBatchConfig, ObjectCoordinatesConfig, OverwritePolicy, PrepareSegmInfoTarget,
     PrepareZStackSegmInfoConfig, RenameFilesConfig, SegmentationLayout, Stack2DSegmTo3DBatchConfig,
     Stack2DSegmTo3DConfig, TableFormat, TrackingColumnMap, WorkflowRunOptions,
@@ -144,6 +145,12 @@ struct Cli {
         help = "Write background ROI data archives from Data Prep ROI sidecars"
     )]
     compute_background_roi_data: bool,
+    #[arg(
+        long = "inspect_frame",
+        action = ArgAction::SetTrue,
+        help = "Inspect labels and optional object measurements for one position frame"
+    )]
+    inspect_frame: bool,
     #[arg(
         long = "apply_tracking_from_table",
         action = ArgAction::SetTrue,
@@ -500,9 +507,21 @@ struct Cli {
     #[arg(
         long = "frame_i",
         value_name = "INDEX",
-        help = "Frame index for lineage helper modes"
+        help = "Frame index for frame and lineage helper modes"
     )]
     frame_i: Option<i64>,
+    #[arg(
+        long = "selected_label",
+        value_name = "LABEL",
+        help = "Segmentation label to summarize for --inspect_frame"
+    )]
+    selected_label: Option<u32>,
+    #[arg(
+        long = "z_slice",
+        value_name = "INDEX",
+        help = "Z-slice index for --inspect_frame; defaults to max projection"
+    )]
+    z_slice: Option<usize>,
     #[arg(
         long = "cell_id",
         value_name = "ID",
@@ -650,6 +669,7 @@ fn main() -> Result<()> {
         + usize::from(cli.measure)
         + usize::from(cli.prepare_zstack_segm_info)
         + usize::from(cli.compute_background_roi_data)
+        + usize::from(cli.inspect_frame)
         + usize::from(cli.apply_tracking_from_table)
         + usize::from(cli.apply_tracking_from_trackmate_xml)
         + usize::from(cli.add_lineage_tree)
@@ -668,7 +688,7 @@ fn main() -> Result<()> {
         + usize::from(cli.move_channel_tiffs_to_positions);
     if mode_count > 1 {
         bail!(
-            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
+            "Use only one of --params, --version/--info, --reset, --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions"
         );
     }
     if cli.debug && cli.params.is_none() {
@@ -746,6 +766,11 @@ fn main() -> Result<()> {
 
     if cli.compute_background_roi_data {
         println!("{}", run_compute_background_roi_data(&cli)?);
+        return Ok(());
+    }
+
+    if cli.inspect_frame {
+        println!("{}", run_inspect_frame(&cli)?);
         return Ok(());
     }
 
@@ -1397,6 +1422,72 @@ fn compute_background_roi_data_for_position(
     compute_background_roi_archives(position_dir, &channel_names, &rois)
 }
 
+fn run_inspect_frame(cli: &Cli) -> Result<String> {
+    let position_path = cli
+        .position_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--inspect_frame requires --position_dir"))?;
+    if cli.experiment_dir.is_some() {
+        bail!("--inspect_frame supports --position_dir, not --experiment_dir");
+    }
+    let frame_i = cli
+        .frame_i
+        .ok_or_else(|| anyhow::anyhow!("--inspect_frame requires --frame_i"))?;
+    if frame_i < 0 {
+        bail!("--inspect_frame requires a non-negative --frame_i");
+    }
+    let projection = cli
+        .z_slice
+        .map(FrameProjection::ZSlice)
+        .unwrap_or(FrameProjection::Max);
+    let inspection = inspect_position_frame(FrameInspectionConfig {
+        position_path,
+        segm_endname: cli.segm_endname.clone(),
+        frame_index: frame_i as usize,
+        projection,
+        selected_label: cli.selected_label,
+    })?;
+    let payload = frame_inspection_to_json(&inspection);
+    let json = serde_json::to_string_pretty(&payload)?;
+    if let Some(output_path) = cli.output_path.as_ref() {
+        fs::write(output_path, json)?;
+        return Ok(format!(
+            "Saved frame inspection to {}",
+            output_path.display()
+        ));
+    }
+    Ok(json)
+}
+
+fn frame_inspection_to_json(inspection: &FrameInspection) -> serde_json::Value {
+    serde_json::json!({
+        "frame_index": inspection.frame_index,
+        "time_seconds": inspection.time_seconds,
+        "object_count": inspection.object_count,
+        "available_labels": &inspection.available_labels,
+        "selected_object": inspection.selected_object.as_ref().map(|object| {
+            serde_json::json!({
+                "label": object.label,
+                "area_pixels": object.area_pixels,
+                "area_um2": object.area_um2,
+                "centroid_x": object.centroid_x,
+                "centroid_y": object.centroid_y,
+                "bbox_min_x": object.bbox_min_x,
+                "bbox_min_y": object.bbox_min_y,
+                "bbox_max_x": object.bbox_max_x,
+                "bbox_max_y": object.bbox_max_y,
+                "channel_mean": &object.channel_mean,
+                "channel_sum": &object.channel_sum,
+                "cell_cycle_stage": &object.cell_cycle_stage,
+                "generation_num": object.generation_num,
+                "relative_id": object.relative_id,
+                "relationship": &object.relationship,
+                "is_history_known": object.is_history_known,
+            })
+        }),
+    })
+}
+
 fn run_apply_tracking_from_table(cli: &Cli) -> Result<String> {
     let segmentation_path = cli.segmentation_path.clone().ok_or_else(|| {
         anyhow::anyhow!("--apply_tracking_from_table requires --segmentation_path")
@@ -1895,6 +1986,8 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.z_col.is_some()
         || cli.frame_col.is_some()
         || cli.frame_i.is_some()
+        || cli.selected_label.is_some()
+        || cli.z_slice.is_some()
         || !cli.cell_ids.is_empty()
         || cli.edits_table_path.is_some()
         || cli.edits_json_path.is_some()
@@ -1912,7 +2005,7 @@ fn reject_utility_args_without_mode(cli: &Cli) -> Result<()> {
         || cli.source_acdc_output_path.is_some()
         || cli.output_acdc_output_path.is_some()
     {
-        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
+        bail!("Utility path/layout flags require a utility mode such as --count_objects, --to_obj_coords, --fill_holes, --connect_3d_segm, --stack_2d_segm_to_3d, --filter_segm_from_table, --align_frames, --measure, --prepare_zstack_segm_info, --compute_background_roi_data, --inspect_frame, --apply_tracking_from_table, --apply_tracking_from_trackmate_xml, --add_lineage_tree, --build_lineage_state, --export_lineage_info, --propagate_lineage, --update_lineage_frame, --generate_mother_bud_total, --combine_metrics, --compute_multi_channel, --concat_acdc_outputs, --combine_channels, --convert_file_format, --rename_files, --images_to_positions, or --move_channel_tiffs_to_positions");
     }
     Ok(())
 }

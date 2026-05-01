@@ -48,6 +48,7 @@ fn help_shows_flat_cli_without_subcommands() {
     assert!(stdout.contains("--measure"));
     assert!(stdout.contains("--prepare_zstack_segm_info"));
     assert!(stdout.contains("--compute_background_roi_data"));
+    assert!(stdout.contains("--inspect_frame"));
     assert!(stdout.contains("--apply_tracking_from_table"));
     assert!(stdout.contains("--apply_tracking_from_trackmate_xml"));
     assert!(stdout.contains("--add_lineage_tree"));
@@ -1088,6 +1089,71 @@ fn compute_background_roi_data_utility_writes_npz_archive() {
     let mut npz = NpzReader::new(file).expect("read background roi npz");
     let roi_data: ArrayD<f32> = npz.by_name("roi0_data.npy").expect("roi0 data");
     assert_eq!(roi_data.shape(), &[2, 2, 1]);
+}
+
+#[test]
+fn inspect_frame_utility_prints_frame_json() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let position_dir = temp.path().join("Position_1");
+    let images_dir = position_dir.join("Images");
+    fs::create_dir_all(&images_dir).expect("images dir");
+    fs::write(
+        images_dir.join("demo_metadata.csv"),
+        "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\nPhysicalSizeX,0.5\nPhysicalSizeY,0.25\nTimeIncrement,12\n",
+    )
+    .expect("metadata csv");
+    write_test_tiff(
+        &images_dir.join("demo_phase.tif"),
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+        3,
+        3,
+    );
+    let file = File::create(images_dir.join("demo_segm.npz")).expect("segm npz");
+    let mut writer = NpzWriter::new(file);
+    let masks = Array2::from_shape_vec(
+        (3, 3),
+        vec![
+            0u32, 1, 1, //
+            0, 2, 2, //
+            0, 2, 0,
+        ],
+    )
+    .expect("mask shape");
+    writer.add_array("arr_0", &masks).expect("write mask");
+    writer.finish().expect("finish npz");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--inspect_frame")
+        .arg("--position_dir")
+        .arg(&position_dir)
+        .arg("--frame_i")
+        .arg("0")
+        .arg("--selected_label")
+        .arg("2")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("frame inspection json");
+    assert_eq!(payload["frame_index"].as_u64(), Some(0));
+    assert_eq!(payload["time_seconds"].as_f64(), Some(0.0));
+    assert_eq!(payload["object_count"].as_u64(), Some(2));
+    assert_eq!(payload["available_labels"], serde_json::json!([1, 2]));
+    let object = &payload["selected_object"];
+    assert_eq!(object["label"].as_u64(), Some(2));
+    assert_eq!(object["area_pixels"].as_u64(), Some(3));
+    assert_eq!(object["area_um2"].as_f64(), Some(0.375));
+    assert_eq!(object["bbox_min_x"].as_u64(), Some(1));
+    assert_eq!(object["bbox_min_y"].as_u64(), Some(1));
+    assert_eq!(object["bbox_max_x"].as_u64(), Some(2));
+    assert_eq!(object["bbox_max_y"].as_u64(), Some(2));
+    assert_eq!(object["channel_sum"]["phase"].as_f64(), Some(19.0));
+    assert_eq!(object["channel_mean"]["phase"].as_f64(), Some(19.0 / 3.0));
 }
 
 #[test]
