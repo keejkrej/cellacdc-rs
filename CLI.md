@@ -353,10 +353,11 @@ cellacdc-rs --move_channel_tiffs_to_positions --source_dir exported_tiffs --chan
 - `--rename_files`: append text to one or more filenames. Repeat
   `--file_path PATH` for each file and pass `--rename_append_text TEXT`. The
   output filename is `stem_TEXT.ext`; existing target files are not overwritten.
-- `--import_experiment`: import TIFF/NPZ/H5 sources into a Cell-ACDC experiment
+- `--import_experiment`: import TIFF/NPY/NPZ/H5 sources into a Cell-ACDC experiment
   folder using the native Data Structure importer. Repeat `--import_source PATH`
   for files or folders and provide `--target_dir`. `--import_layout` accepts
-  `single_file_multi_position`, `file_per_position`, or `file_per_channel` and
+  `single_file_multi_position`, `file_per_position`, `file_per_channel`, or
+  `custom_mapping` and
   is inferred when omitted. Optional controls include `--import_backend`
   (`auto`, `native`, `bioformats`), `--import_conflict_mode`
   (`create_new_positions`, `overwrite`, `add_files`), `--import_output_format`
@@ -429,9 +430,12 @@ Cell-ACDC overlap/IoA tracking; `IoA_thresh`, `IoA_threshold`, and
 trackers are rejected.
 Rust Cellpose-style parameters `tile`, `batch_size`, `cellprob_threshold`,
 `niter`, and `min_size` are used when present and otherwise fall back to Rust
-defaults. Python preprocessing recipe sections are parsed in order; the Rust
-runner currently applies `method = Gaussian filter` with scalar or vector `sigma` and
-`method = Remove hot pixels`, plus `method = Spot detector filter` with
+defaults. `segmentation_model_params.model_path`,
+`init_segmentation_model_params.model_path`, and `rust_cli.model_path` are all
+accepted model path locations. Python preprocessing recipe sections such as
+`[preprocess.step1]` and Python-saved `[acdc.preprocess.step1]` are parsed in
+order; the Rust runner currently applies `method = Gaussian filter` with scalar
+or vector `sigma` and `method = Remove hot pixels`, plus `method = Spot detector filter` with
 `spots_zyx_radii_pxl`, `method = Ridge filter` with `sigmas`, `method =
 Enhance speckles` with `radius`, and `method = Correct illumination` with `block_size`,
 `approximate_object_diameter`, and `apply_gaussian_filter`. `method = FUCCI

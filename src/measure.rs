@@ -8,7 +8,7 @@ use crate::layout::{
 };
 use crate::mask_io::{load_mask_data, MaskData, MaskPathResolution, SegmentationLayout};
 use crate::runner::OverwritePolicy;
-use crate::segm_info::{load_segm_info, SegmInfoRecord, SegmInfoTable};
+use crate::segm_info::{clamp_segm_info_z_slices, load_segm_info, SegmInfoRecord, SegmInfoTable};
 use crate::tabular::{write_table, Table, TableValue};
 use crate::utilities::objects_count_summary;
 use crate::zstack::{count_mask_volume_labels, project_frame_f32, project_mask_volume_max};
@@ -468,7 +468,9 @@ pub(crate) fn load_measurement_inputs(
                 spec.position_dir.display()
             )
         })?;
-        Some(load_segm_info(path)?)
+        let mut table = load_segm_info(path)?;
+        clamp_segm_info_z_slices(&mut table, spec.size_z);
+        Some(table)
     } else {
         None
     };
@@ -873,11 +875,32 @@ fn measurement_output_paths(
     let segm_name = measurement_segmentation_name(segm_endname);
     let acdc_output_name = segm_name.replacen("segm", "acdc_output", 1);
     let objects_count_name = segm_name.replacen("segm", "acdc_objects_count", 1);
+    let segm_npz_path = resolve_measurement_segmentation_path(images_dir, basename, &segm_name);
     MeasurementOutputPaths {
-        segm_npz_path: images_dir.join(format!("{basename}{segm_name}.npz")),
+        segm_npz_path,
         acdc_output_csv_path: images_dir.join(format!("{basename}{acdc_output_name}.csv")),
         objects_count_csv_path: images_dir.join(format!("{basename}{objects_count_name}.csv")),
     }
+}
+
+fn resolve_measurement_segmentation_path(
+    images_dir: &Path,
+    basename: &str,
+    segm_name: &str,
+) -> PathBuf {
+    let canonical_npz = images_dir.join(format!("{basename}{segm_name}.npz"));
+    if canonical_npz.exists() {
+        return canonical_npz;
+    }
+    if let Some(path) = find_visible_file_by_endname(images_dir, &format!("{segm_name}.npz")) {
+        return path;
+    }
+
+    let canonical_npy = images_dir.join(format!("{basename}{segm_name}.npy"));
+    if canonical_npy.exists() {
+        return canonical_npy;
+    }
+    find_visible_file_by_endname(images_dir, &format!("{segm_name}.npy")).unwrap_or(canonical_npz)
 }
 
 fn measurement_segmentation_name(endname: Option<&str>) -> String {
@@ -899,6 +922,46 @@ fn manual_background_mask_path(segm_npz_path: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(segm_npz_path.with_file_name(manual_name))
+}
+
+fn find_visible_file_by_endname(dir: &Path, endname: &str) -> Option<PathBuf> {
+    let mut matches = fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if should_skip_python_listdir_entry(name) || !name.ends_with(endname) {
+                return None;
+            }
+            Some(path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let right_name = right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        left_name
+            .len()
+            .cmp(&right_name.len())
+            .then_with(|| left_name.cmp(right_name))
+            .then_with(|| left.cmp(right))
+    });
+    matches.into_iter().next()
+}
+
+fn should_skip_python_listdir_entry(name: &str) -> bool {
+    name.starts_with('.')
+        || name == "desktop.ini"
+        || name == "recovery"
+        || name.ends_with(".new.npz")
 }
 
 fn measurement_mask_context(mask_data: &MaskData) -> MeasurementMaskContext {
@@ -2477,7 +2540,7 @@ mod tests {
     use crate::utilities::{add_lineage_tree, LineageTreeConfig};
     use ndarray::Array3;
     use ndarray::Array4;
-    use ndarray_npy::NpzWriter;
+    use ndarray_npy::{write_npy, NpzWriter};
     use std::fs::File;
     use tempfile::tempdir;
     use tiff::encoder::{colortype, TiffEncoder};
@@ -2565,6 +2628,61 @@ mod tests {
     }
 
     #[test]
+    fn measures_plain_npy_channels_from_existing_position() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_npy_stack(&images.join("demo_phase.npy"), &[10, 20])?;
+        write_test_npy_stack(&images.join("demo_gfp.npy"), &[30, 40])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                1, 1, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            2,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: None,
+            metric_options: None,
+            save_object_counts_table: false,
+        })?;
+
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let rows = reader.records().collect::<csv::Result<Vec<_>>>()?;
+        assert_eq!(rows.len(), 2);
+        assert!(headers.iter().any(|header| header == "phase_mean"));
+        assert!(headers.iter().any(|header| header == "gfp_mean"));
+        assert_eq!(csv_f64(&headers, &rows[0], "phase_mean")?, 10.0);
+        assert_eq!(csv_f64(&headers, &rows[0], "gfp_mean")?, 30.0);
+        assert_eq!(csv_f64(&headers, &rows[1], "phase_mean")?, 20.0);
+        assert_eq!(csv_f64(&headers, &rows[1], "gfp_mean")?, 40.0);
+        Ok(())
+    }
+
+    #[test]
     fn normalizes_python_segmentation_end_filename() -> Result<()> {
         let images = Path::new("/tmp/images");
         let from_full_name = measurement_output_paths(images, "demo_", Some("segm_rust.npz"));
@@ -2583,6 +2701,93 @@ mod tests {
 
         let from_suffix = measurement_output_paths(images, "demo_", Some("rust"));
         assert_eq!(from_suffix, from_full_name);
+        Ok(())
+    }
+
+    #[test]
+    fn measures_legacy_position_token_segmentation_without_copying() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_s01_phase.tif"), &[10])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_s01_segm.npz"),
+            &[
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+            1,
+            4,
+            4,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: Some(vec!["phase".to_string()]),
+            metric_options: None,
+            save_object_counts_table: false,
+        })?;
+
+        assert_eq!(
+            result.outputs.segm_npz_path,
+            images.join("demo_s01_segm.npz")
+        );
+        assert_eq!(
+            result.outputs.acdc_output_csv_path,
+            images.join("demo_acdc_output.csv")
+        );
+        assert!(result.outputs.acdc_output_csv_path.exists());
+        assert!(!images.join("demo_segm.npz").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn measures_old_python_npy_segmentation_fallback() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[10, 12])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
+        let labels = Array3::from_shape_vec(
+            (2, 4, 4),
+            vec![
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                1, 1, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+            ],
+        )?;
+        write_npy(images.join("demo_segm.npy"), &labels)?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: Some(vec!["phase".to_string()]),
+            metric_options: None,
+            save_object_counts_table: false,
+        })?;
+
+        assert_eq!(result.outputs.segm_npz_path, images.join("demo_segm.npy"));
+        assert!(result.outputs.acdc_output_csv_path.exists());
+        assert!(!images.join("demo_segm.npz").exists());
         Ok(())
     }
 
@@ -3076,6 +3281,66 @@ mod tests {
     }
 
     #[test]
+    fn measures_zstack_with_stale_segm_info_z_slice_like_python() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_volume_npz(
+            &images.join("demo_phase_aligned.npz"),
+            &[1.0, 5.0, 0.0, 10.0, 3.0, 7.0, 2.0, 12.0],
+            1,
+            2,
+            2,
+            2,
+        )?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,2\nPhysicalSizeX,1\nPhysicalSizeY,1\n",
+        )?;
+        write_mask_npz(
+            &images.join("demo_segm.npz"),
+            &[
+                1, 1, //
+                0, 0, //
+            ],
+            1,
+            2,
+            2,
+        )?;
+        write_test_segm_info(
+            &images.join("demo_segmInfo.csv"),
+            "demo_phase_aligned.npz",
+            0,
+            9,
+        )?;
+
+        let result = measure_position(MeasurementRunConfig {
+            position_path: temp.path().join("Position_1"),
+            segm_endname: None,
+            overwrite_policy: OverwritePolicy::Overwrite,
+            stop_frame: None,
+            channel_names: None,
+            metric_options: None,
+            save_object_counts_table: false,
+        })?;
+        let mut reader = csv::Reader::from_path(&result.outputs.acdc_output_csv_path)?;
+        let headers = reader
+            .headers()?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let row = reader
+            .records()
+            .next()
+            .transpose()?
+            .expect("first output row");
+
+        assert_eq!(csv_f64(&headers, &row, "phase_mean_zSlice")?, 5.0);
+        assert_eq!(csv_f64(&headers, &row, "z_slice_used")?, 1.0);
+        Ok(())
+    }
+
+    #[test]
     fn emits_each_zslice_columns_when_configured() -> Result<()> {
         let temp = tempdir()?;
         let images = temp.path().join("Position_1").join("Images");
@@ -3310,6 +3575,16 @@ mod tests {
         let file = File::create(path)?;
         let mut encoder = TiffEncoder::new(file)?;
         encoder.write_image::<colortype::Gray16>(4, 4, frame_values)?;
+        Ok(())
+    }
+
+    fn write_test_npy_stack(path: &Path, frame_values: &[u16]) -> Result<()> {
+        let mut values = Vec::with_capacity(frame_values.len() * 16);
+        for value in frame_values {
+            values.extend(std::iter::repeat(*value).take(16));
+        }
+        let array = Array3::from_shape_vec((frame_values.len(), 4, 4), values)?;
+        write_npy(path, &array)?;
         Ok(())
     }
 

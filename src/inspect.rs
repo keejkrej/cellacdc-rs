@@ -2,6 +2,7 @@ use crate::session::{open_position_session, FrameProjection};
 use crate::tabular::read_table;
 use anyhow::{anyhow, Result};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,11 +157,7 @@ fn load_cell_cycle_fields(
     frame_index: usize,
     label: u32,
 ) -> Result<Option<CellCycleInspection>> {
-    let suffix = segm_endname
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| format!("_{value}"))
-        .unwrap_or_default();
-    let path = images_dir.join(format!("{basename}acdc_output{suffix}.csv"));
+    let path = acdc_output_path(images_dir, basename, segm_endname);
     if !path.exists() {
         return Ok(None);
     }
@@ -194,6 +191,79 @@ fn load_cell_cycle_fields(
         }));
     }
     Ok(None)
+}
+
+fn acdc_output_path(
+    images_dir: &std::path::Path,
+    basename: &str,
+    segm_endname: Option<&str>,
+) -> PathBuf {
+    let acdc_name = acdc_output_name(segm_endname);
+    let canonical = images_dir.join(format!("{basename}{acdc_name}.csv"));
+    if canonical.exists() {
+        return canonical;
+    }
+    find_visible_acdc_output_by_endname(images_dir, &format!("{acdc_name}.csv"))
+        .unwrap_or(canonical)
+}
+
+fn find_visible_acdc_output_by_endname(
+    images_dir: &std::path::Path,
+    endname: &str,
+) -> Option<PathBuf> {
+    let mut matches = fs::read_dir(images_dir)
+        .ok()?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if should_skip_python_listdir_entry(name)
+                || name.contains("_lineage")
+                || !name.ends_with(endname)
+            {
+                return None;
+            }
+            Some(path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let right_name = right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        left_name
+            .len()
+            .cmp(&right_name.len())
+            .then_with(|| left_name.cmp(right_name))
+            .then_with(|| left.cmp(right))
+    });
+    matches.into_iter().next()
+}
+
+fn should_skip_python_listdir_entry(name: &str) -> bool {
+    name.starts_with('.')
+        || name == "desktop.ini"
+        || name == "recovery"
+        || name.ends_with(".new.npz")
+}
+
+fn acdc_output_name(segm_endname: Option<&str>) -> String {
+    match segm_endname {
+        Some(value) if value.trim().trim_end_matches(".npz").starts_with("segm") => value
+            .trim()
+            .trim_end_matches(".npz")
+            .replacen("segm", "acdc_output", 1),
+        Some(value) if !value.trim().is_empty() => {
+            format!("acdc_output_{}", value.trim().trim_end_matches(".npz"))
+        }
+        _ => "acdc_output".to_string(),
+    }
 }
 
 fn extract_regions(mask_frame: &[u32], height: usize, width: usize) -> Vec<FrameRegion> {
@@ -258,6 +328,8 @@ fn extract_regions(mask_frame: &[u32], height: usize, width: usize) -> Vec<Frame
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn extracts_regions_and_centroids() {
@@ -274,5 +346,49 @@ mod tests {
         assert_eq!(regions[0].label, 1);
         assert_eq!(regions[0].area, 2);
         assert!(regions[0].centroid_x > 1.0);
+    }
+
+    #[test]
+    fn cell_cycle_fields_normalize_python_segmentation_endnames() -> Result<()> {
+        let dir = tempdir()?;
+        fs::write(
+            dir.path().join("demo_acdc_output_rust.csv"),
+            concat!(
+                "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+                "0,2,S,1,1,bud,true\n",
+            ),
+        )?;
+
+        let fields = load_cell_cycle_fields(dir.path(), "demo_", Some("segm_rust.npz"), 0, 2)?
+            .expect("cell-cycle fields");
+
+        assert_eq!(fields.cell_cycle_stage, "S");
+        assert_eq!(fields.generation_num, 1);
+        assert_eq!(fields.relative_id, 1);
+        assert_eq!(fields.relationship, "bud");
+        assert!(fields.is_history_known);
+        Ok(())
+    }
+
+    #[test]
+    fn cell_cycle_fields_resolve_legacy_position_token_acdc_output() -> Result<()> {
+        let dir = tempdir()?;
+        fs::write(
+            dir.path().join("demo_s01_acdc_output.csv"),
+            concat!(
+                "frame_i,Cell_ID,cell_cycle_stage,generation_num,relative_ID,relationship,is_history_known\n",
+                "0,2,S,1,1,bud,true\n",
+            ),
+        )?;
+
+        let fields =
+            load_cell_cycle_fields(dir.path(), "demo_", None, 0, 2)?.expect("cell-cycle fields");
+
+        assert_eq!(fields.cell_cycle_stage, "S");
+        assert_eq!(fields.generation_num, 1);
+        assert_eq!(fields.relative_id, 1);
+        assert_eq!(fields.relationship, "bud");
+        assert!(fields.is_history_known);
+        Ok(())
     }
 }

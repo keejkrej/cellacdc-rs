@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use hdf5_reader::Hdf5File;
 use ndarray::{Array2, Array3, ArrayD, IxDyn, OwnedRepr};
-use ndarray_npy::{NpzReader, NpzWriter};
+use ndarray_npy::{read_npy, NpzReader, NpzWriter};
 use std::fs::{self, File};
 use std::path::Path;
 use tiff::decoder::{Decoder, DecodingResult};
@@ -47,9 +47,10 @@ pub fn load_image_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
     match extension(path).as_deref() {
         Some("tif") | Some("tiff") => load_tiff_stack_as_f32(path),
         Some("npz") => load_npz_stack_as_f32(path),
+        Some("npy") => load_npy_stack_as_f32(path),
         Some("h5") => load_h5_stack_as_f32(path),
         other => bail!(
-            "Unsupported image format {:?} for {}. Supported formats are TIFF, NPZ, and H5.",
+            "Unsupported image format {:?} for {}. Supported formats are TIFF, NPY, NPZ, and H5.",
             other,
             path.display()
         ),
@@ -64,9 +65,10 @@ pub fn load_image_volume_as_f32(
     match extension(path).as_deref() {
         Some("tif") | Some("tiff") => load_tiff_volume_as_f32(path, size_t, size_z),
         Some("npz") => load_npz_volume_as_f32(path, size_t, size_z),
+        Some("npy") => load_npy_volume_as_f32(path, size_t, size_z),
         Some("h5") => load_h5_volume_as_f32(path, size_t, size_z),
         other => bail!(
-            "Unsupported image format {:?} for {}. Supported formats are TIFF, NPZ, and H5.",
+            "Unsupported image format {:?} for {}. Supported formats are TIFF, NPY, NPZ, and H5.",
             other,
             path.display()
         ),
@@ -422,6 +424,22 @@ fn load_npz_volume_as_f32(
     Ok((pixels, shape))
 }
 
+fn load_npy_stack_as_f32(path: &Path) -> Result<(Vec<f32>, StackShape)> {
+    let shape = read_npy_shape(path)?;
+    let pixels = read_npy_pixels(path)?;
+    Ok((pixels, shape))
+}
+
+fn load_npy_volume_as_f32(
+    path: &Path,
+    size_t: Option<usize>,
+    size_z: Option<usize>,
+) -> Result<(Vec<f32>, VolumeShape)> {
+    let shape = read_npy_volume_shape(path, size_t, size_z)?;
+    let pixels = read_npy_pixels(path)?;
+    Ok((pixels, shape))
+}
+
 fn read_npz_shape(path: &Path, name: &str) -> Result<StackShape> {
     let mut npz = NpzReader::new(File::open(path)?)
         .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
@@ -430,6 +448,9 @@ fn read_npz_shape(path: &Path, name: &str) -> Result<StackShape> {
         return infer_stack_shape_from_dims(array.shape().to_vec(), path);
     }
     if let Ok(array) = npz.by_name::<OwnedRepr<f64>, IxDyn>(name) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<bool>, IxDyn>(name) {
         return infer_stack_shape_from_dims(array.shape().to_vec(), path);
     }
     if let Ok(array) = npz.by_name::<OwnedRepr<u8>, IxDyn>(name) {
@@ -458,6 +479,44 @@ fn read_npz_shape(path: &Path, name: &str) -> Result<StackShape> {
     }
 
     bail!("Unsupported NPZ element type in {}", path.display())
+}
+
+fn read_npy_shape(path: &Path) -> Result<StackShape> {
+    if let Ok(array) = read_npy::<_, ArrayD<f32>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<f64>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<bool>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u8>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u16>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u32>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u64>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i8>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i16>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i32>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i64>>(path) {
+        return infer_stack_shape_from_dims(array.shape().to_vec(), path);
+    }
+
+    bail!("Unsupported NPY element type in {}", path.display())
 }
 
 fn read_npz_volume_shape(
@@ -475,6 +534,9 @@ fn read_npz_volume_shape(
     if let Ok(array) = npz.by_name::<OwnedRepr<f64>, IxDyn>(name) {
         return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
     }
+    if let Ok(array) = npz.by_name::<OwnedRepr<bool>, IxDyn>(name) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
     if let Ok(array) = npz.by_name::<OwnedRepr<u8>, IxDyn>(name) {
         return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
     }
@@ -503,6 +565,48 @@ fn read_npz_volume_shape(
     bail!("Unsupported NPZ element type in {}", path.display())
 }
 
+fn read_npy_volume_shape(
+    path: &Path,
+    size_t: Option<usize>,
+    size_z: Option<usize>,
+) -> Result<VolumeShape> {
+    if let Ok(array) = read_npy::<_, ArrayD<f32>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<f64>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<bool>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u8>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u16>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u32>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u64>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i8>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i16>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i32>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i64>>(path) {
+        return infer_volume_shape_from_dims(array.shape().to_vec(), size_t, size_z, path);
+    }
+
+    bail!("Unsupported NPY element type in {}", path.display())
+}
+
 fn read_npz_pixels(path: &Path, name: &str) -> Result<Vec<f32>> {
     let mut npz = NpzReader::new(File::open(path)?)
         .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
@@ -514,6 +618,12 @@ fn read_npz_pixels(path: &Path, name: &str) -> Result<Vec<f32>> {
         return Ok(flatten_array(array)
             .into_iter()
             .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<bool>, IxDyn>(name) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| if value { 1.0 } else { 0.0 })
             .collect());
     }
     if let Ok(array) = npz.by_name::<OwnedRepr<u8>, IxDyn>(name) {
@@ -566,6 +676,74 @@ fn read_npz_pixels(path: &Path, name: &str) -> Result<Vec<f32>> {
     }
 
     bail!("Unsupported NPZ element type in {}", path.display())
+}
+
+fn read_npy_pixels(path: &Path) -> Result<Vec<f32>> {
+    if let Ok(array) = read_npy::<_, ArrayD<f32>>(path) {
+        return Ok(flatten_array(array));
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<f64>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<bool>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| if value { 1.0 } else { 0.0 })
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u8>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u16>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u32>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<u64>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i8>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i16>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i32>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    if let Ok(array) = read_npy::<_, ArrayD<i64>>(path) {
+        return Ok(flatten_array(array)
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+
+    bail!("Unsupported NPY element type in {}", path.display())
 }
 
 fn read_npz_pixels_as_u32(path: &Path, name: &str) -> Result<Vec<u32>> {
@@ -583,6 +761,9 @@ fn read_npz_pixels_as_u32(path: &Path, name: &str) -> Result<Vec<u32>> {
             .into_iter()
             .map(|value| value.max(0.0) as u32)
             .collect());
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<bool>, IxDyn>(name) {
+        return Ok(flatten_array(array).into_iter().map(u32::from).collect());
     }
     if let Ok(array) = npz.by_name::<OwnedRepr<u8>, IxDyn>(name) {
         return Ok(flatten_array(array)
@@ -770,6 +951,7 @@ fn load_h5_volume_as_f32(
 }
 
 fn infer_stack_shape_from_dims(dims: Vec<usize>, path: &Path) -> Result<StackShape> {
+    let dims = squeeze_non_spatial_singletons(&dims);
     match dims.as_slice() {
         [height, width] => Ok(StackShape {
             frames: 1,
@@ -850,6 +1032,7 @@ fn infer_volume_shape_from_dims(
     size_z: Option<usize>,
     path: &Path,
 ) -> Result<VolumeShape> {
+    let dims = squeeze_non_spatial_singletons(&dims);
     match dims.as_slice() {
         [height, width] => Ok(VolumeShape {
             size_t: 1,
@@ -938,6 +1121,20 @@ fn infer_volume_shape_from_dims(
     }
 }
 
+fn squeeze_non_spatial_singletons(dims: &[usize]) -> Vec<usize> {
+    if dims.len() <= 2 {
+        return dims.to_vec();
+    }
+    let spatial_start = dims.len() - 2;
+    let mut squeezed = dims[..spatial_start]
+        .iter()
+        .copied()
+        .filter(|dim| *dim != 1)
+        .collect::<Vec<_>>();
+    squeezed.extend_from_slice(&dims[spatial_start..]);
+    squeezed
+}
+
 fn flatten_array<T>(array: ArrayD<T>) -> Vec<T> {
     array.into_iter().collect()
 }
@@ -1023,6 +1220,127 @@ mod tests {
         assert_eq!(shape.width, 3);
         assert_eq!(pixels[0], 1.0);
         assert_eq!(pixels[11], 12.0);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_npy_image_stack_and_volume() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("stack.npy");
+        let array =
+            Array3::from_shape_vec((2, 2, 3), vec![1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])?;
+        ndarray_npy::write_npy(&path, &array)?;
+
+        let (pixels, stack_shape) = load_image_stack_as_f32(&path)?;
+        assert_eq!(stack_shape.frames, 2);
+        assert_eq!(stack_shape.height, 2);
+        assert_eq!(stack_shape.width, 3);
+        assert_eq!(pixels[0], 1.0);
+        assert_eq!(pixels[11], 12.0);
+
+        let (_, volume_shape) = load_image_volume_as_f32(&path, Some(2), Some(1))?;
+        assert_eq!(
+            volume_shape,
+            VolumeShape {
+                size_t: 2,
+                size_z: 1,
+                height: 2,
+                width: 3
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loads_boolean_array_backed_images_as_unit_pixels() -> Result<()> {
+        let temp = tempdir()?;
+        let values = vec![false, true, true, false, true, false, false, true];
+
+        let npy_path = temp.path().join("stack.npy");
+        let npy = Array3::from_shape_vec((2, 2, 2), values.clone())?;
+        ndarray_npy::write_npy(&npy_path, &npy)?;
+
+        let (pixels, stack_shape) = load_image_stack_as_f32(&npy_path)?;
+        assert_eq!(
+            stack_shape,
+            StackShape {
+                frames: 2,
+                height: 2,
+                width: 2
+            }
+        );
+        assert_eq!(pixels, vec![0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+
+        let npz_path = temp.path().join("volume.npz");
+        let file = File::create(&npz_path)?;
+        let mut writer = NpzWriter::new(file);
+        let npz = Array3::from_shape_vec((2, 2, 2), values)?;
+        writer.add_array("arr_0", &npz)?;
+        writer.finish()?;
+
+        let (volume_pixels, volume_shape) = load_image_volume_as_f32(&npz_path, Some(2), Some(1))?;
+        assert_eq!(
+            volume_shape,
+            VolumeShape {
+                size_t: 2,
+                size_z: 1,
+                height: 2,
+                width: 2
+            }
+        );
+        assert_eq!(volume_pixels, vec![0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+
+        let arrays = load_npz_archive_arrays_as_f32(&npz_path)?;
+        assert_eq!(arrays[0].values, volume_pixels);
+
+        let (mask_pixels, mask_shape) = load_mask_stack_as_u32(&npz_path)?;
+        assert_eq!(mask_shape, stack_shape);
+        assert_eq!(mask_pixels, vec![0, 1, 1, 0, 1, 0, 0, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn squeezes_singleton_axes_in_array_backed_images_like_python() -> Result<()> {
+        let temp = tempdir()?;
+        let npy_path = temp.path().join("stack.npy");
+        let npy = ArrayD::from_shape_vec(
+            IxDyn(&[1, 2, 1, 2, 3]),
+            vec![1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        )?;
+        ndarray_npy::write_npy(&npy_path, &npy)?;
+
+        let (pixels, stack_shape) = load_image_stack_as_f32(&npy_path)?;
+        assert_eq!(
+            stack_shape,
+            StackShape {
+                frames: 2,
+                height: 2,
+                width: 3
+            }
+        );
+        assert_eq!(pixels.len(), 12);
+        assert_eq!(pixels[11], 12.0);
+
+        let npz_path = temp.path().join("volume.npz");
+        let file = File::create(&npz_path)?;
+        let mut writer = NpzWriter::new(file);
+        let npz = ArrayD::from_shape_vec(
+            IxDyn(&[1, 2, 1, 2, 3]),
+            vec![1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        )?;
+        writer.add_array("arr_0", &npz)?;
+        writer.finish()?;
+
+        let (_, volume_shape) = load_image_volume_as_f32(&npz_path, Some(2), Some(1))?;
+        assert_eq!(
+            volume_shape,
+            VolumeShape {
+                size_t: 2,
+                size_z: 1,
+                height: 2,
+                width: 3
+            }
+        );
         Ok(())
     }
 

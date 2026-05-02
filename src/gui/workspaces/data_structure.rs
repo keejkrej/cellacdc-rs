@@ -16,7 +16,7 @@ impl CellAcdcGui {
                 ui,
                 AppRoute::DataStructure,
                 Some(
-                    "Create a Cell-ACDC experiment from raw microscopy or image-stack sources. Native TIFF/NPZ/H5 import works now. Vendor microscopy formats use the Bio-Formats bridge when available.",
+                    "Create a Cell-ACDC experiment from raw microscopy or image-stack sources. Native TIFF/NPY/NPZ/H5 import works now. Vendor microscopy formats use the Bio-Formats bridge when available.",
                 ),
                 self.experiment.as_ref().map(|experiment| experiment.root_path.as_path()),
                 false,
@@ -477,6 +477,7 @@ impl CellAcdcGui {
 
 fn source_kind_label(kind: cellacdc_rs::ImportSourceKind) -> &'static str {
     match kind {
+        cellacdc_rs::ImportSourceKind::Npy => "NPY",
         cellacdc_rs::ImportSourceKind::Npz => "NPZ",
         cellacdc_rs::ImportSourceKind::H5 => "H5",
         cellacdc_rs::ImportSourceKind::Tiff => "TIFF",

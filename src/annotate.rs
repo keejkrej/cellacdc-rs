@@ -12,6 +12,7 @@ use crate::tabular::{read_table, write_table, Table, TableValue};
 use crate::tracking::{track_sequence, TrackingConfig};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -247,14 +248,24 @@ pub fn load_custom_annotation_definitions(
             path.display()
         )
     })?;
-    let definitions =
-        serde_json::from_str::<BTreeMap<String, CustomAnnotationDefinition>>(&content)
-            .with_context(|| {
+    let raw_definitions =
+        serde_json::from_str::<BTreeMap<String, Value>>(&content).with_context(|| {
+            format!(
+                "Failed to parse custom annotation definitions {}",
+                path.display()
+            )
+        })?;
+    let mut definitions = BTreeMap::new();
+    for (name, value) in raw_definitions {
+        let definition =
+            custom_annotation_definition_from_json(&name, &value).with_context(|| {
                 format!(
-                    "Failed to parse custom annotation definitions {}",
+                    "Failed to parse custom annotation definition {name:?} in {}",
                     path.display()
                 )
             })?;
+        definitions.insert(definition.name.clone(), definition);
+    }
     Ok(definitions)
 }
 
@@ -266,7 +277,16 @@ pub fn save_custom_annotation_definitions(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let content = serde_json::to_string_pretty(definitions)?;
+    let python_definitions = definitions
+        .iter()
+        .map(|(name, definition)| {
+            (
+                name.clone(),
+                PythonCustomAnnotationDefinition::from(definition),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let content = serde_json::to_string_pretty(&python_definitions)?;
     fs::write(path, content).with_context(|| {
         format!(
             "Failed to save custom annotation definitions {}",
@@ -274,6 +294,147 @@ pub fn save_custom_annotation_definitions(
         )
     })?;
     Ok(path.to_path_buf())
+}
+
+#[derive(Debug, Serialize)]
+struct PythonCustomAnnotationDefinition {
+    #[serde(rename = "type")]
+    type_label: String,
+    name: String,
+    symbol: String,
+    shortcut: String,
+    description: String,
+    #[serde(rename = "keepActive")]
+    keep_active: bool,
+    #[serde(rename = "isHideChecked")]
+    is_hide_checked: bool,
+    #[serde(rename = "symbolColor")]
+    symbol_color: [u8; 4],
+}
+
+impl From<&CustomAnnotationDefinition> for PythonCustomAnnotationDefinition {
+    fn from(definition: &CustomAnnotationDefinition) -> Self {
+        Self {
+            type_label: custom_annotation_kind_python_label(definition.kind).to_string(),
+            name: definition.name.clone(),
+            symbol: custom_annotation_python_symbol(&definition.symbol),
+            shortcut: definition.shortcut.clone().unwrap_or_default(),
+            description: definition.description.clone(),
+            keep_active: definition.keep_active,
+            is_hide_checked: definition.hide_when_inactive,
+            symbol_color: definition.symbol_color_rgba,
+        }
+    }
+}
+
+fn custom_annotation_definition_from_json(
+    map_key: &str,
+    value: &Value,
+) -> Result<CustomAnnotationDefinition> {
+    if let Ok(definition) = serde_json::from_value::<CustomAnnotationDefinition>(value.clone()) {
+        return Ok(definition);
+    }
+
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("custom annotation definition must be a JSON object"))?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(map_key)
+        .to_string();
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .map(custom_annotation_kind_from_python_label)
+        .transpose()?
+        .unwrap_or(CustomAnnotationKind::SingleTimePoint);
+    let symbol = object
+        .get("symbol")
+        .and_then(Value::as_str)
+        .map(custom_annotation_symbol_from_python)
+        .unwrap_or_else(|| "o".to_string());
+    let shortcut = object
+        .get("shortcut")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|shortcut| !shortcut.is_empty())
+        .map(str::to_string);
+    let description = object
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let keep_active = object
+        .get("keepActive")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let hide_when_inactive = object
+        .get("isHideChecked")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let symbol_color_rgba = object
+        .get("symbolColor")
+        .and_then(custom_annotation_color_from_json)
+        .unwrap_or([255, 0, 0, 255]);
+
+    Ok(CustomAnnotationDefinition {
+        name,
+        kind,
+        symbol,
+        shortcut,
+        description,
+        keep_active,
+        hide_when_inactive,
+        symbol_color_rgba,
+    })
+}
+
+fn custom_annotation_kind_from_python_label(label: &str) -> Result<CustomAnnotationKind> {
+    match label {
+        "Single time-point" => Ok(CustomAnnotationKind::SingleTimePoint),
+        "Multiple time-points" => Ok(CustomAnnotationKind::MultipleTimePoints),
+        "Multiple values class" => Ok(CustomAnnotationKind::MultipleValuesClass),
+        other => bail!("Unsupported custom annotation type {other:?}"),
+    }
+}
+
+fn custom_annotation_kind_python_label(kind: CustomAnnotationKind) -> &'static str {
+    match kind {
+        CustomAnnotationKind::SingleTimePoint => "Single time-point",
+        CustomAnnotationKind::MultipleTimePoints => "Multiple time-points",
+        CustomAnnotationKind::MultipleValuesClass => "Multiple values class",
+    }
+}
+
+fn custom_annotation_symbol_from_python(symbol: &str) -> String {
+    symbol
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"')
+        .to_string()
+}
+
+fn custom_annotation_python_symbol(symbol: &str) -> String {
+    let trimmed = symbol.trim();
+    if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        trimmed.to_string()
+    } else {
+        format!("'{trimmed}'")
+    }
+}
+
+fn custom_annotation_color_from_json(value: &Value) -> Option<[u8; 4]> {
+    let values = value.as_array()?;
+    if values.len() < 3 {
+        return None;
+    }
+    let mut color = [255, 0, 0, 255];
+    for (idx, channel) in values.iter().take(4).enumerate() {
+        color[idx] = channel.as_u64()?.min(u8::MAX as u64) as u8;
+    }
+    Some(color)
 }
 
 pub fn derive_custom_annotation_memberships(
@@ -852,7 +1013,15 @@ fn resolve_lineage_position_basename(position_dir: &Path) -> Result<(PathBuf, St
     for entry in fs::read_dir(&images_dir)
         .with_context(|| format!("Failed to read {}", images_dir.display()))?
     {
-        files.push(entry?.path());
+        let path = entry?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(should_skip_python_listdir_entry)
+        {
+            continue;
+        }
+        files.push(path);
     }
     files.sort();
 
@@ -884,14 +1053,26 @@ fn resolve_lineage_position_basename(position_dir: &Path) -> Result<(PathBuf, St
 }
 
 fn infer_basename_from_acdc_output(files: &[PathBuf]) -> Option<String> {
-    files.iter().find_map(|path| {
-        let name = path.file_name()?.to_str()?;
-        if name.contains("_lineage") {
-            return None;
-        }
-        name.strip_suffix("acdc_output.csv")
-            .map(|basename| basename.to_string())
-    })
+    let mut basenames = files
+        .iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            if name.contains("_lineage") {
+                return None;
+            }
+            name.strip_suffix("acdc_output.csv")
+                .map(|basename| basename.to_string())
+        })
+        .collect::<Vec<_>>();
+    basenames.sort_by(|left, right| left.len().cmp(&right.len()).then_with(|| left.cmp(right)));
+    basenames.into_iter().next()
+}
+
+fn should_skip_python_listdir_entry(name: &str) -> bool {
+    name.starts_with('.')
+        || name == "desktop.ini"
+        || name == "recovery"
+        || name.ends_with(".new.npz")
 }
 
 fn cell_cycle_table_from_table(path: PathBuf, table: Table) -> Result<CellCycleAnnotationTable> {
@@ -1228,11 +1409,62 @@ fn apply_cell_cycle_edit_to_row(
 }
 
 fn acdc_output_path(images_dir: &Path, basename: &str, segm_endname: Option<&str>) -> PathBuf {
-    let suffix = segm_endname
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| format!("_{value}"))
-        .unwrap_or_default();
-    images_dir.join(format!("{basename}acdc_output{suffix}.csv"))
+    let acdc_name = acdc_output_name(segm_endname);
+    let canonical = images_dir.join(format!("{basename}{acdc_name}.csv"));
+    if canonical.exists() {
+        return canonical;
+    }
+    find_visible_acdc_output_by_endname(images_dir, &format!("{acdc_name}.csv"))
+        .unwrap_or(canonical)
+}
+
+fn find_visible_acdc_output_by_endname(images_dir: &Path, endname: &str) -> Option<PathBuf> {
+    let mut matches = fs::read_dir(images_dir)
+        .ok()?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if should_skip_python_listdir_entry(name)
+                || name.contains("_lineage")
+                || !name.ends_with(endname)
+            {
+                return None;
+            }
+            Some(path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let right_name = right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        left_name
+            .len()
+            .cmp(&right_name.len())
+            .then_with(|| left_name.cmp(right_name))
+            .then_with(|| left.cmp(right))
+    });
+    matches.into_iter().next()
+}
+
+fn acdc_output_name(segm_endname: Option<&str>) -> String {
+    match segm_endname {
+        Some(value) if value.trim().trim_end_matches(".npz").starts_with("segm") => value
+            .trim()
+            .trim_end_matches(".npz")
+            .replacen("segm", "acdc_output", 1),
+        Some(value) if !value.trim().is_empty() => {
+            format!("acdc_output_{}", value.trim().trim_end_matches(".npz"))
+        }
+        _ => "acdc_output".to_string(),
+    }
 }
 
 fn lineage_output_path(acdc_output_path: &Path) -> PathBuf {
@@ -1593,8 +1825,139 @@ mod tests {
             },
         );
         save_custom_annotation_definitions(&path, &definitions).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"type\": \"Single time-point\""));
+        assert!(content.contains("\"isHideChecked\": false"));
+        assert!(content.contains("\"symbolColor\""));
+        assert!(!content.contains("\"kind\""));
         let restored = load_custom_annotation_definitions(&path).unwrap();
         assert_eq!(restored, definitions);
+    }
+
+    #[test]
+    fn loads_python_custom_annotation_definition_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("custom_annot_params.json");
+        fs::write(
+            &path,
+            r#"{
+  "division": {
+    "type": "Single time-point",
+    "name": "division",
+    "symbol": "'t'",
+    "shortcut": "D",
+    "description": "Division event",
+    "keepActive": true,
+    "isHideChecked": false,
+    "symbolColor": [20, 40, 60, 255]
+  }
+}"#,
+        )
+        .unwrap();
+
+        let restored = load_custom_annotation_definitions(&path).unwrap();
+        let definition = restored.get("division").unwrap();
+        assert_eq!(definition.name, "division");
+        assert_eq!(definition.kind, CustomAnnotationKind::SingleTimePoint);
+        assert_eq!(definition.symbol, "t");
+        assert_eq!(definition.shortcut.as_deref(), Some("D"));
+        assert_eq!(definition.description, "Division event");
+        assert!(definition.keep_active);
+        assert!(!definition.hide_when_inactive);
+        assert_eq!(definition.symbol_color_rgba, [20, 40, 60, 255]);
+    }
+
+    #[test]
+    fn lineage_basename_ignores_python_listdir_excluded_metadata() {
+        let dir = tempdir().unwrap();
+        let position = dir.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images).unwrap();
+        fs::write(
+            images.join(".hidden_metadata.csv"),
+            "Description,values\nbasename,hidden_\n",
+        )
+        .unwrap();
+        fs::write(
+            images.join("visible_acdc_output.csv"),
+            "frame_i,Cell_ID\n0,1\n",
+        )
+        .unwrap();
+
+        let (_, basename) = resolve_lineage_position_basename(&position).unwrap();
+
+        assert_eq!(basename, "visible_");
+    }
+
+    #[test]
+    fn lineage_basename_prefers_shortest_visible_acdc_output_match() {
+        let dir = tempdir().unwrap();
+        let images = dir.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images).unwrap();
+        fs::write(
+            images.join("longer_prefix_acdc_output.csv"),
+            "frame_i,Cell_ID\n0,1\n",
+        )
+        .unwrap();
+        fs::write(images.join("b_acdc_output.csv"), "frame_i,Cell_ID\n0,1\n").unwrap();
+        fs::write(images.join(".a_acdc_output.csv"), "frame_i,Cell_ID\n0,1\n").unwrap();
+        fs::write(
+            images.join("a_lineage_acdc_output.csv"),
+            "frame_i,Cell_ID\n0,1\n",
+        )
+        .unwrap();
+
+        let (_, basename) = resolve_lineage_position_basename(&images).unwrap();
+
+        assert_eq!(basename, "b_");
+    }
+
+    #[test]
+    fn lineage_paths_normalize_python_segmentation_endnames() {
+        let dir = tempdir().unwrap();
+        let position = dir.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images).unwrap();
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\n",
+        )
+        .unwrap();
+
+        let (acdc_path, lineage_path) =
+            lineage_table_paths_for_position(&position, Some("segm_rust.npz")).unwrap();
+
+        assert_eq!(acdc_path, images.join("demo_acdc_output_rust.csv"));
+        assert_eq!(
+            lineage_path,
+            images.join("demo_acdc_output_rust_lineage.csv")
+        );
+    }
+
+    #[test]
+    fn lineage_paths_use_visible_legacy_position_token_acdc_output() {
+        let dir = tempdir().unwrap();
+        let position = dir.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images).unwrap();
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\n",
+        )
+        .unwrap();
+        fs::write(
+            images.join("demo_s01_acdc_output.csv"),
+            "frame_i,Cell_ID\n0,1\n",
+        )
+        .unwrap();
+
+        let (acdc_path, lineage_path) = lineage_table_paths_for_position(&position, None).unwrap();
+
+        assert_eq!(acdc_path, images.join("demo_s01_acdc_output.csv"));
+        assert_eq!(
+            lineage_path,
+            images.join("demo_s01_acdc_output_lineage.csv")
+        );
     }
 
     #[test]

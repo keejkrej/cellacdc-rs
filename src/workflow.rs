@@ -527,6 +527,7 @@ fn validate_supported_sections(ini: &IniFile) -> Result<()> {
                 "cellprob_threshold",
                 "niter",
                 "min_size",
+                "model_path",
             ]),
         ),
         ("metadata", BTreeSet::from(["sizet", "sizez"])),
@@ -601,7 +602,7 @@ fn validate_supported_sections(ini: &IniFile) -> Result<()> {
 }
 
 fn is_supported_dynamic_section(section: &IniSection) -> bool {
-    section.normalized_name.starts_with("preprocess.step")
+    preprocess_step_index(&section.normalized_name).is_some()
         || section.normalized_name.starts_with("postprocess_features.")
 }
 
@@ -810,14 +811,14 @@ fn resolve_segmentation_model_path(
             ));
         }
         bail!(
-            "Workflow {} uses initialization.model_name {:?}, but cellacdc-rs can only resolve explicit model paths. Add [rust_cli].model_path or init_segmentation_model_params.model_path.",
+            "Workflow {} uses initialization.model_name {:?}, but cellacdc-rs can only resolve explicit model paths. Add [rust_cli].model_path, init_segmentation_model_params.model_path, or segmentation_model_params.model_path.",
             workflow_path.display(),
             model_name
         );
     }
 
     bail!(
-        "Workflow {} is missing a model path. Add [rust_cli].model_path or init_segmentation_model_params.model_path.",
+        "Workflow {} is missing a model path. Add [rust_cli].model_path, init_segmentation_model_params.model_path, or segmentation_model_params.model_path.",
         workflow_path.display()
     )
 }
@@ -841,10 +842,9 @@ fn parse_standard_postprocess_config(section: &IniSection) -> Result<Postprocess
 fn parse_preprocess_steps(ini: &IniFile) -> Result<Vec<PreprocessStep>> {
     let mut steps = Vec::<(usize, PreprocessStep)>::new();
     for section in &ini.sections {
-        let Some(step_text) = section.normalized_name.strip_prefix("preprocess.step") else {
+        let Some(step_index) = preprocess_step_index(&section.normalized_name) else {
             continue;
         };
-        let step_index = step_text.parse::<usize>().unwrap_or(usize::MAX);
         let Some(method) = optional_python_string(section, "method") else {
             continue;
         };
@@ -937,6 +937,15 @@ fn parse_preprocess_steps(ini: &IniFile) -> Result<Vec<PreprocessStep>> {
     }
     steps.sort_by_key(|(step_index, _)| *step_index);
     Ok(steps.into_iter().map(|(_, step)| step).collect())
+}
+
+fn preprocess_step_index(section_name: &str) -> Option<usize> {
+    let step_text = section_name.strip_prefix("preprocess.step").or_else(|| {
+        section_name
+            .split_once(".preprocess.step")
+            .map(|(_, step)| step)
+    })?;
+    Some(step_text.parse::<usize>().unwrap_or(usize::MAX))
 }
 
 fn is_fucci_preprocess_method(normalized_method: &str) -> bool {
@@ -1561,6 +1570,42 @@ model_path = models/custom.onnx\n\n\
     }
 
     #[test]
+    fn parses_python_model_path_from_segmentation_model_params() -> Result<()> {
+        let temp = tempdir()?;
+        let position = write_test_position(temp.path(), "Position_1")?;
+        let workflow_path = temp.path().join("workflow.ini");
+        fs::create_dir_all(temp.path().join("models"))?;
+        fs::write(temp.path().join("models").join("from_params.onnx"), "").expect("model file");
+        fs::write(
+            &workflow_path,
+            format!(
+                "[workflow]\n\
+type = segmentation and/or tracking\n\n\
+[paths_info]\n\
+paths =\n  {}\n\
+stop_frame_numbers = 1\n\n\
+[initialization]\n\
+user_ch_name = phase\n\
+segm_endname = rust\n\
+do_tracking = false\n\n\
+[segmentation_model_params]\n\
+model_path = models/from_params.onnx\n\
+tile = 256\n",
+                position.display()
+            ),
+        )?;
+
+        let workflow = parse_workflow_file(&workflow_path)?;
+        let segmentation = workflow.segmentation.expect("segmentation workflow");
+        assert_eq!(
+            segmentation.model_path,
+            temp.path().join("models").join("from_params.onnx")
+        );
+        assert_eq!(segmentation.params.tile, 256);
+        Ok(())
+    }
+
+    #[test]
     fn rejects_python_builtin_model_name_without_model_path() -> Result<()> {
         let temp = tempdir()?;
         let position = write_test_position(temp.path(), "Position_1")?;
@@ -1780,6 +1825,50 @@ model_path = models/demo.onnx\n",
         assert!(segmentation.save_outputs);
         assert!(!segmentation.use_data_prep_roi);
         assert!(!segmentation.use_data_prep_free_roi);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_python_model_prefixed_preprocess_sections() -> Result<()> {
+        let temp = tempdir()?;
+        let position = write_test_position(temp.path(), "Position_1")?;
+        let workflow_path = temp.path().join("workflow.ini");
+        fs::write(
+            &workflow_path,
+            format!(
+                "[workflow]\n\
+type = segmentation and/or tracking\n\n\
+[paths_info]\n\
+paths =\n  {}\n\
+stop_frame_numbers = 1\n\n\
+[initialization]\n\
+user_ch_name = phase\n\
+segm_endname = rust\n\
+do_tracking = false\n\n\
+[segmentation_model_params]\n\n\
+[acdc.preprocess.step2]\n\
+method = Gaussian filter\n\
+sigma = 1, 3\n\n\
+[acdc.preprocess.step1]\n\
+method = Remove hot pixels\n\n\
+[rust_cli]\n\
+model_path = model.onnx\n",
+                position.display()
+            ),
+        )?;
+
+        let workflow = parse_workflow_file(&workflow_path)?;
+        let segmentation = workflow.segmentation.expect("segmentation workflow");
+        assert_eq!(
+            segmentation.preprocess_steps,
+            vec![
+                PreprocessStep::RemoveHotPixels,
+                PreprocessStep::GaussianFilter {
+                    sigma_y: 1.0,
+                    sigma_x: 3.0
+                }
+            ]
+        );
         Ok(())
     }
 

@@ -2,11 +2,12 @@ use crate::image_io::{load_image_stack_as_f32, load_image_volume_as_f32, StackSh
 use crate::layout::resolve_measurement_position;
 use crate::metadata::read_metadata_map;
 use crate::segm_info::{
-    build_default_segm_info_table, load_segm_info, save_segm_info, SegmInfoTable,
+    build_default_segm_info_table, clamp_segm_info_z_slices, load_segm_info, save_segm_info,
+    SegmInfoTable,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use csv::Writer;
-use ndarray::{s, Array2, Array3, Array4, ArrayD, Ix2, Ix3, Ix4};
+use ndarray::{s, Array2, Array3, Array4, ArrayD, Ix2, Ix3, Ix4, IxDyn, OwnedRepr};
 use ndarray_npy::{write_npy, NpzReader, NpzWriter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -178,13 +179,14 @@ pub fn load_data_prep_state(
         .map(read_freehand_roi_npz)
         .transpose()?
         .flatten();
-    let segm_info = if let Some(path) = spec.segm_info_path.as_ref() {
+    let mut segm_info = if let Some(path) = spec.segm_info_path.as_ref() {
         load_segm_info(path)?
     } else if spec.size_z > 1 {
         build_default_segm_info_table(&spec)?
     } else {
         SegmInfoTable::default()
     };
+    clamp_segm_info_z_slices(&mut segm_info, spec.size_z);
     let available_channels = spec
         .channels
         .iter()
@@ -360,12 +362,55 @@ pub fn read_background_roi_npz(path: impl AsRef<Path>) -> Result<BackgroundRoiAr
     let file = File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
     let mut reader =
         NpzReader::new(file).with_context(|| format!("Failed to read {}", path.display()))?;
+    let names = reader.names()?;
+    drop(reader);
+
     let mut arrays = BTreeMap::new();
-    for name in reader.names()? {
-        let array: ArrayD<f32> = reader.by_name(&name)?;
+    for name in names {
+        let array = read_background_roi_npz_array(path, &name)?;
         arrays.insert(name.trim_end_matches(".npy").to_string(), array);
     }
     Ok(arrays)
+}
+
+fn read_background_roi_npz_array(path: &Path, name: &str) -> Result<ArrayD<f32>> {
+    macro_rules! try_npz_array {
+        ($ty:ty) => {{
+            let file =
+                File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+            let mut reader = NpzReader::new(file)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            if let Ok(array) = reader.by_name::<OwnedRepr<$ty>, IxDyn>(name) {
+                return Ok(array.mapv(|value| value as f32));
+            }
+        }};
+    }
+
+    try_npz_array!(f32);
+    try_npz_array!(f64);
+    {
+        let file =
+            File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+        let mut reader =
+            NpzReader::new(file).with_context(|| format!("Failed to read {}", path.display()))?;
+        if let Ok(array) = reader.by_name::<OwnedRepr<bool>, IxDyn>(name) {
+            return Ok(array.mapv(|value| if value { 1.0 } else { 0.0 }));
+        }
+    }
+    try_npz_array!(u8);
+    try_npz_array!(u16);
+    try_npz_array!(u32);
+    try_npz_array!(u64);
+    try_npz_array!(i8);
+    try_npz_array!(i16);
+    try_npz_array!(i32);
+    try_npz_array!(i64);
+
+    bail!(
+        "Unsupported background ROI array dtype for {:?} in {}",
+        name,
+        path.display()
+    )
 }
 
 pub fn write_background_roi_npz(
@@ -413,11 +458,44 @@ pub fn read_freehand_roi_npz(path: impl AsRef<Path>) -> Result<Option<FreehandRo
             path.display()
         );
     }
-    let mask: Array2<bool> = reader.by_name(name)?;
+    drop(reader);
+    let mask = read_freehand_roi_mask_array(path, name)?;
     Ok(Some(FreehandRoiMask {
         bbox_yxxy: (coords[1], coords[0], coords[3], coords[2]),
         local_mask: mask,
     }))
+}
+
+fn read_freehand_roi_mask_array(path: &Path, name: &str) -> Result<Array2<bool>> {
+    macro_rules! try_mask_array {
+        ($ty:ty, $predicate:expr) => {{
+            let file =
+                File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+            let mut reader = NpzReader::new(file)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            if let Ok(array) = reader.by_name::<OwnedRepr<$ty>, Ix2>(name) {
+                return Ok(array.mapv($predicate));
+            }
+        }};
+    }
+
+    try_mask_array!(bool, |value| value);
+    try_mask_array!(u8, |value| value > 0);
+    try_mask_array!(u16, |value| value > 0);
+    try_mask_array!(u32, |value| value > 0);
+    try_mask_array!(u64, |value| value > 0);
+    try_mask_array!(i8, |value| value > 0);
+    try_mask_array!(i16, |value| value > 0);
+    try_mask_array!(i32, |value| value > 0);
+    try_mask_array!(i64, |value| value > 0);
+    try_mask_array!(f32, |value| value > 0.0);
+    try_mask_array!(f64, |value| value > 0.0);
+
+    bail!(
+        "Unsupported free ROI mask dtype for {:?} in {}",
+        name,
+        path.display()
+    )
 }
 
 pub fn write_freehand_roi_npz(path: impl AsRef<Path>, roi: &FreehandRoiMask) -> Result<PathBuf> {
@@ -662,6 +740,7 @@ pub fn save_cropped_data(config: CropSaveConfig) -> Result<CropSaveResult> {
             } else {
                 build_default_segm_info_table(&spec)?
             };
+            clamp_segm_info_z_slices(&mut segm_info, spec.size_z);
             if z_start > 0 {
                 for record in segm_info.records.values_mut() {
                     record.crop_lower_z_slice = Some(z_start);
@@ -1421,6 +1500,39 @@ mod tests {
     }
 
     #[test]
+    fn loads_background_roi_npz_python_numeric_dtypes_as_f32() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("demo_phase_bkgrRoiData.npz");
+        let file = File::create(&path)?;
+        let mut writer = NpzWriter::new(file);
+        writer.add_array("roi0_data", &Array::from_shape_vec((1, 2), vec![7u16, 8])?)?;
+        writer.add_array(
+            "roi1_data",
+            &Array::from_shape_vec((1, 2), vec![1.5f64, 2.5])?,
+        )?;
+        writer.add_array(
+            "roi2_data",
+            &Array::from_shape_vec((1, 2), vec![false, true])?,
+        )?;
+        writer.finish()?;
+
+        let loaded = read_background_roi_npz(&path)?;
+        assert_eq!(
+            loaded["roi0_data"].iter().copied().collect::<Vec<_>>(),
+            vec![7.0, 8.0]
+        );
+        assert_eq!(
+            loaded["roi1_data"].iter().copied().collect::<Vec<_>>(),
+            vec![1.5, 2.5]
+        );
+        assert_eq!(
+            loaded["roi2_data"].iter().copied().collect::<Vec<_>>(),
+            vec![0.0, 1.0]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn roundtrips_crop_roi_coords_csv() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path().join("demo_dataPrepROIs_coords.csv");
@@ -1452,6 +1564,25 @@ mod tests {
         let loaded = read_freehand_roi_npz(&path)?.unwrap();
         assert_eq!(loaded.bbox_yxxy, roi.bbox_yxxy);
         assert_eq!(loaded.local_mask, roi.local_mask);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_numeric_free_roi_npz_masks_as_boolean() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("demo_dataPrepFreeRoi.npz");
+        let file = File::create(&path)?;
+        let mut writer = NpzWriter::new(file);
+        let mask = Array2::from_shape_vec((2, 3), vec![0u8, 1, 2, 0, 3, 0])?;
+        writer.add_array("3_2_5_3", &mask)?;
+        writer.finish()?;
+
+        let loaded = read_freehand_roi_npz(&path)?.unwrap();
+        assert_eq!(loaded.bbox_yxxy, (2, 3, 3, 5));
+        assert_eq!(
+            loaded.local_mask.iter().copied().collect::<Vec<_>>(),
+            vec![false, true, true, false, true, false]
+        );
         Ok(())
     }
 

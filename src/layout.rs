@@ -1,6 +1,7 @@
 use crate::image_io::inspect_image_volume;
 use crate::metadata::{read_metadata_summary, DEFAULT_TIME_INCREMENT};
 use anyhow::{bail, Context, Result};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,7 +93,7 @@ pub fn discover_experiment_positions(experiment_dir: impl AsRef<Path>) -> Result
             positions.push(path);
         }
     }
-    positions.sort();
+    positions.sort_by(|left, right| compare_position_paths(left, right));
     Ok(positions)
 }
 
@@ -180,15 +181,6 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
                 .unwrap_or(false)
         })
         .cloned();
-    let data_prep_free_roi_path = files
-        .iter()
-        .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.ends_with("dataPrepFreeRoi.npz"))
-                .unwrap_or(false)
-        })
-        .cloned();
     let segm_info_path = files
         .iter()
         .find(|path| {
@@ -216,7 +208,8 @@ pub fn resolve_measurement_position(path: impl AsRef<Path>) -> Result<Measuremen
             )
         })?;
 
-    let channels = discover_channels(&images_dir, &files, &basename)?;
+    let data_prep_free_roi_path = find_data_prep_free_roi_path(&files, &basename);
+    let channels = discover_channels(&position_dir, &images_dir, &files, &basename)?;
 
     let first_shape =
         inspect_image_volume(&channels[0].image_path, metadata.size_t, metadata.size_z)?;
@@ -301,7 +294,7 @@ pub fn discover_experiment(
         )?);
     }
 
-    positions.sort_by(|a, b| a.position_dir.cmp(&b.position_dir));
+    positions.sort_by(|a, b| compare_position_paths(&a.position_dir, &b.position_dir));
     if positions.is_empty() {
         bail!(
             "No Cell-ACDC positions found under {}",
@@ -347,7 +340,7 @@ pub fn discover_measurement_experiment(
         positions.push(resolve_measurement_position(&path)?);
     }
 
-    positions.sort_by(|a, b| a.position_dir.cmp(&b.position_dir));
+    positions.sort_by(|a, b| compare_position_paths(&a.position_dir, &b.position_dir));
     if positions.is_empty() {
         bail!(
             "No Cell-ACDC positions found under {}",
@@ -420,10 +413,121 @@ fn normalize_position_path(path: &Path) -> Result<(PathBuf, PathBuf)> {
 fn list_dir_sorted(path: &Path) -> Result<Vec<PathBuf>> {
     let mut items = Vec::new();
     for entry in fs::read_dir(path).with_context(|| format!("Failed to read {}", path.display()))? {
-        items.push(entry?.path());
+        let path = entry?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(should_skip_python_listdir_entry)
+        {
+            continue;
+        }
+        items.push(path);
     }
-    items.sort();
+    items.sort_by(|left, right| compare_paths_by_file_name_natural(left, right));
     Ok(items)
+}
+
+fn should_skip_python_listdir_entry(name: &str) -> bool {
+    name.starts_with('.')
+        || name == "desktop.ini"
+        || name == "recovery"
+        || name.ends_with(".new.npz")
+}
+
+fn find_data_prep_free_roi_path(files: &[PathBuf], basename: &str) -> Option<PathBuf> {
+    let expected = format!("{basename}dataPrepFreeRoi.npz");
+    files
+        .iter()
+        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(expected.as_str()))
+        .cloned()
+        .or_else(|| {
+            files
+                .iter()
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| name.ends_with("dataPrepFreeRoi.npz"))
+                        .unwrap_or(false)
+                })
+                .cloned()
+        })
+}
+
+fn compare_paths_by_file_name_natural(left: &Path, right: &Path) -> Ordering {
+    let left_name = left
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let right_name = right
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    natural_compare(left_name, right_name).then_with(|| left.cmp(right))
+}
+
+fn natural_compare(left: &str, right: &str) -> Ordering {
+    let mut left_iter = NaturalParts::new(left);
+    let mut right_iter = NaturalParts::new(right);
+    loop {
+        match (left_iter.next(), right_iter.next()) {
+            (Some(NaturalPart::Number(a)), Some(NaturalPart::Number(b))) => match a.cmp(&b) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+            (Some(NaturalPart::Text(a)), Some(NaturalPart::Text(b))) => match a.cmp(b) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+            (Some(NaturalPart::Number(_)), Some(NaturalPart::Text(_))) => return Ordering::Less,
+            (Some(NaturalPart::Text(_)), Some(NaturalPart::Number(_))) => return Ordering::Greater,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return left.cmp(right),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NaturalPart<'a> {
+    Text(&'a str),
+    Number(u64),
+}
+
+struct NaturalParts<'a> {
+    text: &'a str,
+    index: usize,
+}
+
+impl<'a> NaturalParts<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, index: 0 }
+    }
+}
+
+impl<'a> Iterator for NaturalParts<'a> {
+    type Item = NaturalPart<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.text.len() {
+            return None;
+        }
+        let start = self.index;
+        let first = self.text[start..].chars().next()?;
+        let is_digit = first.is_ascii_digit();
+        while self.index < self.text.len() {
+            let ch = self.text[self.index..].chars().next()?;
+            if ch.is_ascii_digit() != is_digit {
+                break;
+            }
+            self.index += ch.len_utf8();
+        }
+        let part = &self.text[start..self.index];
+        if is_digit {
+            Some(NaturalPart::Number(part.parse().unwrap_or(u64::MAX)))
+        } else {
+            Some(NaturalPart::Text(part))
+        }
+    }
 }
 
 fn infer_basename(files: &[PathBuf]) -> Option<String> {
@@ -434,6 +538,8 @@ fn infer_basename(files: &[PathBuf]) -> Option<String> {
             let is_supported = name.ends_with(".tif")
                 || name.ends_with(".tiff")
                 || name.ends_with("_aligned.npz")
+                || name.ends_with("_aligned.npy")
+                || name.ends_with(".npy")
                 || name.ends_with(".h5");
             if !is_supported || name.contains("segm") || name.contains("acdc_output") {
                 return None;
@@ -476,6 +582,7 @@ fn longest_common_prefix(left: &str, right: &str) -> String {
 }
 
 fn discover_channels(
+    position_dir: &Path,
     images_dir: &Path,
     files: &[PathBuf],
     basename: &str,
@@ -490,22 +597,28 @@ fn discover_channels(
             continue;
         };
 
+        let suffix = strip_legacy_position_prefix(suffix, position_dir);
+
         if should_skip_channel_candidate(suffix) {
             continue;
         }
 
         let parsed = if let Some(channel) = suffix.strip_suffix("_aligned.h5") {
             Some((channel.to_string(), 0usize))
-        } else if let Some(channel) = suffix.strip_suffix("_aligned.npz") {
-            Some((channel.to_string(), 1usize))
         } else if let Some(channel) = suffix.strip_suffix(".h5") {
+            Some((channel.to_string(), 1usize))
+        } else if let Some(channel) = suffix.strip_suffix("_aligned.npz") {
             Some((channel.to_string(), 2usize))
-        } else if let Some(channel) = suffix.strip_suffix(".tif") {
+        } else if let Some(channel) = suffix.strip_suffix("_aligned.npy") {
             Some((channel.to_string(), 3usize))
+        } else if let Some(channel) = suffix.strip_suffix(".tif") {
+            Some((channel.to_string(), 4usize))
+        } else if let Some(channel) = suffix.strip_suffix(".tiff") {
+            Some((channel.to_string(), 5usize))
         } else {
             suffix
-                .strip_suffix(".tiff")
-                .map(|channel| (channel.to_string(), 4usize))
+                .strip_suffix(".npy")
+                .map(|channel| (channel.to_string(), 6usize))
         };
 
         let Some((channel_name, priority)) = parsed else {
@@ -542,12 +655,52 @@ fn discover_channels(
     Ok(channels)
 }
 
+fn strip_legacy_position_prefix<'a>(suffix: &'a str, position_dir: &Path) -> &'a str {
+    let Some(position_number) = position_number(position_dir) else {
+        return suffix;
+    };
+    let Some(rest) = suffix.strip_prefix('s') else {
+        return suffix;
+    };
+    let Some((digits, after_digits)) = rest.split_once('_') else {
+        return suffix;
+    };
+    if digits.is_empty() {
+        return suffix;
+    }
+    match digits.parse::<usize>() {
+        Ok(value) if value == position_number => after_digits,
+        _ => suffix,
+    }
+}
+
+fn position_number(position_dir: &Path) -> Option<usize> {
+    position_dir
+        .file_name()
+        .and_then(|name| name.to_str())?
+        .strip_prefix("Position_")?
+        .parse::<usize>()
+        .ok()
+}
+
+fn compare_position_paths(left: &Path, right: &Path) -> Ordering {
+    match (position_number(left), position_number(right)) {
+        (Some(left_number), Some(right_number)) => {
+            left_number.cmp(&right_number).then_with(|| left.cmp(right))
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => left.cmp(right),
+    }
+}
+
 fn should_skip_channel_candidate(suffix: &str) -> bool {
     suffix.ends_with("metadata.csv")
         || suffix.ends_with("dataPrep_bkgrROIs.json")
         || suffix.ends_with("dataPrepROIs_coords.csv")
         || suffix.ends_with("dataPrepFreeRoi.npz")
         || suffix.ends_with("bkgrRoiData.npz")
+        || suffix.ends_with("align_shift.npy")
         || suffix.starts_with("segm")
         || suffix.starts_with("acdc_output")
         || suffix.starts_with("segm_hyperparams")
@@ -623,6 +776,99 @@ mod tests {
     }
 
     #[test]
+    fn ignores_python_listdir_excluded_files_when_inferring_basename() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_2");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join(".hidden_phase.tif"), &[1])?;
+        write_test_stack(&images.join("desktop.ini"), &[1])?;
+        fs::create_dir_all(images.join("recovery"))?;
+        write_test_npz(&images.join("abc_phase.new.npz"), vec![1u16; 6])?;
+        write_test_stack(&images.join("abc_phase.tif"), &[1])?;
+        write_test_stack(&images.join("abc_fluo.tif"), &[1])?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+        assert_eq!(spec.basename, "abc_");
+        assert_eq!(spec.channels.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_sidecars_in_python_listdir_order() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_2");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[1])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[1])?;
+        let mut metadata = fs::File::create(images.join("demo_metadata.csv"))?;
+        writeln!(metadata, "Description,values")?;
+        writeln!(metadata, "basename,demo_")?;
+        fs::write(images.join("sample10_dataPrepROIs_coords.csv"), b"late")?;
+        fs::write(images.join("sample2_dataPrepROIs_coords.csv"), b"early")?;
+        fs::write(images.join("sample10_dataPrep_bkgrROIs.json"), b"[]")?;
+        fs::write(images.join("sample2_dataPrep_bkgrROIs.json"), b"[]")?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+        assert!(spec
+            .data_prep_roi_coords_path
+            .as_ref()
+            .unwrap()
+            .ends_with("sample2_dataPrepROIs_coords.csv"));
+        assert!(spec
+            .data_prep_background_rois_path
+            .as_ref()
+            .unwrap()
+            .ends_with("sample2_dataPrep_bkgrROIs.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn dataprep_free_roi_prefers_python_basename_path() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_2");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[1])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[1])?;
+        let mut metadata = fs::File::create(images.join("demo_metadata.csv"))?;
+        writeln!(metadata, "Description,values")?;
+        writeln!(metadata, "basename,demo_")?;
+        fs::write(images.join("other_dataPrepFreeRoi.npz"), b"wrong")?;
+        fs::write(images.join("demo_dataPrepFreeRoi.npz"), b"right")?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+        assert!(spec
+            .data_prep_free_roi_path
+            .as_ref()
+            .unwrap()
+            .ends_with("demo_dataPrepFreeRoi.npz"));
+        Ok(())
+    }
+
+    #[test]
+    fn strips_legacy_position_token_from_channel_names() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_s01_phase.tif"), &[1])?;
+        write_test_stack(&images.join("demo_s01_fluo.tif"), &[1])?;
+        let mut metadata = fs::File::create(images.join("demo_metadata.csv"))?;
+        writeln!(metadata, "Description,values")?;
+        writeln!(metadata, "basename,demo_")?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+        assert_eq!(spec.basename, "demo_");
+        assert!(spec.phase_image.ends_with("demo_s01_phase.tif"));
+        assert!(spec.fluo_image.ends_with("demo_s01_fluo.tif"));
+        assert!(spec.channels.iter().any(|channel| channel.name == "phase"));
+        assert!(spec.channels.iter().any(|channel| channel.name == "fluo"));
+        Ok(())
+    }
+
+    #[test]
     fn reads_metadata_time_increment_frame_count_and_pixel_size() -> Result<()> {
         let temp = tempdir()?;
         let position = temp.path().join("Position_3");
@@ -664,17 +910,109 @@ mod tests {
     }
 
     #[test]
-    fn prefers_aligned_h5_then_h5_then_npz_then_tiff() -> Result<()> {
+    fn discovers_position_paths_in_natural_order() -> Result<()> {
+        let temp = tempdir()?;
+        for idx in [10, 2, 1] {
+            fs::create_dir_all(temp.path().join(format!("Position_{idx}")).join("Images"))?;
+        }
+
+        let positions = discover_experiment_positions(temp.path())?;
+        let names = positions
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Position_1", "Position_2", "Position_10"]);
+        Ok(())
+    }
+
+    #[test]
+    fn prefers_aligned_h5_then_h5_then_npz_then_npy_then_tiff() -> Result<()> {
         let temp = tempdir()?;
         let position = temp.path().join("Position_4");
         let images = position.join("Images");
         fs::create_dir_all(&images)?;
         write_test_stack(&images.join("demo_phase.tif"), &[1])?;
         write_test_stack(&images.join("demo_fluo.tif"), &[1])?;
+        fs::write(images.join("demo_phase_aligned.npy"), b"placeholder")?;
         write_test_npz(&images.join("demo_phase_aligned.npz"), vec![1u16; 6])?;
 
         let spec = resolve_position(&position, "phase", "fluo")?;
         assert!(spec.phase_image.ends_with("demo_phase_aligned.npz"));
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_old_python_aligned_npy_channels() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_4");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_stack(&images.join("demo_phase.tif"), &[1])?;
+        write_test_stack(&images.join("demo_fluo.tif"), &[1])?;
+        write_test_npy(&images.join("demo_phase_aligned.npy"), vec![1u16; 6])?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+
+        assert!(spec.phase_image.ends_with("demo_phase_aligned.npy"));
+        assert!(spec.fluo_image.ends_with("demo_fluo.tif"));
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_plain_npy_channels_and_infers_basename() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_4");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        write_test_npy(&images.join("demo_phase.npy"), vec![1u16; 6])?;
+        write_test_npy(&images.join("demo_fluo.npy"), vec![2u16; 6])?;
+        write_test_npy(&images.join("demo_align_shift.npy"), vec![0u16; 6])?;
+
+        let spec = resolve_position(&position, "phase", "fluo")?;
+
+        assert_eq!(spec.basename, "demo_");
+        assert_eq!(spec.channels.len(), 2);
+        assert!(spec.phase_image.ends_with("demo_phase.npy"));
+        assert!(spec.fluo_image.ends_with("demo_fluo.npy"));
+        assert!(!spec
+            .channels
+            .iter()
+            .any(|channel| channel.name == "align_shift"));
+        Ok(())
+    }
+
+    #[test]
+    fn channel_discovery_uses_python_file_priority() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_4");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+        let files = vec![
+            images.join("demo_phase.tif"),
+            images.join("demo_phase.npy"),
+            images.join("demo_phase_aligned.npy"),
+            images.join("demo_phase_aligned.npz"),
+            images.join("demo_phase.h5"),
+        ];
+
+        let channels = discover_channels(&position, &images, &files, "demo_")?;
+        assert_eq!(channels[0].name, "phase");
+        assert!(channels[0].image_path.ends_with("demo_phase.h5"));
+
+        let files = vec![
+            images.join("demo_phase.tif"),
+            images.join("demo_phase.npy"),
+            images.join("demo_phase_aligned.npy"),
+            images.join("demo_phase_aligned.npz"),
+            images.join("demo_phase.h5"),
+            images.join("demo_phase_aligned.h5"),
+        ];
+        let channels = discover_channels(&position, &images, &files, "demo_")?;
+        assert!(channels[0].image_path.ends_with("demo_phase_aligned.h5"));
+
+        let files = vec![images.join("demo_phase.npy"), images.join("demo_phase.tif")];
+        let channels = discover_channels(&position, &images, &files, "demo_")?;
+        assert!(channels[0].image_path.ends_with("demo_phase.tif"));
         Ok(())
     }
 
@@ -726,6 +1064,12 @@ mod tests {
         let array = Array2::from_shape_vec((2, 3), data)?;
         writer.add_array("arr_0", &array)?;
         writer.finish()?;
+        Ok(())
+    }
+
+    fn write_test_npy(path: &Path, data: Vec<u16>) -> Result<()> {
+        let array = Array2::from_shape_vec((2, 3), data)?;
+        ndarray_npy::write_npy(path, &array)?;
         Ok(())
     }
 }

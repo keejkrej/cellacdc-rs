@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use csv::{ReaderBuilder, Writer};
+use csv::{ReaderBuilder, StringRecord, Writer};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -101,16 +101,15 @@ pub fn load_segm_info(path: &Path) -> Result<SegmInfoTable> {
         .flexible(true)
         .from_path(path)
         .with_context(|| format!("Failed to open {}", path.display()))?;
-    let headers = reader.headers()?.clone();
+    let original_headers = reader.headers()?.clone();
+    let headers = normalize_segm_info_headers(&original_headers);
+    reader.set_headers(headers.clone());
     let required = [
         "filename",
         "frame_i",
         "z_slice_used_dataPrep",
         "which_z_proj",
         "is_from_dataPrep",
-        "z_slice_used_gui",
-        "which_z_proj_gui",
-        "resegmented_in_gui",
     ];
     for name in required {
         if !headers.iter().any(|header| header == name) {
@@ -119,28 +118,82 @@ pub fn load_segm_info(path: &Path) -> Result<SegmInfoTable> {
     }
 
     let mut table = SegmInfoTable::default();
-    for row in reader.deserialize::<BTreeMap<String, String>>() {
-        let row = row?;
+    for row in reader.records() {
+        let record = row?;
+        if is_repeated_header_record(&record, &original_headers) {
+            break;
+        }
+        let row = segm_info_row_map(&headers, &record);
+        if required.iter().any(|column| {
+            row.get(*column)
+                .is_none_or(|value| is_missing_csv_value(value))
+        }) {
+            continue;
+        }
         let filename = row
             .get("filename")
             .cloned()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("Missing filename in {}", path.display()))?;
+        let z_slice_used_data_prep = parse_usize(&row, "z_slice_used_dataPrep", path)?;
+        let which_z_proj = parse_proj(&row, "which_z_proj", path)?;
         let record = SegmInfoRecord {
             filename,
             frame_i: parse_usize(&row, "frame_i", path)?,
-            z_slice_used_data_prep: parse_usize(&row, "z_slice_used_dataPrep", path)?,
-            which_z_proj: parse_proj(&row, "which_z_proj", path)?,
+            z_slice_used_data_prep,
+            which_z_proj,
             is_from_data_prep: parse_bool(&row, "is_from_dataPrep", path)?,
-            z_slice_used_gui: parse_usize(&row, "z_slice_used_gui", path)?,
-            which_z_proj_gui: parse_proj(&row, "which_z_proj_gui", path)?,
-            resegmented_in_gui: parse_bool(&row, "resegmented_in_gui", path)?,
+            z_slice_used_gui: parse_usize_or_default(
+                &row,
+                "z_slice_used_gui",
+                z_slice_used_data_prep,
+                path,
+            )?,
+            which_z_proj_gui: parse_proj_or_default(&row, "which_z_proj_gui", which_z_proj, path)?,
+            resegmented_in_gui: parse_bool_or_default(&row, "resegmented_in_gui", false, path)?,
             crop_lower_z_slice: parse_optional_usize(&row, "crop_lower_z_slice")?,
             crop_upper_z_slice: parse_optional_usize(&row, "crop_upper_z_slice")?,
         };
-        table.insert(record);
+        table
+            .records
+            .entry((record.filename.clone(), record.frame_i))
+            .or_insert(record);
     }
     Ok(table)
+}
+
+fn is_repeated_header_record(record: &StringRecord, headers: &StringRecord) -> bool {
+    record.len() == headers.len()
+        && record
+            .iter()
+            .zip(headers.iter())
+            .all(|(value, header)| value == header)
+}
+
+fn segm_info_row_map(headers: &StringRecord, record: &StringRecord) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .zip(record.iter())
+        .map(|(header, value)| (header.to_string(), value.to_string()))
+        .collect()
+}
+
+fn normalize_segm_info_headers(headers: &StringRecord) -> StringRecord {
+    headers
+        .iter()
+        .map(|header| match header {
+            "Unnamed: 0" => "filename",
+            "Unnamed: 1" => "frame_i",
+            other => other,
+        })
+        .collect()
+}
+
+fn is_missing_csv_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "nan" | "na" | "n/a" | "none" | "null" | "<na>"
+    )
 }
 
 pub fn save_segm_info(path: impl AsRef<Path>, table: &SegmInfoTable) -> Result<PathBuf> {
@@ -185,6 +238,21 @@ pub fn save_segm_info(path: impl AsRef<Path>, table: &SegmInfoTable) -> Result<P
     }
     writer.flush()?;
     Ok(path)
+}
+
+pub fn clamp_segm_info_z_slices(table: &mut SegmInfoTable, size_z: usize) {
+    if size_z <= 1 {
+        return;
+    }
+    let middle_z = size_z / 2;
+    for record in table.records.values_mut() {
+        if record.z_slice_used_data_prep >= size_z {
+            record.z_slice_used_data_prep = middle_z;
+        }
+        if record.z_slice_used_gui >= size_z {
+            record.z_slice_used_gui = middle_z;
+        }
+    }
 }
 
 pub fn apply_segm_info_edit(table: &SegmInfoTable, edit: SegmInfoEdit) -> Result<SegmInfoTable> {
@@ -362,6 +430,20 @@ fn parse_usize(row: &BTreeMap<String, String>, key: &str, path: &Path) -> Result
         .with_context(|| format!("Failed to parse {key:?} in {}", path.display()))
 }
 
+fn parse_usize_or_default(
+    row: &BTreeMap<String, String>,
+    key: &str,
+    default: usize,
+    path: &Path,
+) -> Result<usize> {
+    match row.get(key).map(|value| value.trim()) {
+        Some(value) if !is_missing_csv_value(value) => value
+            .parse::<usize>()
+            .with_context(|| format!("Failed to parse {key:?} in {}", path.display())),
+        _ => Ok(default),
+    }
+}
+
 fn parse_bool(row: &BTreeMap<String, String>, key: &str, path: &Path) -> Result<bool> {
     let value = row
         .get(key)
@@ -370,6 +452,27 @@ fn parse_bool(row: &BTreeMap<String, String>, key: &str, path: &Path) -> Result<
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes"
     ))
+}
+
+fn parse_bool_or_default(
+    row: &BTreeMap<String, String>,
+    key: &str,
+    default: bool,
+    path: &Path,
+) -> Result<bool> {
+    match row.get(key).map(|value| value.trim()) {
+        Some(value) if !is_missing_csv_value(value) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" => Ok(true),
+            "0" | "false" | "no" => Ok(false),
+            _ => Err(anyhow::anyhow!(
+                "Invalid boolean value {:?} for column {:?} in {}",
+                value,
+                key,
+                path.display()
+            )),
+        },
+        _ => Ok(default),
+    }
 }
 
 fn parse_proj(row: &BTreeMap<String, String>, key: &str, path: &Path) -> Result<ZProjectionMode> {
@@ -384,6 +487,27 @@ fn parse_proj(row: &BTreeMap<String, String>, key: &str, path: &Path) -> Result<
             path.display()
         )
     })
+}
+
+fn parse_proj_or_default(
+    row: &BTreeMap<String, String>,
+    key: &str,
+    default: ZProjectionMode,
+    path: &Path,
+) -> Result<ZProjectionMode> {
+    match row.get(key).map(|value| value.trim()) {
+        Some(value) if !is_missing_csv_value(value) => {
+            ZProjectionMode::parse(value).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unsupported z projection {:?} for column {:?} in {}",
+                    value,
+                    key,
+                    path.display()
+                )
+            })
+        }
+        _ => Ok(default),
+    }
 }
 
 fn parse_optional_usize(row: &BTreeMap<String, String>, key: &str) -> Result<Option<usize>> {
@@ -469,6 +593,131 @@ mod tests {
         let record = table.get("demo_phase.tif", 0).unwrap();
         assert_eq!(record.z_slice_used_data_prep, 2);
         assert_eq!(record.which_z_proj, ZProjectionMode::SingleZSlice);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_legacy_unnamed_index_segm_info_columns() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("demo_segmInfo.csv");
+        std::fs::write(
+            &path,
+            concat!(
+                "Unnamed: 0,Unnamed: 1,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep,z_slice_used_gui,which_z_proj_gui,resegmented_in_gui\n",
+                "demo_phase.tif,0,2,single z-slice,1,2,single z-slice,0\n",
+                "demo_phase.tif,0,4,max z-projection,0,4,max z-projection,1\n",
+                "demo_phase.tif,1,3,median z-proj.,1,3,median z-proj.,0\n",
+            ),
+        )?;
+
+        let table = load_segm_info(&path)?;
+
+        assert_eq!(table.records.len(), 2);
+        let first = table.get("demo_phase.tif", 0).expect("frame 0 record");
+        assert_eq!(first.z_slice_used_data_prep, 2);
+        assert_eq!(first.which_z_proj, ZProjectionMode::SingleZSlice);
+        assert!(first.is_from_data_prep);
+        assert!(!first.resegmented_in_gui);
+        let second = table.get("demo_phase.tif", 1).expect("frame 1 record");
+        assert_eq!(second.z_slice_used_gui, 3);
+        assert_eq!(second.which_z_proj_gui, ZProjectionMode::MedianZProjection);
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_duplicate_appended_segm_info_after_repeated_header() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("demo_segmInfo.csv");
+        std::fs::write(
+            &path,
+            concat!(
+                "filename,frame_i,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep,z_slice_used_gui,which_z_proj_gui,resegmented_in_gui\n",
+                "demo_phase.tif,0,2,single z-slice,1,2,single z-slice,0\n",
+                "filename,frame_i,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep,z_slice_used_gui,which_z_proj_gui,resegmented_in_gui\n",
+                "demo_phase.tif,1,4,max z-projection,0,4,max z-projection,1\n",
+            ),
+        )?;
+
+        let table = load_segm_info(&path)?;
+
+        assert_eq!(table.records.len(), 1);
+        let record = table.get("demo_phase.tif", 0).expect("first table row");
+        assert_eq!(record.z_slice_used_data_prep, 2);
+        assert_eq!(record.which_z_proj, ZProjectionMode::SingleZSlice);
+        assert!(table.get("demo_phase.tif", 1).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn clamps_out_of_range_z_slices_to_middle_slice() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("demo_segmInfo.csv");
+        std::fs::write(
+            &path,
+            concat!(
+                "filename,frame_i,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep,z_slice_used_gui,which_z_proj_gui,resegmented_in_gui\n",
+                "demo_phase.tif,0,9,single z-slice,1,10,single z-slice,0\n",
+            ),
+        )?;
+        let mut table = load_segm_info(&path)?;
+
+        clamp_segm_info_z_slices(&mut table, 5);
+
+        let record = table.get("demo_phase.tif", 0).expect("record");
+        assert_eq!(record.z_slice_used_data_prep, 2);
+        assert_eq!(record.z_slice_used_gui, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn skips_segm_info_rows_with_missing_required_values() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("demo_segmInfo.csv");
+        std::fs::write(
+            &path,
+            concat!(
+                "filename,frame_i,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep,z_slice_used_gui,which_z_proj_gui,resegmented_in_gui,crop_lower_z_slice,crop_upper_z_slice\n",
+                "demo_phase.tif,0,2,single z-slice,1,2,single z-slice,0,,\n",
+                "demo_phase.tif,1,,single z-slice,1,2,single z-slice,0,,\n",
+                "demo_phase.tif,nan,3,single z-slice,1,3,single z-slice,0,,\n",
+                ",2,3,single z-slice,1,3,single z-slice,0,,\n",
+            ),
+        )?;
+
+        let table = load_segm_info(&path)?;
+
+        assert_eq!(table.records.len(), 1);
+        let record = table.get("demo_phase.tif", 0).expect("valid row");
+        assert_eq!(record.z_slice_used_data_prep, 2);
+        assert_eq!(record.crop_lower_z_slice, None);
+        assert_eq!(record.crop_upper_z_slice, None);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_old_segm_info_without_gui_mirror_columns() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("demo_segmInfo.csv");
+        std::fs::write(
+            &path,
+            concat!(
+                "filename,frame_i,z_slice_used_dataPrep,which_z_proj,is_from_dataPrep\n",
+                "demo_phase.tif,0,2,single z-slice,1\n",
+                "demo_phase.tif,1,3,max z-projection,0\n",
+            ),
+        )?;
+
+        let table = load_segm_info(&path)?;
+
+        assert_eq!(table.records.len(), 2);
+        let first = table.get("demo_phase.tif", 0).expect("frame 0 record");
+        assert_eq!(first.z_slice_used_gui, 2);
+        assert_eq!(first.which_z_proj_gui, ZProjectionMode::SingleZSlice);
+        assert!(!first.resegmented_in_gui);
+        let second = table.get("demo_phase.tif", 1).expect("frame 1 record");
+        assert_eq!(second.z_slice_used_gui, 3);
+        assert_eq!(second.which_z_proj_gui, ZProjectionMode::MaxZProjection);
+        assert!(!second.is_from_data_prep);
         Ok(())
     }
 }

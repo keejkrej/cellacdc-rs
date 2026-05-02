@@ -405,7 +405,7 @@ struct Cli {
     #[arg(
         long = "import_experiment",
         action = ArgAction::SetTrue,
-        help = "Import raw TIFF/NPZ/H5 sources into a Cell-ACDC experiment folder"
+        help = "Import raw TIFF/NPY/NPZ/H5 sources into a Cell-ACDC experiment folder"
     )]
     import_experiment: bool,
     #[arg(
@@ -498,7 +498,7 @@ struct Cli {
     import_sources: Vec<PathBuf>,
     #[arg(
         long = "import_layout",
-        value_name = "single_file_multi_position|file_per_position|file_per_channel",
+        value_name = "single_file_multi_position|file_per_position|file_per_channel|custom_mapping",
         value_parser = parse_import_layout_kind,
         help = "Source layout for --import_experiment; inferred when omitted"
     )]
@@ -3534,7 +3534,7 @@ fn parse_import_layout_kind(value: &str) -> Result<ImportLayoutKind, String> {
         "fileperchannel" => Ok(ImportLayoutKind::FilePerChannel),
         "custommapping" => Ok(ImportLayoutKind::CustomMapping),
         _ => Err(
-            "expected one of single_file_multi_position, file_per_position, or file_per_channel"
+            "expected one of single_file_multi_position, file_per_position, file_per_channel, or custom_mapping"
                 .to_string(),
         ),
     }

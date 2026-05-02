@@ -34,6 +34,7 @@ const REQUIRED_LINEAGE_COLS: &[&str] = &[
     "relationship",
     "is_history_known",
 ];
+const SEGMENTATION_FILE_EXTENSIONS: &[&str] = &["npy", "npz", "tif", "tiff", "h5"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UtilityOutputPaths {
@@ -698,7 +699,7 @@ pub fn count_objects_in_positions(config: CountObjectsBatchConfig) -> Result<Uti
         let Some(segmentation_path) = find_file_by_endname(
             &images_dir,
             &config.segm_endname,
-            &["npz", "tif", "tiff", "h5"],
+            SEGMENTATION_FILE_EXTENSIONS,
         )?
         else {
             continue;
@@ -747,7 +748,7 @@ pub fn segmentation_to_object_coords_in_positions(
         let Some(segmentation_path) = find_file_by_endname(
             &images_dir,
             &config.segm_endname,
-            &["npz", "tif", "tiff", "h5"],
+            SEGMENTATION_FILE_EXTENSIONS,
         )?
         else {
             continue;
@@ -792,7 +793,7 @@ pub fn fill_holes_in_positions(config: FillHolesBatchConfig) -> Result<UtilityOu
         let Some(segmentation_path) = find_file_by_endname(
             &images_dir,
             &config.segm_endname,
-            &["npz", "tif", "tiff", "h5"],
+            SEGMENTATION_FILE_EXTENSIONS,
         )?
         else {
             continue;
@@ -881,7 +882,7 @@ pub fn connect_3d_segm_in_positions(
         let Some(segmentation_path) = find_file_by_endname(
             &images_dir,
             &config.segm_endname,
-            &["npz", "tif", "tiff", "h5"],
+            SEGMENTATION_FILE_EXTENSIONS,
         )?
         else {
             continue;
@@ -976,7 +977,7 @@ pub fn stack_2d_segm_to_3d_in_positions(
         let Some(segmentation_path) = find_file_by_endname(
             &images_dir,
             &config.segm_endname,
-            &["npz", "tif", "tiff", "h5"],
+            SEGMENTATION_FILE_EXTENSIONS,
         )?
         else {
             continue;
@@ -1038,7 +1039,7 @@ pub fn filter_segm_from_table_in_positions(
         let Some(segmentation_path) = find_file_by_endname(
             &images_dir,
             &config.segm_endname,
-            &["npz", "tif", "tiff", "h5"],
+            SEGMENTATION_FILE_EXTENSIONS,
         )?
         else {
             continue;
@@ -1119,7 +1120,7 @@ pub fn apply_tracking_from_trackmate_xml(
     let segmentation_path = find_file_by_endname(
         &images_dir,
         &config.segm_endname,
-        &["npz", "tif", "tiff", "h5"],
+        SEGMENTATION_FILE_EXTENSIONS,
     )?
     .ok_or_else(|| {
         anyhow!(
@@ -1430,8 +1431,14 @@ pub fn images_to_positions(config: ImagesToPositionsConfig) -> Result<UtilityOut
     let mut entries = fs::read_dir(&config.source_dir)
         .with_context(|| format!("Failed to read {}", config.source_dir.display()))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .map(|name| !should_skip_python_listdir_entry(name))
+                .unwrap_or(false)
+        })
         .collect::<Vec<_>>();
-    entries.sort();
+    entries.sort_by(|left, right| compare_paths_by_file_name_natural(left, right));
     let num_pos_digits = entries.len().to_string().len().max(2);
 
     let mut output_paths = Vec::new();
@@ -1867,7 +1874,7 @@ fn load_recipe_channel(
     let path = find_file_by_endname(
         &position.images_dir,
         channel_name,
-        &["npz", "tif", "tiff", "h5"],
+        SEGMENTATION_FILE_EXTENSIONS,
     )?
     .ok_or_else(|| {
         anyhow!(
@@ -2111,6 +2118,18 @@ fn load_convertible_npz(path: &Path) -> Result<ConvertibleArray> {
 
     try_npz!(f32, ImageScalarType::F32);
     try_npz!(f64, ImageScalarType::F32);
+    {
+        let file =
+            File::open(path).with_context(|| format!("Failed to open NPZ {}", path.display()))?;
+        let mut reader = NpzReader::new(file)
+            .with_context(|| format!("Failed to read NPZ {}", path.display()))?;
+        if let Ok(values) = reader.by_name::<ndarray::OwnedRepr<bool>, IxDyn>("arr_0") {
+            return Ok(ConvertibleArray {
+                values: values.mapv(|value| if value { 1.0 } else { 0.0 }),
+                scalar_type: ImageScalarType::F32,
+            });
+        }
+    }
     try_npz!(u8, ImageScalarType::U8);
     try_npz!(u16, ImageScalarType::U16);
     try_npz!(u32, ImageScalarType::U32);
@@ -2139,6 +2158,12 @@ fn load_convertible_npy(path: &Path) -> Result<ConvertibleArray> {
 
     try_npy!(f32, ImageScalarType::F32);
     try_npy!(f64, ImageScalarType::F32);
+    if let Ok(values) = read_npy::<_, ArrayD<bool>>(path) {
+        return Ok(ConvertibleArray {
+            values: values.mapv(|value| if value { 1.0 } else { 0.0 }),
+            scalar_type: ImageScalarType::F32,
+        });
+    }
     try_npy!(u8, ImageScalarType::U8);
     try_npy!(u16, ImageScalarType::U16);
     try_npy!(u32, ImageScalarType::U32);
@@ -2473,10 +2498,29 @@ fn list_regular_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = fs::read_dir(dir)
         .with_context(|| format!("Failed to read {}", dir.display()))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|name| !should_skip_python_listdir_entry(name))
+                    .unwrap_or(false)
+        })
         .collect::<Vec<_>>();
-    files.sort();
+    files.sort_by(|left, right| compare_paths_by_file_name_natural(left, right));
     Ok(files)
+}
+
+fn compare_paths_by_file_name_natural(left: &Path, right: &Path) -> Ordering {
+    let left_name = left
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let right_name = right
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    natural_compare(left_name, right_name).then_with(|| left.cmp(right))
 }
 
 fn move_metadata_with_basename(src: &Path, dst: &Path, basename: &str) -> Result<()> {
@@ -4215,7 +4259,7 @@ fn add_will_divide_column_to_table(table: &Table) -> Result<Table> {
     let last_annotated_row_idx = table
         .rows
         .iter()
-        .rposition(|row| !row[stage_idx].as_string_lossy().is_empty());
+        .rposition(|row| !is_missing_table_value(&row[stage_idx]));
 
     let mut rows = table.rows.clone();
     for (row_idx, row) in rows.iter_mut().enumerate() {
@@ -4308,7 +4352,7 @@ fn add_missing_acdc_columns_to_table(table: &Table) -> Result<Table> {
     let last_annotated_row_idx = output
         .rows
         .iter()
-        .rposition(|row| !row[stage_idx].as_string_lossy().is_empty());
+        .rposition(|row| !is_missing_table_value(&row[stage_idx]));
     let defaults = [
         ("generation_num", TableValue::Number(2.0)),
         ("relative_ID", TableValue::Number(-1.0)),
@@ -4378,7 +4422,7 @@ fn fill_empty_non_cca_values(table: &mut Table) {
             continue;
         }
         for row in &mut table.rows {
-            if matches!(row.get(column_idx), Some(TableValue::Empty)) {
+            if row.get(column_idx).is_some_and(is_missing_table_value) {
                 row[column_idx] = TableValue::Number(0.0);
             }
         }
@@ -4401,6 +4445,18 @@ fn base_cca_column_names() -> BTreeSet<&'static str> {
     ]
     .into_iter()
     .collect()
+}
+
+fn is_missing_table_value(value: &TableValue) -> bool {
+    match value {
+        TableValue::Empty => true,
+        TableValue::Number(number) => number.is_nan(),
+        TableValue::Text(text) => matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "" | "nan" | "na" | "n/a" | "none" | "null" | "<na>"
+        ),
+        TableValue::Bool(_) => false,
+    }
 }
 
 fn add_generation_num_relid_to_table(table: &Table, grouping_columns: &[String]) -> Result<Table> {
@@ -4623,7 +4679,7 @@ fn fix_will_divide_to_table(table: &Table) -> Result<Table> {
     let mut existing_cycles = BTreeSet::<(i64, i64)>::new();
     let mut dividing_cycles = BTreeSet::<(i64, i64)>::new();
     for row in &table.rows {
-        if row[stage_idx].as_string_lossy().is_empty() {
+        if is_missing_table_value(&row[stage_idx]) {
             continue;
         }
         let Some(cell_id) = row[cell_idx].as_i64() else {
@@ -4648,7 +4704,7 @@ fn fix_will_divide_to_table(table: &Table) -> Result<Table> {
 
     let mut rows = table.rows.clone();
     for row in &mut rows {
-        if row[stage_idx].as_string_lossy().is_empty() {
+        if is_missing_table_value(&row[stage_idx]) {
             continue;
         }
         let cell_id = row[cell_idx].as_i64();
@@ -4802,14 +4858,38 @@ fn find_table_by_endname(images_dir: &Path, endname: &str) -> Result<Option<Path
             path.file_name()
                 .and_then(|value| value.to_str())
                 .map(|name| {
+                    if should_skip_python_listdir_entry(name) {
+                        return false;
+                    }
                     name.ends_with(&format!("{endname}.csv"))
                         || name.ends_with(&format!("{endname}.xlsx"))
                 })
                 .unwrap_or(false)
         })
         .collect::<Vec<_>>();
-    matches.sort();
+    matches.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let right_name = right
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        left_name
+            .len()
+            .cmp(&right_name.len())
+            .then_with(|| natural_compare(left_name, right_name))
+            .then_with(|| left.cmp(right))
+    });
     Ok(matches.into_iter().next())
+}
+
+fn should_skip_python_listdir_entry(name: &str) -> bool {
+    name.starts_with('.')
+        || name == "desktop.ini"
+        || name == "recovery"
+        || name.ends_with(".new.npz")
 }
 
 fn find_file_by_endname(
@@ -4833,6 +4913,9 @@ fn find_file_by_endname(
                 return false;
             }
             let filename = path.file_name().and_then(|value| value.to_str());
+            if filename.is_some_and(should_skip_python_listdir_entry) {
+                return false;
+            }
             let stem = path.file_stem().and_then(|value| value.to_str());
             filename
                 .map(|name| name.ends_with(endname))
@@ -4847,7 +4930,21 @@ fn find_file_by_endname(
                     .unwrap_or(false)
         })
         .collect::<Vec<_>>();
-    matches.sort();
+    matches.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let right_name = right
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        left_name
+            .len()
+            .cmp(&right_name.len())
+            .then_with(|| natural_compare(left_name, right_name))
+            .then_with(|| left.cmp(right))
+    });
     Ok(matches.into_iter().next())
 }
 
@@ -4864,7 +4961,17 @@ fn list_position_dirs(experiment_dir: &Path) -> Result<Vec<PathBuf>> {
                     .unwrap_or(false)
         })
         .collect::<Vec<_>>();
-    positions.sort();
+    positions.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let right_name = right
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        natural_compare(left_name, right_name).then_with(|| left.cmp(right))
+    });
     if positions.is_empty() {
         bail!(
             "No Cell-ACDC positions found under {}",
@@ -4916,6 +5023,7 @@ fn derive_object_coordinates_path(segmentation_path: &Path) -> Result<PathBuf> {
 }
 
 fn infer_tracking_source_acdc_output(images_dir: &Path, segm_endname: &str) -> Option<PathBuf> {
+    let segm_endname = segm_endname.trim().trim_end_matches(".npz");
     let acdc_endname = if segm_endname.starts_with("segm") {
         segm_endname.replacen("segm", "acdc_output", 1)
     } else {
@@ -5630,6 +5738,34 @@ mod tests {
     }
 
     #[test]
+    fn count_objects_batch_resolves_python_npy_segmentations() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_npy(
+            images.join("demo_segm.npy"),
+            &Array3::from_shape_vec((2, 1, 3), vec![0u32, 1, 2, 2, 2, 3])?,
+        )?;
+
+        let result = count_objects_in_positions(CountObjectsBatchConfig {
+            position_dir: Some(temp.path().join("Position_1")),
+            experiment_dir: None,
+            segm_endname: "segm".into(),
+            resolution: Some(MaskPathResolution {
+                size_t: Some(2),
+                size_z: Some(1),
+                layout: Some(SegmentationLayout::TYX),
+            }),
+        })?;
+
+        assert!(result.primary_path.ends_with("demo_acdc_objects_count.csv"));
+        let table = read_table(&result.primary_path)?;
+        let row = table.row_map(0);
+        assert_eq!(row["Unique objects in entire video"].as_i64(), Some(3));
+        Ok(())
+    }
+
+    #[test]
     fn writes_object_coordinates_from_segmentation() -> Result<()> {
         let temp = tempdir()?;
         let segm_path = temp.path().join("segm.npz");
@@ -5671,6 +5807,69 @@ mod tests {
                 && row[y_col].as_i64() == Some(1)
                 && row[x_col].as_i64() == Some(0)
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn object_coords_batch_resolves_python_npy_segmentations() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path().join("Position_1").join("Images");
+        fs::create_dir_all(&images)?;
+        write_npy(
+            images.join("demo_segm.npy"),
+            &Array3::from_shape_vec((2, 1, 3), vec![1u32, 1, 2, 2, 3, 0])?,
+        )?;
+
+        let result = segmentation_to_object_coords_in_positions(ObjectCoordinatesBatchConfig {
+            position_dir: Some(temp.path().join("Position_1")),
+            experiment_dir: None,
+            segm_endname: "segm".into(),
+            resolution: Some(MaskPathResolution {
+                size_t: Some(2),
+                size_z: Some(1),
+                layout: Some(SegmentationLayout::TYX),
+            }),
+        })?;
+
+        assert!(result
+            .primary_path
+            .ends_with("demo_objects_coordinates.csv"));
+        let table = read_table(&result.primary_path)?;
+        assert_eq!(table.headers, vec!["frame_i", "Cell_ID", "y", "x"]);
+        assert_eq!(table.rows.len(), 5);
+        Ok(())
+    }
+
+    #[test]
+    fn images_to_positions_uses_python_listdir_filtering_and_natural_order() -> Result<()> {
+        let temp = tempdir()?;
+        let source = temp.path().join("raw");
+        let target = temp.path().join("experiment");
+        fs::create_dir_all(&source)?;
+        write_test_stack_u16(&source.join("img10.tif"), &[10])?;
+        write_test_stack_u16(&source.join("img2.tif"), &[2])?;
+        write_test_stack_u16(&source.join(".img1.tif"), &[1])?;
+        fs::write(source.join("desktop.ini"), b"skip")?;
+        fs::create_dir_all(source.join("recovery"))?;
+
+        let result = images_to_positions(ImagesToPositionsConfig {
+            source_dir: source,
+            target_dir: target.clone(),
+            append_text: "GFP".into(),
+        })?;
+
+        assert_eq!(result.secondary_paths.len(), 1);
+        assert!(target
+            .join("Position_1")
+            .join("Images")
+            .join("s01_img2_GFP.tif")
+            .exists());
+        assert!(target
+            .join("Position_2")
+            .join("Images")
+            .join("s02_img10_GFP.tif")
+            .exists());
+        assert!(!target.join("Position_3").exists());
         Ok(())
     }
 
@@ -5795,6 +5994,78 @@ mod tests {
         let table = read_table(&result.all_position_outputs[0])?;
         assert_eq!(table.rows.len(), 2);
         assert!(table.headers.iter().any(|header| header == "Position_n"));
+        Ok(())
+    }
+
+    #[test]
+    fn lists_position_dirs_in_natural_order() -> Result<()> {
+        let temp = tempdir()?;
+        for pos in ["Position_10", "Position_2", "Position_1"] {
+            fs::create_dir_all(temp.path().join(pos).join("Images"))?;
+        }
+
+        let positions = list_position_dirs(temp.path())?;
+        let names = positions
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Position_1", "Position_2", "Position_10"]);
+        Ok(())
+    }
+
+    #[test]
+    fn finds_shortest_python_listdir_table_match() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path();
+        fs::write(images.join("a_long_prefix_acdc_output.csv"), "frame_i\n1\n")?;
+        fs::write(images.join("zz_acdc_output.csv"), "frame_i\n2\n")?;
+        fs::write(images.join(".acdc_output.csv"), "frame_i\n3\n")?;
+
+        let path = find_table_by_endname(images, "acdc_output")?.expect("table path");
+        assert!(path.ends_with("zz_acdc_output.csv"));
+        Ok(())
+    }
+
+    #[test]
+    fn finds_files_by_endname_skip_python_listdir_excluded_entries() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path();
+        fs::write(images.join(".demo_segm.npz"), b"hidden")?;
+        fs::write(images.join("demo_segm.npz"), b"real")?;
+
+        let path = find_file_by_endname(images, "segm", &["npz"])?.expect("segm path");
+        assert!(path.ends_with("demo_segm.npz"));
+        assert!(!path.ends_with(".demo_segm.npz"));
+        Ok(())
+    }
+
+    #[test]
+    fn finds_shortest_python_listdir_file_match() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path();
+        fs::write(images.join("demo_phase_segm.npz"), b"longer")?;
+        fs::write(images.join("demo_segm.npz"), b"shorter")?;
+        fs::write(images.join("demo2_segm.npz"), b"natural tie")?;
+
+        let path = find_file_by_endname(images, "segm", &["npz"])?.expect("segm path");
+
+        assert!(path.ends_with("demo_segm.npz"));
+        Ok(())
+    }
+
+    #[test]
+    fn infers_tracking_acdc_output_from_python_segmentation_filename() -> Result<()> {
+        let temp = tempdir()?;
+        let images = temp.path();
+        fs::write(
+            images.join("demo_acdc_output_rust.csv"),
+            "frame_i,Cell_ID\n0,1\n",
+        )?;
+
+        let path =
+            infer_tracking_source_acdc_output(images, "segm_rust.npz").expect("acdc output path");
+
+        assert!(path.ends_with("demo_acdc_output_rust.csv"));
         Ok(())
     }
 
@@ -6782,6 +7053,71 @@ mod tests {
         assert_eq!(output.rows[2][excluded_idx].as_i64(), Some(0));
         assert_eq!(output.rows[2][dead_idx].as_i64(), Some(0));
         assert_eq!(output.rows[1][will_divide_idx].as_i64(), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn treats_python_missing_annotation_values_as_unannotated() -> Result<()> {
+        let table = rows_to_table(
+            &[
+                "frame_i".into(),
+                "Cell_ID".into(),
+                "cell_cycle_stage".into(),
+                "signal".into(),
+            ],
+            &[
+                row(vec![
+                    ("frame_i", 0.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "G1".into()),
+                    ("signal", 4.0.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 1.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", "nan".into()),
+                    ("signal", f64::NAN.into()),
+                ]),
+                row(vec![
+                    ("frame_i", 2.0.into()),
+                    ("Cell_ID", 1.0.into()),
+                    ("cell_cycle_stage", f64::NAN.into()),
+                    ("signal", f64::NAN.into()),
+                ]),
+            ],
+        );
+
+        let missing_cols = add_missing_acdc_columns_to_table(&table)?;
+        let generation_idx = missing_cols.header_index("generation_num")?;
+        let will_divide = add_will_divide_column_to_table(&missing_cols)?;
+        let will_divide_idx = will_divide.header_index("will_divide")?;
+
+        assert_eq!(will_divide.rows[0][generation_idx].as_i64(), Some(2));
+        assert_eq!(will_divide.rows[0][will_divide_idx].as_i64(), Some(0));
+        assert_eq!(will_divide.rows[1][generation_idx], TableValue::Empty);
+        assert_eq!(will_divide.rows[1][will_divide_idx], TableValue::Empty);
+        assert_eq!(will_divide.rows[2][generation_idx], TableValue::Empty);
+        assert_eq!(will_divide.rows[2][will_divide_idx], TableValue::Empty);
+
+        let compatible = ensure_acdc_compatibility_to_table(&table)?;
+        let compatible_generation_idx = compatible.header_index("generation_num")?;
+        let compatible_will_divide_idx = compatible.header_index("will_divide")?;
+        assert_eq!(
+            compatible.rows[1][compatible_generation_idx],
+            TableValue::Empty
+        );
+        assert_eq!(
+            compatible.rows[1][compatible_will_divide_idx],
+            TableValue::Empty
+        );
+        assert_eq!(
+            compatible.rows[2][compatible_generation_idx],
+            TableValue::Empty
+        );
+        assert_eq!(
+            compatible.rows[2][compatible_will_divide_idx],
+            TableValue::Empty
+        );
         Ok(())
     }
 

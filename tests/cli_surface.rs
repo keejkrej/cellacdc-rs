@@ -404,6 +404,63 @@ fn convert_file_format_utility_converts_npz_to_npy_with_segm_cast() {
 }
 
 #[test]
+fn convert_file_format_utility_converts_bool_npy_and_npz_as_unit_float_arrays() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bool_values =
+        Array2::from_shape_vec((2, 2), vec![false, true, true, false]).expect("shape");
+
+    let npy_input = temp.path().join("mask.npy");
+    let npz_output = temp.path().join("mask_float.npz");
+    ndarray_npy::write_npy(&npy_input, &bool_values).expect("write bool npy");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--convert_file_format")
+        .arg("--input_path")
+        .arg(&npy_input)
+        .arg("--output_path")
+        .arg(&npz_output)
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let mut converted_npz =
+        NpzReader::new(File::open(&npz_output).expect("converted npz")).expect("read npz");
+    let converted_from_npy: ArrayD<f32> =
+        converted_npz.by_name("arr_0.npy").expect("converted array");
+    assert_eq!(converted_from_npy.shape(), &[2, 2]);
+    assert_eq!(
+        converted_from_npy.iter().copied().collect::<Vec<_>>(),
+        vec![0.0, 1.0, 1.0, 0.0]
+    );
+
+    let npz_input = temp.path().join("mask_bool.npz");
+    let npy_output = temp.path().join("mask_float.npy");
+    let file = File::create(&npz_input).expect("input npz");
+    let mut writer = NpzWriter::new(file);
+    writer
+        .add_array("arr_0", &bool_values)
+        .expect("write bool npz");
+    writer.finish().expect("finish input");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--convert_file_format")
+        .arg("--input_path")
+        .arg(&npz_input)
+        .arg("--output_path")
+        .arg(&npy_output)
+        .output()
+        .expect("run binary");
+
+    assert!(output.status.success());
+    let converted_from_npz: ArrayD<f32> = read_npy(&npy_output).expect("converted npy");
+    assert_eq!(converted_from_npz.shape(), &[2, 2]);
+    assert_eq!(
+        converted_from_npz.iter().copied().collect::<Vec<_>>(),
+        vec![0.0, 1.0, 1.0, 0.0]
+    );
+}
+
+#[test]
 fn rename_files_utility_appends_text_to_selected_files() {
     let temp = tempfile::tempdir().expect("temp dir");
     let input_path = temp.path().join("demo_phase.tif");
@@ -555,6 +612,86 @@ fn import_experiment_utility_creates_position_structure() {
     assert!(metadata.contains("basename,s01_"));
     assert!(metadata.contains("SizeT,1"));
     assert!(metadata.contains("channel_0_name,phase"));
+}
+
+#[test]
+fn import_experiment_utility_imports_npy_source() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_path = temp.path().join("phase.npy");
+    let target_dir = temp.path().join("imported_experiment");
+    let stack = Array3::from_shape_vec((1, 2, 2), vec![1u16, 2, 3, 4]).expect("npy stack");
+    ndarray_npy::write_npy(&source_path, &stack).expect("write npy");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--import_experiment")
+        .arg("--import_source")
+        .arg(&source_path)
+        .arg("--target_dir")
+        .arg(&target_dir)
+        .arg("--import_layout")
+        .arg("file_per_position")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Imported 1 position(s)"));
+    assert!(stdout.contains("Discovered 1 import source(s)"));
+    let images_dir = target_dir.join("Position_1").join("Images");
+    assert!(images_dir.join("s01_phase.tif").exists());
+    assert!(images_dir.join("s01_metadata.csv").exists());
+    assert!(images_dir.join("s01_metadataXML.txt").exists());
+    let metadata = fs::read_to_string(images_dir.join("s01_metadata.csv")).expect("metadata csv");
+    assert!(metadata.contains("basename,s01_"));
+    assert!(metadata.contains("SizeT,1"));
+    assert!(metadata.contains("channel_0_name,phase"));
+}
+
+#[test]
+fn import_experiment_custom_mapping_groups_sources_by_position_prefix() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_dir = temp.path().join("raw");
+    let target_dir = temp.path().join("imported_experiment");
+    fs::create_dir_all(&source_dir).expect("source dir");
+    write_test_tiff(&source_dir.join("position1_phase.tif"), &[1, 2, 3, 4], 2, 2);
+    write_test_tiff(&source_dir.join("position1_gfp.tif"), &[5, 6, 7, 8], 2, 2);
+    write_test_tiff(
+        &source_dir.join("position2_phase.tif"),
+        &[9, 10, 11, 12],
+        2,
+        2,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellacdc-rs"))
+        .arg("--import_experiment")
+        .arg("--import_source")
+        .arg(&source_dir)
+        .arg("--target_dir")
+        .arg(&target_dir)
+        .arg("--import_layout")
+        .arg("custom_mapping")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Imported 2 position(s)"));
+    assert!(stdout.contains("Discovered 3 import source(s)"));
+    let pos1_images = target_dir.join("Position_1").join("Images");
+    let pos2_images = target_dir.join("Position_2").join("Images");
+    assert!(pos1_images.join("s01_phase.tif").exists());
+    assert!(pos1_images.join("s01_gfp.tif").exists());
+    assert!(pos1_images.join("s01_metadata.csv").exists());
+    assert!(pos2_images.join("s01_phase.tif").exists());
+    assert!(pos2_images.join("s01_metadata.csv").exists());
 }
 
 #[test]

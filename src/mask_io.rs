@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use hdf5_reader::Hdf5File;
 use ndarray::{ArrayD, IxDyn, OwnedRepr};
-use ndarray_npy::{NpzReader, NpzWriter};
+use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use tiff::decoder::{Decoder, DecodingResult};
@@ -55,16 +55,18 @@ pub fn load_mask_data(path: &Path, resolution: Option<&MaskPathResolution>) -> R
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase());
     let (values, dims) = match extension.as_deref() {
+        Some("npy") => load_npy(path)?,
         Some("npz") => load_npz(path)?,
         Some("h5") => load_h5(path)?,
         Some("tif") | Some("tiff") => load_tiff(path, &resolution)?,
         other => bail!(
-            "Unsupported mask format {:?} for {}. Supported formats are TIFF, NPZ, and H5.",
+            "Unsupported mask format {:?} for {}. Supported formats are NPY, NPZ, TIFF, and H5.",
             other,
             path.display()
         ),
     };
 
+    let dims = squeeze_non_spatial_singletons(&dims, resolution.layout);
     let layout = infer_layout(&dims, &resolution, path)?;
     let values = ArrayD::from_shape_vec(IxDyn(&dims), values)
         .with_context(|| format!("Failed to shape mask data for {}", path.display()))?;
@@ -85,6 +87,8 @@ pub fn save_mask_data(path: &Path, data: &MaskData) -> Result<()> {
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase());
     match extension.as_deref() {
+        Some("npy") => write_npy(path, &data.values)
+            .with_context(|| format!("Failed to write NPY {}", path.display())),
         Some("npz") => save_npz(path, data),
         Some("tif") | Some("tiff") => save_tiff(path, data),
         Some("h5") => bail!(
@@ -92,11 +96,36 @@ pub fn save_mask_data(path: &Path, data: &MaskData) -> Result<()> {
             path.display()
         ),
         other => bail!(
-            "Unsupported mask output format {:?} for {}. Supported write formats are NPZ and TIFF.",
+            "Unsupported mask output format {:?} for {}. Supported write formats are NPY, NPZ, and TIFF.",
             other,
             path.display()
         ),
     }
+}
+
+fn load_npy(path: &Path) -> Result<(Vec<u32>, Vec<usize>)> {
+    macro_rules! try_npy {
+        ($ty:ty, $map:expr) => {
+            if let Ok(array) = read_npy::<_, ArrayD<$ty>>(path) {
+                let dims = array.shape().to_vec();
+                let values = array.iter().map($map).collect::<Vec<_>>();
+                return Ok((values, dims));
+            }
+        };
+    }
+
+    try_npy!(u32, |value| *value);
+    try_npy!(bool, |value| u32::from(*value));
+    try_npy!(u16, |value| *value as u32);
+    try_npy!(u8, |value| *value as u32);
+    try_npy!(i64, |value| (*value).max(0) as u32);
+    try_npy!(i32, |value| (*value).max(0) as u32);
+    try_npy!(i16, |value| (*value).max(0) as u32);
+    try_npy!(i8, |value| (*value).max(0) as u32);
+    try_npy!(f64, |value| (*value).max(0.0) as u32);
+    try_npy!(f32, |value| (*value).max(0.0) as u32);
+
+    bail!("Unsupported NPY mask dtype in {}", path.display())
 }
 
 fn load_npz(path: &Path) -> Result<(Vec<u32>, Vec<usize>)> {
@@ -114,6 +143,12 @@ fn load_npz(path: &Path) -> Result<(Vec<u32>, Vec<usize>)> {
     if let Ok(array) = npz.by_name::<OwnedRepr<u32>, IxDyn>(&name) {
         return Ok((array.iter().copied().collect(), array.shape().to_vec()));
     }
+    if let Ok(array) = npz.by_name::<OwnedRepr<bool>, IxDyn>(&name) {
+        return Ok((
+            array.iter().map(|value| u32::from(*value)).collect(),
+            array.shape().to_vec(),
+        ));
+    }
     if let Ok(array) = npz.by_name::<OwnedRepr<u16>, IxDyn>(&name) {
         return Ok((
             array.iter().map(|value| *value as u32).collect(),
@@ -126,9 +161,39 @@ fn load_npz(path: &Path) -> Result<(Vec<u32>, Vec<usize>)> {
             array.shape().to_vec(),
         ));
     }
+    if let Ok(array) = npz.by_name::<OwnedRepr<u64>, IxDyn>(&name) {
+        return Ok((
+            array.iter().map(|value| *value as u32).collect(),
+            array.shape().to_vec(),
+        ));
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i64>, IxDyn>(&name) {
+        return Ok((
+            array.iter().map(|value| (*value).max(0) as u32).collect(),
+            array.shape().to_vec(),
+        ));
+    }
     if let Ok(array) = npz.by_name::<OwnedRepr<i32>, IxDyn>(&name) {
         return Ok((
             array.iter().map(|value| (*value).max(0) as u32).collect(),
+            array.shape().to_vec(),
+        ));
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i16>, IxDyn>(&name) {
+        return Ok((
+            array.iter().map(|value| (*value).max(0) as u32).collect(),
+            array.shape().to_vec(),
+        ));
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<i8>, IxDyn>(&name) {
+        return Ok((
+            array.iter().map(|value| (*value).max(0) as u32).collect(),
+            array.shape().to_vec(),
+        ));
+    }
+    if let Ok(array) = npz.by_name::<OwnedRepr<f64>, IxDyn>(&name) {
+        return Ok((
+            array.iter().map(|value| value.max(0.0) as u32).collect(),
             array.shape().to_vec(),
         ));
     }
@@ -185,6 +250,36 @@ fn load_h5(path: &Path) -> Result<(Vec<u32>, Vec<usize>)> {
         })
         .with_context(|| format!("Unsupported H5 dataset type in {}", path.display()))?;
     Ok((values, dims))
+}
+
+fn squeeze_non_spatial_singletons(
+    dims: &[usize],
+    explicit_layout: Option<SegmentationLayout>,
+) -> Vec<usize> {
+    if dims.len() <= 2 {
+        return dims.to_vec();
+    }
+    let target_len = explicit_layout.map(layout_rank).unwrap_or(2);
+    let spatial_start = dims.len() - 2;
+    let mut squeezed = Vec::new();
+    let mut remaining_to_remove = dims.len().saturating_sub(target_len);
+    for dim in &dims[..spatial_start] {
+        if *dim == 1 && remaining_to_remove > 0 {
+            remaining_to_remove -= 1;
+            continue;
+        }
+        squeezed.push(*dim);
+    }
+    squeezed.extend_from_slice(&dims[spatial_start..]);
+    squeezed
+}
+
+fn layout_rank(layout: SegmentationLayout) -> usize {
+    match layout {
+        SegmentationLayout::YX => 2,
+        SegmentationLayout::TYX | SegmentationLayout::ZYX => 3,
+        SegmentationLayout::TZYX => 4,
+    }
 }
 
 fn load_tiff(path: &Path, resolution: &MaskPathResolution) -> Result<(Vec<u32>, Vec<usize>)> {
@@ -474,6 +569,7 @@ fn flatten_to_planes(data: &MaskData) -> Result<Vec<(usize, usize, Vec<u32>)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray_npy::write_npy;
     use tempfile::tempdir;
 
     #[test]
@@ -495,6 +591,140 @@ mod tests {
             }),
         )?;
         assert_eq!(loaded.layout, SegmentationLayout::TYX);
+        assert_eq!(loaded.values, data.values);
+        Ok(())
+    }
+
+    #[test]
+    fn squeezes_singleton_axes_in_array_backed_masks_like_python() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("mask.npz");
+        let file = File::create(&path)?;
+        let mut writer = NpzWriter::new(file);
+        let values =
+            ArrayD::from_shape_vec(IxDyn(&[1, 2, 1, 2, 2]), vec![0u32, 1, 2, 0, 0, 3, 4, 0])?;
+        writer.add_array("arr_0", &values)?;
+        writer.finish()?;
+
+        let loaded = load_mask_data(
+            &path,
+            Some(&MaskPathResolution {
+                size_t: Some(2),
+                size_z: Some(1),
+                layout: Some(SegmentationLayout::TYX),
+            }),
+        )?;
+
+        assert_eq!(loaded.layout, SegmentationLayout::TYX);
+        assert_eq!(loaded.values.shape(), &[2, 2, 2]);
+        assert_eq!(
+            loaded.values.iter().copied().collect::<Vec<_>>(),
+            vec![0, 1, 2, 0, 0, 3, 4, 0]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loads_npy_masks_like_python_segmentation_files() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("mask.npy");
+        let values = ArrayD::from_shape_vec(IxDyn(&[2, 1, 2]), vec![0i32, 1, 2, -3])?;
+        write_npy(&path, &values)?;
+
+        let loaded = load_mask_data(
+            &path,
+            Some(&MaskPathResolution {
+                size_t: Some(2),
+                size_z: Some(1),
+                layout: Some(SegmentationLayout::TYX),
+            }),
+        )?;
+
+        assert_eq!(loaded.layout, SegmentationLayout::TYX);
+        assert_eq!(loaded.values.shape(), &[2, 1, 2]);
+        assert_eq!(
+            loaded.values.iter().copied().collect::<Vec<_>>(),
+            vec![0, 1, 2, 0]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loads_boolean_array_backed_masks_as_binary_labels() -> Result<()> {
+        let temp = tempdir()?;
+        let npy_path = temp.path().join("mask.npy");
+        let bool_values = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![false, true, true, false])?;
+        write_npy(&npy_path, &bool_values)?;
+
+        let loaded_npy = load_mask_data(&npy_path, None)?;
+        assert_eq!(loaded_npy.layout, SegmentationLayout::YX);
+        assert_eq!(
+            loaded_npy.values.iter().copied().collect::<Vec<_>>(),
+            vec![0, 1, 1, 0]
+        );
+
+        let npz_path = temp.path().join("mask.npz");
+        let file = File::create(&npz_path)?;
+        let mut writer = NpzWriter::new(file);
+        writer.add_array("arr_0", &bool_values)?;
+        writer.finish()?;
+
+        let loaded_npz = load_mask_data(&npz_path, None)?;
+        assert_eq!(loaded_npz.layout, SegmentationLayout::YX);
+        assert_eq!(loaded_npz.values, loaded_npy.values);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_npz_masks_with_python_numeric_cast_variants() -> Result<()> {
+        let temp = tempdir()?;
+
+        let i16_path = temp.path().join("mask_i16.npz");
+        let file = File::create(&i16_path)?;
+        let mut writer = NpzWriter::new(file);
+        let i16_values = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![-1i16, 2, 3, -4])?;
+        writer.add_array("arr_0", &i16_values)?;
+        writer.finish()?;
+        let loaded_i16 = load_mask_data(&i16_path, None)?;
+        assert_eq!(
+            loaded_i16.values.iter().copied().collect::<Vec<_>>(),
+            vec![0, 2, 3, 0]
+        );
+
+        let f64_path = temp.path().join("mask_f64.npz");
+        let file = File::create(&f64_path)?;
+        let mut writer = NpzWriter::new(file);
+        let f64_values = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![0.0f64, 1.8, -2.0, 4.2])?;
+        writer.add_array("arr_0", &f64_values)?;
+        writer.finish()?;
+        let loaded_f64 = load_mask_data(&f64_path, None)?;
+        assert_eq!(
+            loaded_f64.values.iter().copied().collect::<Vec<_>>(),
+            vec![0, 1, 0, 4]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn roundtrips_npy_masks() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("mask.npy");
+        let data = MaskData {
+            values: ArrayD::from_shape_vec(IxDyn(&[2, 1, 2]), vec![0u32, 1, 2, 3])?,
+            layout: SegmentationLayout::TYX,
+            source_path: path.clone(),
+        };
+        save_mask_data(&path, &data)?;
+
+        let loaded = load_mask_data(
+            &path,
+            Some(&MaskPathResolution {
+                size_t: Some(2),
+                size_z: Some(1),
+                layout: Some(SegmentationLayout::TYX),
+            }),
+        )?;
+
         assert_eq!(loaded.values, data.values);
         Ok(())
     }

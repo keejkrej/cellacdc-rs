@@ -49,7 +49,9 @@ impl TableValue {
     }
 
     pub fn as_i64(&self) -> Option<i64> {
-        self.as_f64().map(|value| value.round() as i64)
+        self.as_f64()
+            .filter(|value| value.is_finite())
+            .map(|value| value.round() as i64)
     }
 
     pub fn as_string_lossy(&self) -> String {
@@ -188,7 +190,9 @@ fn read_csv(path: &Path) -> Result<Table> {
     let mut table = Table::new(headers);
     for record in reader.records() {
         let record = record?;
-        table.push_row(record.iter().map(parse_string_value).collect())?;
+        let mut values = record.iter().map(parse_string_value).collect::<Vec<_>>();
+        normalize_row_width(&mut values, table.headers.len());
+        table.push_row(values)?;
     }
     table.ensure_unique_headers()?;
     Ok(table)
@@ -234,12 +238,7 @@ fn read_xlsx(path: &Path) -> Result<Table> {
     let mut table = Table::new(headers);
     for row in rows {
         let mut values = row.iter().map(data_to_value).collect::<Vec<_>>();
-        while values.len() < table.headers.len() {
-            values.push(TableValue::Empty);
-        }
-        if values.len() > table.headers.len() {
-            values.truncate(table.headers.len());
-        }
+        normalize_row_width(&mut values, table.headers.len());
         table.push_row(values)?;
     }
     table.ensure_unique_headers()?;
@@ -321,6 +320,15 @@ fn data_to_string(value: &Data) -> String {
     data_to_value(value).as_string_lossy()
 }
 
+fn normalize_row_width(values: &mut Vec<TableValue>, width: usize) {
+    while values.len() < width {
+        values.push(TableValue::Empty);
+    }
+    if values.len() > width {
+        values.truncate(width);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +367,31 @@ mod tests {
         let xlsx_path = temp.path().join("table.xlsx");
         write_table(&xlsx_path, &table)?;
         assert_eq!(read_table(&xlsx_path)?, table);
+        Ok(())
+    }
+
+    #[test]
+    fn nan_values_do_not_cast_to_integer_zero() {
+        let value = TableValue::Number(f64::NAN);
+        assert!(value.as_f64().is_some_and(|number| number.is_nan()));
+        assert_eq!(value.as_i64(), None);
+    }
+
+    #[test]
+    fn reads_ragged_csv_like_pandas() -> Result<()> {
+        let temp = tempdir()?;
+        let csv_path = temp.path().join("ragged.csv");
+        std::fs::write(&csv_path, "frame_i,Cell_ID,value\n0,1\n1,2,alpha,ignored\n")?;
+
+        let table = read_table(&csv_path)?;
+        assert_eq!(table.headers, vec!["frame_i", "Cell_ID", "value"]);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0][0].as_i64(), Some(0));
+        assert_eq!(table.rows[0][1].as_i64(), Some(1));
+        assert_eq!(table.rows[0][2], TableValue::Empty);
+        assert_eq!(table.rows[1][0].as_i64(), Some(1));
+        assert_eq!(table.rows[1][1].as_i64(), Some(2));
+        assert_eq!(table.rows[1][2].as_string_lossy(), "alpha");
         Ok(())
     }
 }

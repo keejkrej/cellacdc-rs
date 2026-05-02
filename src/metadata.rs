@@ -23,12 +23,19 @@ pub fn read_metadata_map(path: &Path) -> Result<BTreeMap<String, String>> {
         .flexible(true)
         .from_path(path)
         .with_context(|| format!("Failed to open metadata file {}", path.display()))?;
+    let first_header = reader
+        .headers()
+        .ok()
+        .and_then(|headers| headers.get(0).map(str::to_string));
 
     for record in reader.records() {
         let record = record?;
         let key = record.get(0).unwrap_or_default().trim();
         if key.is_empty() {
             continue;
+        }
+        if first_header.as_deref() == Some(key) {
+            break;
         }
         let value = record
             .iter()
@@ -207,6 +214,25 @@ mod tests {
         assert_eq!(summary.physical_size_y, Some(0.5));
         assert_eq!(summary.segm_is_3d.get("segm"), Some(&false));
         assert_eq!(summary.segm_is_3d.get("segm_nuclei"), Some(&true));
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_duplicate_appended_metadata_after_repeated_header() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("demo_metadata.csv");
+        let mut file = fs::File::create(&path)?;
+        writeln!(file, "Description,values")?;
+        writeln!(file, "basename,demo_")?;
+        writeln!(file, "SizeT,2")?;
+        writeln!(file, "Description,values")?;
+        writeln!(file, "basename,stale_")?;
+        writeln!(file, "SizeT,9")?;
+
+        let summary = read_metadata_summary(&path)?;
+
+        assert_eq!(summary.basename.as_deref(), Some("demo_"));
+        assert_eq!(summary.size_t, Some(2));
         Ok(())
     }
 

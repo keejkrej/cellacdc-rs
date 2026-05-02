@@ -25,7 +25,7 @@ use crate::measure::{
 use crate::metadata::ensure_position_metadata;
 use crate::model::{CellposeModel, Segmenter};
 use crate::prep::{load_crop_roi_coords_csv, read_freehand_roi_npz, CropRoiRect, FreehandRoiMask};
-use crate::segm_info::load_segm_info;
+use crate::segm_info::{clamp_segm_info_z_slices, load_segm_info};
 use crate::tracking::{track_sequence, OverlapDenominator, TrackingConfig};
 use crate::zstack::project_frame_f32;
 
@@ -238,7 +238,8 @@ pub fn run_position_with_segmenter(
                 config.position.position_dir.display()
             )
         })?;
-        let segm_info = load_segm_info(segm_info_path)?;
+        let mut segm_info = load_segm_info(segm_info_path)?;
+        clamp_segm_info_z_slices(&mut segm_info, phase_shape.size_z);
         let phase_filename = config
             .position
             .phase_image

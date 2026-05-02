@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -95,13 +96,11 @@ impl PositionSession {
     }
 
     pub fn acdc_output_path(&self, endname: Option<&str>) -> PathBuf {
-        let suffix = endname
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| format!("_{value}"))
-            .unwrap_or_default();
-        self.spec
-            .images_dir
-            .join(format!("{}acdc_output{suffix}.csv", self.spec.basename))
+        self.spec.images_dir.join(format!(
+            "{}{}.csv",
+            self.spec.basename,
+            acdc_output_name(endname)
+        ))
     }
 
     pub fn custom_annotation_params_path(&self) -> PathBuf {
@@ -351,9 +350,26 @@ impl PositionSession {
     }
 
     pub fn segmentation_asset(&self, endname: Option<&str>) -> Option<&SegmentationAsset> {
+        let normalized = normalize_endname(endname);
         self.segmentations
             .iter()
-            .find(|asset| asset.endname.as_deref() == normalize_endname(endname))
+            .find(|asset| match normalized.as_deref() {
+                Some(endname) => asset.name == endname || asset.endname.as_deref() == Some(endname),
+                None => asset.endname.is_none(),
+            })
+    }
+}
+
+fn acdc_output_name(endname: Option<&str>) -> String {
+    match endname {
+        Some(value) if value.trim().trim_end_matches(".npz").starts_with("segm") => value
+            .trim()
+            .trim_end_matches(".npz")
+            .replacen("segm", "acdc_output", 1),
+        Some(value) if !value.trim().is_empty() => {
+            format!("acdc_output_{}", value.trim().trim_end_matches(".npz"))
+        }
+        _ => "acdc_output".to_string(),
     }
 }
 
@@ -388,36 +404,153 @@ fn discover_segmentation_assets(spec: &MeasurementPositionSpec) -> Result<Vec<Se
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
+        if should_skip_python_listdir_entry(file_name) {
+            continue;
+        }
         let Some(suffix) = file_name.strip_prefix(&spec.basename) else {
             continue;
         };
-        if suffix.starts_with("segm_hyperparams") || !suffix.starts_with("segm") {
+        let suffix = strip_legacy_position_prefix(suffix, &spec.position_dir);
+        if suffix.starts_with("segm_hyperparams") {
             continue;
         }
         let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
             continue;
         };
-        if !matches!(
-            ext.to_ascii_lowercase().as_str(),
-            "npz" | "tif" | "tiff" | "h5"
-        ) {
+        if !is_python_segmentation_file(suffix, ext) {
             continue;
         }
         let Some(stem) = Path::new(suffix).file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        let endname = stem
-            .strip_prefix("segm")
-            .and_then(|rest| rest.strip_prefix('_'))
-            .map(|rest| rest.to_string());
+        let endname = segmentation_endname_from_stem(stem);
         segmentations.push(SegmentationAsset {
             name: stem.to_string(),
             endname,
             path,
         });
     }
-    segmentations.sort_by(|left, right| left.name.cmp(&right.name));
+    segmentations.sort_by(|left, right| natural_compare(&left.name, &right.name));
     Ok(segmentations)
+}
+
+fn is_python_segmentation_file(suffix: &str, ext: &str) -> bool {
+    match ext.to_ascii_lowercase().as_str() {
+        "npz" => suffix.ends_with("segm.npz") || suffix.contains("segm"),
+        "npy" => suffix == "segm.npy" || suffix.ends_with("_segm.npy"),
+        "tif" | "tiff" | "h5" => suffix.starts_with("segm"),
+        _ => false,
+    }
+}
+
+fn segmentation_endname_from_stem(stem: &str) -> Option<String> {
+    if stem == "segm" {
+        None
+    } else if let Some(rest) = stem.strip_prefix("segm_") {
+        Some(rest.to_string())
+    } else {
+        Some(stem.to_string())
+    }
+}
+
+fn strip_legacy_position_prefix<'a>(suffix: &'a str, position_dir: &Path) -> &'a str {
+    let Some(position_number) = position_number(position_dir) else {
+        return suffix;
+    };
+    let Some(rest) = suffix.strip_prefix('s') else {
+        return suffix;
+    };
+    let Some((digits, after_digits)) = rest.split_once('_') else {
+        return suffix;
+    };
+    if digits.is_empty() {
+        return suffix;
+    }
+    match digits.parse::<usize>() {
+        Ok(value) if value == position_number => after_digits,
+        _ => suffix,
+    }
+}
+
+fn position_number(position_dir: &Path) -> Option<usize> {
+    position_dir
+        .file_name()
+        .and_then(|name| name.to_str())?
+        .strip_prefix("Position_")?
+        .parse::<usize>()
+        .ok()
+}
+
+fn should_skip_python_listdir_entry(name: &str) -> bool {
+    name.starts_with('.')
+        || name == "desktop.ini"
+        || name == "recovery"
+        || name.ends_with(".new.npz")
+}
+
+fn natural_compare(left: &str, right: &str) -> Ordering {
+    let mut left_iter = NaturalParts::new(left);
+    let mut right_iter = NaturalParts::new(right);
+    loop {
+        match (left_iter.next(), right_iter.next()) {
+            (Some(NaturalPart::Number(a)), Some(NaturalPart::Number(b))) => match a.cmp(&b) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+            (Some(NaturalPart::Text(a)), Some(NaturalPart::Text(b))) => match a.cmp(b) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+            (Some(NaturalPart::Number(_)), Some(NaturalPart::Text(_))) => return Ordering::Less,
+            (Some(NaturalPart::Text(_)), Some(NaturalPart::Number(_))) => return Ordering::Greater,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return left.cmp(right),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NaturalPart<'a> {
+    Text(&'a str),
+    Number(u64),
+}
+
+struct NaturalParts<'a> {
+    text: &'a str,
+    index: usize,
+}
+
+impl<'a> NaturalParts<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, index: 0 }
+    }
+}
+
+impl<'a> Iterator for NaturalParts<'a> {
+    type Item = NaturalPart<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.text.len() {
+            return None;
+        }
+        let start = self.index;
+        let first = self.text[start..].chars().next()?;
+        let is_digit = first.is_ascii_digit();
+        while self.index < self.text.len() {
+            let ch = self.text[self.index..].chars().next()?;
+            if ch.is_ascii_digit() != is_digit {
+                break;
+            }
+            self.index += ch.len_utf8();
+        }
+        let part = &self.text[start..self.index];
+        if is_digit {
+            Some(NaturalPart::Number(part.parse().unwrap_or(u64::MAX)))
+        } else {
+            Some(NaturalPart::Text(part))
+        }
+    }
 }
 
 fn looks_like_phase_channel(name: &str) -> bool {
@@ -427,10 +560,10 @@ fn looks_like_phase_channel(name: &str) -> bool {
         .any(|token| lower.contains(token))
 }
 
-fn normalize_endname(endname: Option<&str>) -> Option<&str> {
+fn normalize_endname(endname: Option<&str>) -> Option<String> {
     endname.and_then(|value| {
         let trimmed = value.trim();
-        (!trimmed.is_empty()).then_some(trimmed)
+        (!trimmed.is_empty()).then(|| trimmed.trim_end_matches(".npz").to_string())
     })
 }
 
@@ -776,7 +909,7 @@ fn extract_oriented_frame_u32(
 mod tests {
     use super::*;
     use ndarray::Array3;
-    use ndarray_npy::NpzWriter;
+    use ndarray_npy::{write_npy, NpzWriter};
     use std::fs::{self, File};
     use tempfile::tempdir;
     use tiff::encoder::{colortype, TiffEncoder};
@@ -808,6 +941,18 @@ mod tests {
         assert_eq!(session.segmentations.len(), 2);
         assert_eq!(session.segmentations[0].name, "segm");
         assert_eq!(session.segmentations[1].endname.as_deref(), Some("rust"));
+        assert_eq!(
+            session
+                .segmentation_asset(Some("segm"))
+                .map(|asset| &asset.path),
+            Some(&images.join("demo_segm.npz"))
+        );
+        assert_eq!(
+            session
+                .segmentation_asset(Some("segm_rust.npz"))
+                .map(|asset| &asset.path),
+            Some(&images.join("demo_segm_rust.npz"))
+        );
         Ok(())
     }
 
@@ -830,6 +975,14 @@ mod tests {
         )?;
 
         let session = open_position_session(&position)?;
+        assert_eq!(
+            session.acdc_output_path(Some("rust")),
+            images.join("demo_acdc_output_rust.csv")
+        );
+        assert_eq!(
+            session.acdc_output_path(Some("segm_rust.npz")),
+            images.join("demo_acdc_output_rust.csv")
+        );
         let frame = session.load_channel_frame("phase", 1, FrameProjection::Max)?;
         assert_eq!(frame.pixels, vec![9.0]);
 
@@ -868,6 +1021,159 @@ mod tests {
             session.segmentations[1].endname.as_deref(),
             Some("corrected")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn sorts_segmentation_assets_like_python_listdir() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_3");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+
+        write_stack(&images.join("demo_phase.tif"), &[7])?;
+        write_stack(&images.join("demo_fluo.tif"), &[11])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask(
+            &images.join("demo_segm_10.npz"),
+            Array3::from_shape_vec((1, 1, 1), vec![10u32])?,
+        )?;
+        write_mask(
+            &images.join("demo_segm_2.npz"),
+            Array3::from_shape_vec((1, 1, 1), vec![2u32])?,
+        )?;
+
+        let session = open_position_session(&position)?;
+        let names = session
+            .segmentations
+            .iter()
+            .map(|asset| asset.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["segm_2", "segm_10"]);
+        Ok(())
+    }
+
+    #[test]
+    fn strips_legacy_position_token_from_default_segmentation() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_1");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+
+        write_stack(&images.join("demo_s01_phase.tif"), &[7, 9])?;
+        write_stack(&images.join("demo_s01_fluo.tif"), &[11, 13])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
+        write_mask(
+            &images.join("demo_s01_segm.npz"),
+            Array3::from_shape_vec((2, 1, 1), vec![4u32, 6u32])?,
+        )?;
+
+        let session = open_position_session(&position)?;
+        assert_eq!(session.segmentations.len(), 1);
+        assert_eq!(session.segmentations[0].name, "segm");
+        assert_eq!(session.segmentations[0].endname, None);
+        let segm = session
+            .load_segmentation_frame(None, 1, FrameProjection::Max)?
+            .expect("expected default segmentation frame");
+        assert_eq!(segm.pixels, vec![6]);
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_and_loads_python_npy_segmentation_files() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_4");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+
+        write_stack(&images.join("demo_phase.tif"), &[7, 9])?;
+        write_stack(&images.join("demo_fluo.tif"), &[11, 13])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
+        write_npy(
+            images.join("demo_segm.npy"),
+            &Array3::from_shape_vec((2, 1, 1), vec![4u32, 6u32])?,
+        )?;
+
+        let session = open_position_session(&position)?;
+        assert_eq!(session.segmentations.len(), 1);
+        assert_eq!(session.segmentations[0].name, "segm");
+        let segm = session
+            .load_segmentation_frame(None, 1, FrameProjection::Max)?
+            .expect("expected segmentation frame");
+        assert_eq!(segm.pixels, vec![6]);
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_python_segmentation_files_with_segm_inside_endname() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_5");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+
+        write_stack(&images.join("demo_phase.tif"), &[7, 9])?;
+        write_stack(&images.join("demo_fluo.tif"), &[11, 13])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,2\nSizeZ,1\n",
+        )?;
+        write_mask(
+            &images.join("demo_phase_segm.npz"),
+            Array3::from_shape_vec((2, 1, 1), vec![5u32, 7u32])?,
+        )?;
+
+        let session = open_position_session(&position)?;
+        assert_eq!(session.segmentations.len(), 1);
+        assert_eq!(session.segmentations[0].name, "phase_segm");
+        assert_eq!(
+            session.segmentations[0].endname.as_deref(),
+            Some("phase_segm")
+        );
+        let segm = session
+            .load_segmentation_frame(Some("phase_segm"), 1, FrameProjection::Max)?
+            .expect("expected segmentation frame");
+        assert_eq!(segm.pixels, vec![7]);
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_python_listdir_excluded_segmentation_files() -> Result<()> {
+        let temp = tempdir()?;
+        let position = temp.path().join("Position_6");
+        let images = position.join("Images");
+        fs::create_dir_all(&images)?;
+
+        write_stack(&images.join("demo_phase.tif"), &[7])?;
+        write_stack(&images.join("demo_fluo.tif"), &[11])?;
+        fs::write(
+            images.join("demo_metadata.csv"),
+            "Description,values\nbasename,demo_\nSizeT,1\nSizeZ,1\n",
+        )?;
+        write_mask(
+            &images.join("demo_segm.npz"),
+            Array3::from_shape_vec((1, 1, 1), vec![4u32])?,
+        )?;
+        write_mask(
+            &images.join("demo_segm.new.npz"),
+            Array3::from_shape_vec((1, 1, 1), vec![9u32])?,
+        )?;
+        write_mask(
+            &images.join(".demo_segm_hidden.npz"),
+            Array3::from_shape_vec((1, 1, 1), vec![9u32])?,
+        )?;
+
+        let session = open_position_session(&position)?;
+        assert_eq!(session.segmentations.len(), 1);
+        assert_eq!(session.segmentations[0].name, "segm");
         Ok(())
     }
 
